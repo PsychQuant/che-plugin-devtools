@@ -1,0 +1,4 @@
+interface:
+  display_name: "Documentation Guardian"
+  short_description: "Check changelog, project guidance, and wiki sync"
+  default_prompt: "Use $doc-guardian to check whether this repository needs documentation or wiki updates."

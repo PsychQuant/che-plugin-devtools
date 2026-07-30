@@ -1,0 +1,36 @@
+{
+  "description": "doc-guardian hooks: doc-update guard (Stop), CLAUDE.md reminder (PostToolUse on git commit), wiki sync check (Stop)",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/claude-md-reminder.sh",
+            "timeout": 10,
+            "statusMessage": "Checking if CLAUDE.md needs update..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/doc-update-guard.sh",
+            "timeout": 10,
+            "statusMessage": "Checking if documentation needs update..."
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/sync-wiki-check.sh",
+            "timeout": 10,
+            "statusMessage": "Checking if wiki needs sync..."
+          }
+        ]
+      }
+    ]
+  }
+}

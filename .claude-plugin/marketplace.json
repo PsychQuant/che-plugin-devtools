@@ -1,0 +1,25 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "che-plugin-devtools",
+  "description": "Claude Code plugin 開發工具鏈 — plugin / MCP server / CLI 的完整發布管道，以及文件紀律守門",
+  "owner": {
+    "name": "Che Cheng"
+  },
+  "homepage": "https://github.com/PsychQuant/che-plugin-devtools",
+  "plugins": [
+    {
+      "name": "devtools",
+      "version": "1.0.0",
+      "description": "v1.0.0: Claude Code 開發工具鏈三合一 — plugin / MCP server / CLI 的完整發布管道。合併自 plugin-tools 1.18.0（plugin 生命週期：create/upgrade/deploy/update/health/debug）、mcp-tools 1.16.0（MCP server：new-app/clone/sign-pipeline/deploy/publish/test/diagnose 等 14 skills）、cli-tools 1.1.2（Swift CLI：new-app/deploy/install/upgrade）。三者原為獨立 plugin，但 plugin-tools ↔ mcp-tools 雙向循環依賴、且 Claude Code 沒有 plugin 依賴宣告機制，分開安裝會讓 dependency-aware orchestration 靜默斷裂，故合併為單一不可分割單元。新增 scripts/resolve-marketplace.sh 作為 marketplace 路徑的 single source of truth，取代先前散落 5 處的硬編碼 psychquant 路徑。",
+      "source": "./plugins/devtools",
+      "category": "development"
+    },
+    {
+      "name": "doc-guardian",
+      "version": "2.0.0",
+      "description": "v2.0.0: 文件紀律守門 — 確保 CHANGELOG / README / CLAUDE.md / wiki 不落後於 code。由 doc-tools 0.2.0 與 doc-guardian 1.0.2 合併而成並沿用後者名稱（本質是稽核與擋，不是文件處理）。三支 hook：doc-update-guard（Stop，commit 改 ≥3 個 code 檔卻沒動文件就擋）、claude-md-reminder（PostToolUse，架構變更未同步 CLAUDE.md 就提醒）、sync-wiki-check（Stop，changelog 更新但 wiki 未同步就擋）。四個 skills：changelog-validate（KAC 1.1.0 + 三方同步，CI exit code 0-4）、changelog-init、changelog-migrate、doc-guardian（手動觸發版，供收不到 hook 的 Codex 使用）。修掉兩個 live bug：(a) doc-tools 與 doc-guardian 各自註冊同一支 changelog Stop hook 且皆為 enabled 造成的 double-fire；(b) doc-update-config.sh 使用 bash 4 的 nameref，導致 code_extensions / doc_files 兩個設定在 macOS bash 3.2 下靜默失效。設定檔改名 doc-tools.json → doc-guardian.json，舊檔名與舊 cache 路徑保留 fallback。",
+      "source": "./plugins/doc-guardian",
+      "category": "productivity"
+    }
+  ]
+}
