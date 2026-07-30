@@ -1,0 +1,20 @@
+{
+  "name": "doc-guardian",
+  "version": "2.0.0",
+  "description": "Manual Codex documentation checks backed by the existing Claude Code hook scripts.",
+  "author": {
+    "name": "Che Cheng"
+  },
+  "license": "MIT",
+  "keywords": ["changelog", "documentation", "wiki", "guard"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "doc-guardian",
+    "shortDescription": "Check changelog, project guidance, and wiki sync manually.",
+    "longDescription": "Runs the existing documentation guardian checks on demand in Codex. Automatic Claude Code hook parity is not available — Codex receives neither PostToolUse nor Stop hooks, so the /doc-guardian skill invokes the same scripts by hand.",
+    "developerName": "Che Cheng",
+    "category": "productivity",
+    "capabilities": ["Read"],
+    "defaultPrompt": "Check whether this repository needs documentation or wiki updates."
+  }
+}
