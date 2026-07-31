@@ -3,12 +3,18 @@
 validate-changelog.py — Keep a Changelog 1.1.0 compliance + 3-way sync check
 
 Usage:
-    validate-changelog.py <plugin-path> [--marketplace <marketplace-json-path>] [--sync-chars N]
+    validate-changelog.py <plugin-path> [--marketplace <path>] [--sync-chars N]
 
-Plugin path conventions (auto-detected):
+Paths read (auto-detected):
     <plugin-path>/CHANGELOG.md
     <plugin-path>/.claude-plugin/plugin.json
-    <marketplace-json>/.claude-plugin/marketplace.json (optional, omit to skip 3-way check)
+
+--marketplace accepts EITHER form:
+    .../marketplace.json          the file itself
+    .../<marketplace-root>        a directory; .claude-plugin/marketplace.json is appended
+
+Omit --marketplace to check only CHANGELOG.md ↔ plugin.json. The report says
+which of the two checks actually ran — a 2-way pass is never reported as 3-way.
 
 Exit codes:
     0 — pass
@@ -207,11 +213,35 @@ def load_plugin_json(path: Path) -> tuple[Optional[str], Optional[str], list[str
     return data.get("version"), data.get("description"), []
 
 
+def resolve_marketplace_arg(raw: str) -> tuple[Optional[Path], Optional[str]]:
+    """Normalise --marketplace to a marketplace.json file. Returns (path, error).
+
+    Accepts the file itself or the marketplace root directory. The usage text
+    always advertised the directory form (`<root>/.claude-plugin/marketplace.json`)
+    while the implementation only handled the file form, so following the docs
+    hit `Path.read_text()` on a directory and raised IsADirectoryError — an
+    unhandled traceback where a one-line CLI error belonged.
+
+    `Path.exists()` is not enough to tell these apart: a directory exists too.
+    That is precisely how the crash slipped past the existing guard.
+    """
+    p = Path(raw).expanduser().resolve()
+    if p.is_dir():
+        candidate = p / ".claude-plugin" / "marketplace.json"
+        if candidate.is_file():
+            return candidate, None
+        return None, (f"--marketplace: {p} is a directory but has no "
+                      f".claude-plugin/marketplace.json")
+    if p.is_file():
+        return p, None
+    return None, f"--marketplace: no such file or directory: {p}"
+
+
 def load_marketplace_entry(
     path: Path, plugin_name: str
 ) -> tuple[Optional[str], Optional[str], list[str]]:
     """Returns (version, description, violations) for the named plugin in marketplace.json."""
-    if not path.exists():
+    if not path.is_file():
         return None, None, [f"marketplace.json not found at {path}"]
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -368,13 +398,22 @@ def render_report(result: ValidationResult) -> str:
     else:
         lines.append("✓ KAC compliant")
 
+    # Name the check that actually ran. Without --marketplace only two of the
+    # three sources are read, and reporting that as "3-way sync OK" is a false
+    # green for the single drift this tool exists to catch: a plugin whose
+    # marketplace entry still shows the previous version.
+    scope = "3-way" if result.marketplace_json_path else "2-way"
+
     if result.sync_drifts:
         lines.append("")
-        lines.append(f"⚠ 3-way sync drift ({len(result.sync_drifts)}):")
+        lines.append(f"⚠ {scope} sync drift ({len(result.sync_drifts)}):")
         for d in result.sync_drifts:
             lines.append(f"   • {d}")
     else:
-        lines.append("✓ 3-way sync OK")
+        lines.append(f"✓ {scope} sync OK")
+
+    if not result.marketplace_json_path:
+        lines.append("   ↳ marketplace.json NOT checked — pass --marketplace <path> for the 3-way check")
 
     lines.append("")
     lines.append(f"Exit code: {result.exit_code}  ({_exit_meaning(result.exit_code)})")
@@ -386,7 +425,9 @@ def _exit_meaning(code: int) -> str:
         0: "pass",
         1: "CHANGELOG.md missing",
         2: "KAC compliance violation",
-        3: "3-way sync drift",
+        # Not "3-way": exit 3 also fires on a CHANGELOG ↔ plugin.json drift
+        # found without --marketplace, where no third source was ever read.
+        3: "sync drift",
         4: "IO / CLI error",
     }.get(code, "unknown")
 
@@ -414,7 +455,12 @@ def main(argv: list[str]) -> int:
         print(f"ERROR: not a directory: {plugin_path}", file=sys.stderr)
         return 4
 
-    marketplace = Path(args.marketplace).resolve() if args.marketplace else None
+    marketplace = None
+    if args.marketplace:
+        marketplace, mp_error = resolve_marketplace_arg(args.marketplace)
+        if mp_error:
+            print(f"ERROR: {mp_error}", file=sys.stderr)
+            return 4
 
     result = run(plugin_path, marketplace, args.sync_chars)
 

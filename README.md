@@ -14,8 +14,8 @@ claude plugin install doc-guardian@che-plugin-devtools
 
 | Plugin | 版本 | 做什麼 |
 |---|---|---|
-| [`harness-devtools`](plugins/harness-devtools) | 1.0.0 | plugin / MCP server / Swift CLI 的完整發布管道（24 skills）|
-| [`doc-guardian`](plugins/doc-guardian) | 2.0.0 | 文件紀律守門：CHANGELOG / README / CLAUDE.md / wiki 不准落後於 code（4 skills + 3 hooks）|
+| [`harness-devtools`](plugins/harness-devtools) | 2.0.0 | plugin / MCP server / Swift CLI 的完整發布管道（24 skills）|
+| [`doc-guardian`](plugins/doc-guardian) | 2.0.1 | 文件紀律守門：CHANGELOG / README / CLAUDE.md / wiki 不准落後於 code（4 skills + 3 hooks）|
 
 兩者互補：**harness-devtools 管「怎麼把東西發布出去」，doc-guardian 管「發布時文件要對」。**
 
@@ -37,8 +37,9 @@ claude plugin install doc-guardian@che-plugin-devtools
 
 ```bash
 # 單元測試
-bash plugins/harness-devtools/scripts/test-resolve-marketplace.sh
-bash plugins/doc-guardian/scripts/test-doc-update-config.sh
+bash   plugins/harness-devtools/scripts/test-resolve-marketplace.sh   # 11
+bash   plugins/doc-guardian/scripts/test-doc-update-config.sh         # 20
+python3 plugins/doc-guardian/scripts/test-validate-changelog.py       # 11
 
 # 結構驗證
 claude plugin validate plugins/harness-devtools
@@ -46,8 +47,10 @@ claude plugin validate plugins/doc-guardian
 
 # CHANGELOG 三方同步（dogfooding：用 doc-guardian 驗自己）
 python3 plugins/doc-guardian/scripts/validate-changelog.py plugins/harness-devtools \
-  --marketplace .claude-plugin/marketplace.json
+  --marketplace .
 ```
+
+`--marketplace` 收 marketplace 根目錄或 `marketplace.json` 本身皆可。**省略它就只做兩方檢查**（CHANGELOG ↔ plugin.json），報告會標明 `2-way` 與 `marketplace.json NOT checked` —— 而 marketplace 版本落後正是最常漏掉的那一項。
 
 改任何 plugin 都要同步 `plugins/<name>/.claude-plugin/plugin.json` 與 `.claude-plugin/marketplace.json` 的版本，否則 `claude plugin update` 會判定 already at latest 而跳過。
 
