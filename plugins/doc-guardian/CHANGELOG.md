@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-07-31
+
+`validate-changelog.py` 的 `--marketplace` 參數修正，並補上這支腳本的第一份測試（此前 0 覆蓋率）。修的是 #3。
+
+### Fixed
+
+- **`--marketplace` 傳目錄時不再 traceback**。usage 文字一直寫的是 `<marketplace-json>/.claude-plugin/marketplace.json`（目錄形式，自動接後綴），實作卻只接受完整檔案路徑 —— 照文件寫法傳目錄會在 `Path.read_text()` 拋 `IsADirectoryError`，使用者看到的是 Python traceback 而非一行錯誤訊息。
+
+  根因是 `Path.exists()` 對目錄也回 `True`，既有的存在性檢查因此形同虛設。改用 `is_file()`，並讓兩種形式都合法：傳目錄自動接 `.claude-plugin/marketplace.json`，傳檔案直接用，都不可用才 exit 4 並印明確原因。
+
+- **不傳 `--marketplace` 時不再謊報「3-way sync OK」**。此前無論是否讀了 marketplace.json，通過訊息一律是 `✓ 3-way sync OK`；而 marketplace 版本落後**正是這支工具唯一要抓的東西**，把只做過兩方的檢查報成三方是實質的假陽性。
+
+  現在依實際檢查範圍顯示 `3-way` / `2-way`，2-way 時額外標明 `↳ marketplace.json NOT checked`。exit 3 的意義字串也由 `3-way sync drift` 改為 `sync drift` —— 沒有 `--marketplace` 時同樣會因 CHANGELOG ↔ plugin.json 落差而 exit 3，該路徑從未讀過第三個來源。
+
+- **usage 文字自相矛盾修正**。第 6 行寫 `<marketplace-json-path>`（檔案）、第 11 行寫 `<marketplace-json>/.claude-plugin/marketplace.json`（目錄），兩種讀法而實作只支援其一。改為明列兩種皆可。
+
+### Added
+
+- **`test-validate-changelog.py`** —— 11 個 test，這支腳本的第一份測試。黑箱測試（subprocess 呼叫真實 CLI），因為它的契約是 exit code 與 stderr 文字，CI 消費的正是這兩者；import 層測試抓不到未捕捉的 traceback 與 argparse 行為。
+
+  涵蓋三類：`--marketplace` 的四種路徑形式、報告措辭誠實性、以及四個 exit code 的回歸（此前無任何保護）。
+
 ## [2.0.0] - 2026-07-30
 
 合併 `doc-tools` 0.2.0 與 `doc-guardian` 1.0.2，遷入新 marketplace `che-plugin-devtools`。版本號承接 `doc-guardian` 1.0.2（沿用其名稱與身份），而非 `doc-tools` 的 0.2.0。

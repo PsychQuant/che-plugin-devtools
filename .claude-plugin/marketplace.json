@@ -16,8 +16,8 @@
     },
     {
       "name": "doc-guardian",
-      "version": "2.0.0",
-      "description": "v2.0.0: 文件紀律守門 — 確保 CHANGELOG / README / CLAUDE.md / wiki 不落後於 code。由 doc-tools 0.2.0 與 doc-guardian 1.0.2 合併而成並沿用後者名稱（本質是稽核與擋，不是文件處理）。三支 hook：doc-update-guard（Stop，commit 改 ≥3 個 code 檔卻沒動文件就擋）、claude-md-reminder（PostToolUse，架構變更未同步 CLAUDE.md 就提醒）、sync-wiki-check（Stop，changelog 更新但 wiki 未同步就擋）。四個 skills：changelog-validate（KAC 1.1.0 + 三方同步，CI exit code 0-4）、changelog-init、changelog-migrate、doc-guardian（手動觸發版，供收不到 hook 的 Codex 使用）。修掉兩個 live bug：(a) doc-tools 與 doc-guardian 各自註冊同一支 changelog Stop hook 且皆為 enabled 造成的 double-fire；(b) doc-update-config.sh 使用 bash 4 的 nameref，導致 code_extensions / doc_files 兩個設定在 macOS bash 3.2 下靜默失效。設定檔改名 doc-tools.json → doc-guardian.json，舊檔名與舊 cache 路徑保留 fallback。",
+      "version": "2.0.1",
+      "description": "v2.0.1: 文件紀律守門 — 確保 CHANGELOG / README / CLAUDE.md / wiki 不落後於 code。2.0.1 修 validate-changelog.py 的 --marketplace 參數：傳目錄時噴 traceback（根因是 Path.exists() 對目錄也為真，既有的存在性守衛形同虛設），現在目錄與檔案兩種形式皆可、不可用則 exit 4 附明確原因；以及未傳該參數時謊報「3-way sync OK」——實際只讀了兩個來源，而 marketplace 版本落後正是本工具唯一要抓的東西，該假陽性現改為顯示 2-way 並標明 marketplace 未檢查。另補上這支腳本的第一份測試（11 個，黑箱測 exit code 與報告措辭）。由 doc-tools 0.2.0 與 doc-guardian 1.0.2 合併而成並沿用後者名稱（本質是稽核與擋，不是文件處理）。三支 hook：doc-update-guard（Stop，commit 改 ≥3 個 code 檔卻沒動文件就擋）、claude-md-reminder（PostToolUse，架構變更未同步 CLAUDE.md 就提醒）、sync-wiki-check（Stop，changelog 更新但 wiki 未同步就擋）。四個 skills：changelog-validate（KAC 1.1.0 + 三方同步，CI exit code 0-4）、changelog-init、changelog-migrate、doc-guardian（手動觸發版，供收不到 hook 的 Codex 使用）。修掉兩個 live bug：(a) doc-tools 與 doc-guardian 各自註冊同一支 changelog Stop hook 且皆為 enabled 造成的 double-fire；(b) doc-update-config.sh 使用 bash 4 的 nameref，導致 code_extensions / doc_files 兩個設定在 macOS bash 3.2 下靜默失效。設定檔改名 doc-tools.json → doc-guardian.json，舊檔名與舊 cache 路徑保留 fallback。",
       "source": "./plugins/doc-guardian",
       "category": "productivity"
     }
