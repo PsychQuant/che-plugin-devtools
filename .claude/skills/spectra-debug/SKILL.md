@@ -1,6 +1,8 @@
 ---
 name: spectra-debug
-description: "Systematically debug a problem using a four-phase workflow"
+description: |
+  用四階段流程系統性除錯：重現 → 隔離 → 找根因 → 修復，內建「三次嘗試規則」避免亂槍打鳥式地反覆試。
+  Use when: 遇到 bug 但不知道從哪查起；已經試了幾次都沒中、需要換成有紀律的做法；「這個 bug 怎麼查」「debug 這個問題」。
 license: MIT
 compatibility: Requires spectra CLI.
 metadata:

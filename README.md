@@ -6,7 +6,7 @@ Claude Code plugin 開發工具鏈的獨立 marketplace。
 
 ```bash
 claude plugin marketplace add PsychQuant/che-plugin-devtools
-claude plugin install devtools@che-plugin-devtools
+claude plugin install harness-devtools@che-plugin-devtools
 claude plugin install doc-guardian@che-plugin-devtools
 ```
 
@@ -14,10 +14,10 @@ claude plugin install doc-guardian@che-plugin-devtools
 
 | Plugin | 版本 | 做什麼 |
 |---|---|---|
-| [`devtools`](plugins/devtools) | 1.0.0 | plugin / MCP server / Swift CLI 的完整發布管道（24 skills）|
+| [`harness-devtools`](plugins/harness-devtools) | 1.0.0 | plugin / MCP server / Swift CLI 的完整發布管道（24 skills）|
 | [`doc-guardian`](plugins/doc-guardian) | 2.0.0 | 文件紀律守門：CHANGELOG / README / CLAUDE.md / wiki 不准落後於 code（4 skills + 3 hooks）|
 
-兩者互補：**devtools 管「怎麼把東西發布出去」，doc-guardian 管「發布時文件要對」。**
+兩者互補：**harness-devtools 管「怎麼把東西發布出去」，doc-guardian 管「發布時文件要對」。**
 
 ## 為什麼是獨立 marketplace
 
@@ -25,7 +25,7 @@ claude plugin install doc-guardian@che-plugin-devtools
 
 另外有個自我指涉問題：`plugin-tools` 管理的正是它自己所在的 marketplace——改它要用它來發布它自己。拆出來就切斷了這個迴圈。
 
-## 為什麼 devtools 是一個 plugin 而不是三個
+## 為什麼 harness-devtools 是一個 plugin 而不是三個
 
 前身 `plugin-tools` / `mcp-tools` / `cli-tools` 形成循環依賴（`plugin-tools` ↔ `mcp-tools` 雙向，`mcp-deploy` 被跨 plugin 引用 19 次），而 Claude Code **沒有 plugin 依賴宣告機制**。只裝其中一個，`plugin-update` 的 dependency-aware orchestration 會在呼叫缺席的 skill 時靜默斷裂。
 
@@ -37,15 +37,15 @@ claude plugin install doc-guardian@che-plugin-devtools
 
 ```bash
 # 單元測試
-bash plugins/devtools/scripts/test-resolve-marketplace.sh
+bash plugins/harness-devtools/scripts/test-resolve-marketplace.sh
 bash plugins/doc-guardian/scripts/test-doc-update-config.sh
 
 # 結構驗證
-claude plugin validate plugins/devtools
+claude plugin validate plugins/harness-devtools
 claude plugin validate plugins/doc-guardian
 
 # CHANGELOG 三方同步（dogfooding：用 doc-guardian 驗自己）
-python3 plugins/doc-guardian/scripts/validate-changelog.py plugins/devtools \
+python3 plugins/doc-guardian/scripts/validate-changelog.py plugins/harness-devtools \
   --marketplace .claude-plugin/marketplace.json
 ```
 

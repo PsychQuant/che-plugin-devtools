@@ -1,6 +1,9 @@
 ---
 name: spectra-discuss
-description: "Have a focused discussion about a topic and reach a conclusion"
+description: |
+  在寫 proposal 之前先把方向討論清楚：列出隱含假設讓你修正、收斂成單一結論。SDD 工作流的可選起點（discuss? → propose → apply ⇄ ingest → archive）。
+  Use when: 需求還模糊、有多個方向要選、想先對齊再動手；「先討論一下」「這個要怎麼做比較好」「discuss before coding」。
+  何時可略過：方向已明確、沒有命名 / 範圍 / 取捨的未決項時，直接跑 spectra-propose。
 disallowedTools: [Edit, Write]
 license: MIT
 compatibility: Requires spectra CLI.

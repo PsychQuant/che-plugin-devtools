@@ -1,6 +1,9 @@
 ---
 name: spectra-archive
-description: "Archive a completed change"
+description: |
+  把已完成的 change 從 openspec/changes/ 歸檔，並將其 spec 變更併入 openspec/specs/。SDD 工作流的終點。
+  Use when: 實作完成且驗證通過要收尾；「歸檔」「這個做完了」「archive this change」。
+  與鄰近 skill 的分工：歸檔前先用 spectra-verify 確認實作與 artifact 一致，避免把未完成的東西封存。
 license: MIT
 compatibility: Requires spectra CLI.
 metadata:

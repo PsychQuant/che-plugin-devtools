@@ -1,6 +1,9 @@
 ---
 name: spectra-ingest
-description: "Update an existing Spectra change from external context"
+description: |
+  用外部 context（新需求、討論結論、review 意見）更新一個進行中的 change 的 artifact，讓 tasks 與現實重新對齊。
+  Use when: 做到一半需求改了；plan mode 談出新方向要併回 change；「需求變了」「把這個併進去」「update the change」。
+  與鄰近 skill 的分工：這是 apply ⇄ ingest 迴圈的另一半 —— ingest 完成後回到 spectra-apply 繼續實作。
 license: MIT
 compatibility: Requires spectra CLI.
 metadata:

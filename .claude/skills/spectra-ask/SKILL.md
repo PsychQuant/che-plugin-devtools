@@ -1,6 +1,8 @@
 ---
 name: spectra-ask
-description: "Query openspec/documents and answer questions"
+description: |
+  查詢 openspec/ 下的 spec 與 change 文件並回答問題：某個功能的規格是什麼、某個決定為什麼這樣做、目前有哪些既有 spec。
+  Use when: 想知道某個行為的正式規格；問「當初為什麼這樣設計」；「查一下 spec」「這個怎麼運作」「ask about specs」。
 context: fork
 agent: Explore
 disallowedTools: [Edit, Write]

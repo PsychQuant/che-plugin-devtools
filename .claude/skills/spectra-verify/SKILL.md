@@ -1,6 +1,9 @@
 ---
 name: spectra-verify
-description: "Verify implementation matches artifacts"
+description: |
+  驗證實作是否達成 change artifact 所描述的內容 —— 拿 spec 與 tasks 對照 code 現況逐項檢查。
+  Use when: 實作完成要確認沒有偏離；歸檔前的驗收；「驗證一下」「verify implementation」。
+  三個檢查類 skill 的分工：文件彼此是否一致用 spectra-analyze；code 是否已經跑在文件前面用 spectra-drift；本 skill 看的是「實作有沒有達成文件要求」。
 context: fork
 agent: Explore
 disallowedTools: [Edit, Write]
