@@ -1,6 +1,9 @@
 ---
 name: cli-new-app
-description: 建立新的 Swift CLI 專案骨架（Package.swift + ArgumentParser + Version.swift + .gitignore）
+description: |
+  建立 Swift CLI 專案骨架：Package.swift（含 ArgumentParser 依賴）、main entry point、Version.swift、.gitignore、README.md，並可選擇同時初始化 git 與建立 GitHub repo。
+  Use when: 要從零寫一個命令列工具；「建新的 CLI 專案」「Swift CLI 骨架」「new CLI app」；想要一個能被 cli-deploy 直接發布的專案結構。
+  防止的失敗：手刻 Package.swift 漏掉 ArgumentParser 依賴；沒建 Version.swift，導致日後 cli-deploy 找不到版本號可 bump、--version 也做不出來。
 argument-hint: <project-name>
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, AskUserQuestion
 ---

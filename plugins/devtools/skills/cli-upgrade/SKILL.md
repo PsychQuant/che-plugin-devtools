@@ -1,6 +1,9 @@
 ---
 name: cli-upgrade
-description: 檢查已安裝的 CLI 工具是否有新版本，如有則從 GitHub Release 升級
+description: |
+  掃描 ~/bin/ 的 CLI binary、比對各自 GitHub Release 的最新版，有新版就備份舊版（.bak）後下載升級並驗證。可指定單一工具或全部掃描。
+  Use when: 想知道手上的 CLI 有沒有新版；某工具行為怪怪的、想先排除「其實是舊版」；「升級 gfh」「CLI 有更新嗎」「check for updates」。
+  防止的失敗：一直用舊版而不自知（CLI 不像 plugin 會主動提示更新）；手動覆蓋 binary 後發現新版有問題，卻沒有舊版可回退。
 argument-hint: [binary-name]
 allowed-tools: Bash, Read, Grep, Glob, AskUserQuestion
 ---

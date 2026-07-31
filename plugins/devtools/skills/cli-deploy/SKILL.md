@@ -1,6 +1,9 @@
 ---
 name: cli-deploy
-description: 部署 Swift CLI 工具（編譯 universal binary、建立 GitHub Release、安裝到 ~/bin）。在 Swift CLI 專案目錄中使用。
+description: |
+  發布 Swift CLI 工具：先更新版本號與 CHANGELOG、再編譯 universal binary（arm64 + x86_64）、建立 GitHub Release 上傳 asset、安裝到 ~/bin。須在 Swift CLI 專案目錄中執行。
+  Use when: CLI 改完要出新版；「發布 CLI」「deploy 這個工具」「出 v1.2.0」「release」。
+  防止的失敗：先 build 再改版本號，導致 binary 內嵌舊版號（--version 說謊）；Release 只附單一架構 binary，Intel 或 Apple Silicon 其中一邊裝不起來；忘了同步 CHANGELOG，marketplace 顯示過時資訊。
 argument-hint: [version]
 allowed-tools: Read, Write, Edit, Bash(swift:*), Bash(lipo:*), Bash(file:*), Bash(shasum:*), Bash(git:*), Bash(gh:*), Bash(rm:*), Bash(cp:*), Bash(mkdir:*), Bash(ls:*), Bash(chmod:*), Bash(codesign:*), Bash(xattr:*), Grep, Glob, AskUserQuestion
 disable-model-invocation: true

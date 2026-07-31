@@ -1,6 +1,9 @@
 ---
 name: cli-install
-description: 從 GitHub Release 安裝 CLI 工具到 ~/bin/（下載 binary、設定權限、驗證）
+description: |
+  從 GitHub Release 下載 CLI binary 安裝到 ~/bin/，含 chmod +x、macOS quarantine flag 清除（xattr -cr）、安裝後執行版本驗證。可指定版本或裝 latest。
+  Use when: 要裝某個 CLI 工具但 ~/bin 沒有它；拿到 owner/repo 要你安裝；重灌機器後補裝工具鏈；「安裝 gfh」「install CLI」。
+  防止的失敗：手動 curl 忘了 chmod +x（指令存在卻不能執行）；macOS Gatekeeper 因 quarantine flag 擋掉剛下載的 binary（報 cannot be opened）；裝完沒驗證版本，以為成功其實抓到錯的 release asset。
 argument-hint: <owner/repo> [version]
 allowed-tools: Bash, Read, AskUserQuestion
 ---
