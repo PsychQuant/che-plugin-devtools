@@ -1,6 +1,9 @@
 ---
 name: spectra-commit
-description: "Commit files related to a specific Spectra change"
+description: |
+  只 commit 與指定 change 相關的檔案，把工作目錄裡其他未完成的改動留在原地。
+  Use when: 一個 change 做完要提交，但工作目錄還混著別的進行中工作；「commit 這個 change」「只提交相關檔案」。
+  防止的失敗：git add -A 把另一個 change 的半成品一起提交，事後要拆開很痛，且該 change 的 audit trail 從此不乾淨。
 license: MIT
 compatibility: Requires spectra CLI.
 metadata:

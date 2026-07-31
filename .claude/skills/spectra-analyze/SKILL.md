@@ -1,6 +1,9 @@
 ---
 name: spectra-analyze
-description: "Analyze artifact consistency for a change"
+description: |
+  分析單一 change 的各份 artifact 之間是否一致、有無缺口（proposal / design / tasks / spec 互相對照）。
+  Use when: 寫完 artifact 想確認沒有自相矛盾或遺漏；「檢查這個 change 有沒有問題」「analyze consistency」。
+  三個檢查類 skill 的分工：本 skill 只看文件彼此；文件與 code 的落差用 spectra-drift；實作是否達標用 spectra-verify。
 context: fork
 agent: Explore
 disallowedTools: [Edit, Write]

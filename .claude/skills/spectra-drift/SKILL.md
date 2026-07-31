@@ -1,6 +1,9 @@
 ---
 name: spectra-drift
-description: "Detect drift between a Spectra change and the current codebase state"
+description: |
+  偵測一個 change 的 artifact 與當前 codebase 之間的落差 —— 文件描述的狀態與 code 現況已經不同步。
+  Use when: change 擱置一段時間後回來、懷疑 code 已經先跑掉了；「這個 change 還有效嗎」「detect drift」。
+  三個檢查類 skill 的分工：artifact 內部一致性用 spectra-analyze；實作達標與否用 spectra-verify；本 skill 專看「世界在這段期間變了沒」。
 context: fork
 agent: Explore
 disallowedTools: [Edit, Write]

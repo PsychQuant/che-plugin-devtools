@@ -1,6 +1,9 @@
 ---
 name: spectra-propose
-description: "Create a change proposal with all required artifacts"
+description: |
+  建立變更提案與所有必要 artifact（proposal.md / design.md / tasks.md / spec.md）到 openspec/changes/<name>/。SDD 工作流的正式起點。
+  Use when: 要規劃、提案、或設計一個變更；討論收斂後要落成文件；「寫個提案」「開一個 change」「propose this change」。
+  與鄰近 skill 的分工：方向未定先跑 spectra-discuss；artifact 建好後用 spectra-apply 實作。本 skill 只產文件、不寫 code。
 license: MIT
 compatibility: Requires spectra CLI.
 metadata:

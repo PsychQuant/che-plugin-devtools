@@ -1,6 +1,9 @@
 ---
 name: spectra-apply
-description: "Implement or resume tasks from a Spectra change"
+description: |
+  依 openspec/changes/<name>/tasks.md 逐項實作或續作，完成後標記進度。SDD 工作流的執行階段。
+  Use when: tasks 已備妥要開始寫 code；中斷後要接續未完成的項目；「開始實作」「繼續做」「apply this change」。
+  與鄰近 skill 的分工：做到一半需求變了，用 spectra-ingest 更新 artifact 再回來（apply ⇄ ingest 迴圈）；實作完用 spectra-verify 對照驗證。
 license: MIT
 compatibility: Requires spectra CLI.
 metadata:
