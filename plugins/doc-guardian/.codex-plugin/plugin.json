@@ -1,6 +1,6 @@
 {
   "name": "doc-guardian",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Manual Codex documentation checks backed by the existing Claude Code hook scripts.",
   "author": {
     "name": "Che Cheng"

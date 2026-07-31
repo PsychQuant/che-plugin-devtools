@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-07-31
+
+修掉兩代改名殘留的失效指令，以及設計文件中已被 2.0.0 推翻卻沒更新的內容。修的是 #1。
+
+### Fixed
+
+- **21 處 `/changelog-tools:` 前綴**散落在三個 skill 的 SKILL.md 與兩支 script 的提示字串裡 —— 那是**兩次改名前**的 plugin 名（`changelog-tools` → `doc-tools` → `doc-guardian`）。使用者照文件打 `/changelog-tools:changelog-validate` 會直接找不到 skill，而 skill 引用不像 `import`，指向不存在的目標時完全靜默。
+
+  為什麼跨兩代都沒被發現：`doc-tools` → `doc-guardian` 那次掃的是「當前名字」`doc-tools`，寫著更早名字的引用**搜不到、也就沒人知道它們存在**。harness-devtools 2.0.1 新增的 `check-skill-references.sh` 就是為此而寫。
+
+- **`references/doc-update-design.md` 有三處已被 2.0.0 推翻卻沒更新**：
+  - 三層 config 路徑仍寫 `doc-tools.json` / `~/.cache/doc-tools/`，但那自 2.0.0 起只是 fallback，主路徑是 `doc-guardian` 版
+  - hook 對照表把 `claude-md-reminder.sh` 標成「still in `~/.claude/hooks/`」，並在下方寫「Phase 2 may absorb it」—— **2.0.0 已經吸收了**，連同 `sync-wiki-check.sh`
+  - 該表缺 `sync-wiki-check.sh` 一列
+
+- **`README.md` 的 Phase 2 表格**兩個未實作 skill 加上行內 `(Phase 2 — not implemented)` 標記。原本只靠段落標題「Coming in Phase 2」表達，那行被複製到別處就失去脈絡，讀者也不見得會回頭看表頭。
+
 ## [2.0.1] - 2026-07-31
 
 `validate-changelog.py` 的 `--marketplace` 參數修正，並補上這支腳本的第一份測試（此前 0 覆蓋率）。修的是 #3。
