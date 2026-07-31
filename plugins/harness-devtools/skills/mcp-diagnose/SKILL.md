@@ -39,7 +39,8 @@ TaskCreate(name="output_report", description="Step 4: 輸出診斷報告到 logs
 在專案根目錄建立 `logs/mcptools/debug/` 結構（diagnose 報告也存在 debug 目錄）：
 
 ```bash
-cd ~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/$1
+source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-mcp-project.sh"
+cd "$(require_mcp_project "$1")" || exit 1
 mkdir -p logs/mcptools/debug
 ```
 

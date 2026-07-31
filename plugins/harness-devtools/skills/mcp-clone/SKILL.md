@@ -60,15 +60,17 @@ TaskCreate(name="auto_analyze", description="Phase 3: 快速掃描 ref + 比對�
 **情況 A**：`$2` 有指定 → 直接使用
 
 ```bash
-MCP_PROJECT_DIR=~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/$2
+source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-mcp-project.sh"
+MCP_PROJECT_DIR=$(require_mcp_project "$2") || exit 1
 ```
 
 **情況 B**：cwd 是 MCP 專案（有 `Package.swift` 或 `pyproject.toml` 或 `mcpb/`）→ 使用 cwd
 
-**情況 C**：都沒有 → 列出 `~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/` 下的 MCP 專案，讓使用者選
+**情況 C**：都沒有 → 列出所有已知 umbrella 底下的 MCP 專案，讓使用者選
 
 ```bash
-ls -d ~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/che-*/
+source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-mcp-project.sh"
+list_mcp_projects
 ```
 
 使用 `AskUserQuestion` 讓使用者選擇目標專案。
@@ -281,7 +283,9 @@ Args: features
 
 ```bash
 echo "=== MCP 專案 References ==="
-for project in ~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/che-*/; do
+source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-mcp-project.sh"
+for name in $(list_mcp_projects); do
+  project=$(resolve_mcp_project "$name")
   if [ -d "$project/references" ]; then
     echo ""
     echo "$(basename $project):"

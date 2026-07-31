@@ -59,7 +59,8 @@ TaskCreate(name="report", description="Phase 3: 完成報告")
 
 ### Step 3: 確認專案位置
 
-預設位置：`/Users/che/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/{project-name}`
+預設位置：主 umbrella `~/Developer/che-mcps/{project-name}`。
+既有專案的解析一律經 `scripts/resolve-mcp-project.sh`（它同時涵蓋 `~/Developer/che-msg/` 與 `~/Developer/` 下的獨立專案），不要寫死路徑。
 
 ---
 

@@ -48,7 +48,9 @@ claude mcp list 2>&1 | grep -A1 "$1"
 ### Step 2: 識別框架（簡化）
 
 ```bash
-grep -r "^import" ~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/$1/Sources/ 2>/dev/null | head -10
+source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-mcp-project.sh"
+PROJ=$(require_mcp_project "$1") || exit 1
+grep -r "^import" "$PROJ/Sources/" 2>/dev/null | head -10
 ```
 
 ### Step 3: 建立測試日誌目錄
@@ -56,7 +58,8 @@ grep -r "^import" ~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/$1/S
 在專案根目錄建立 `logs/mcptools/test/` 結構：
 
 ```bash
-cd ~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/$1
+source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-mcp-project.sh"
+cd "$(require_mcp_project "$1")" || exit 1
 mkdir -p logs/mcptools/test
 ```
 
