@@ -231,7 +231,7 @@ TOPIC_COUNT=$(gh repo view --json repositoryTopics -q '.repositoryTopics | lengt
 
 當 plugin 是 MCP wrapper（`bin/*-wrapper.sh` 下載 binary）時，
 binary 對應的獨立 repo（如 `PsychQuant/che-word-mcp`）才是使用者主要看到的 About。
-這類 repo 的 metadata 屬於 `mcp-tools/rules/tool-readme-sync.md` 範疇——在 `mcp-deploy` Step 4.7 會處理。
+這類 repo 的 metadata 屬於 `rules/tool-readme-sync-mcp.md` 範疇——在 `mcp-deploy` Step 4.7 會處理。
 這裡只需確認 plugin wrapper 版本和 binary repo 對齊。
 
 #### 2.6.3: 行為決策

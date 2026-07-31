@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-07-31
+
+修掉改名後殘留的失效引用，並補上一支讓這類殘留可機械偵測的檢查腳本。修的是 #1。
+
+### Added
+
+- **`scripts/check-skill-references.sh`** —— 掃全 repo 找出「指向不存在 skill 的引用」與「已退役的 plugin 前綴」。exit 0 全過 / 1 有 findings / 2 路徑錯，附 `--format tsv` 供 CI 消費。15 個測試（`test-check-skill-references.sh`）。
+
+  **為什麼需要它**：改名的成本不在改名本身，在引用的長尾。本 repo 踩過兩代 —— `changelog-tools → doc-tools → doc-guardian`。第二次改名時掃的是「當前名字」，所以寫著更早的 `changelog-tools` 的引用**搜不到、也就沒人知道它們存在**，一路存活到兩代之後。skill 引用不像 `import`，指向不存在的目標時是完全靜默的。
+
+  刻意的前瞻／歷史引用不需 allowlist 檔：同一行寫明 `Phase 2` / `尚未實作` / `刻意保留` 等字樣即跳過，`CHANGELOG.md` 與 `test-*` 整份跳過（前者的舊名是當時的事實，後者的舊名是 fixture 資料）。
+
+### Fixed
+
+- **`rules/tool-readme-sync-plugin.md` 與 `skills/plugin-deploy/SKILL.md` 指向 `mcp-tools/rules/tool-readme-sync.md`** —— 該路徑在合併後已不存在。改為同目錄的 `tool-readme-sync-mcp.md`。
+
+- **`rules/tool-readme-sync-plugin.md` 的 marketplace 審計範例硬編碼絕對路徑**（`/Users/che/Developer/psychquant-claude-plugins/`）。改為 `resolve-marketplace.sh` —— 那支腳本正是 v1.0.0 為了消滅這類硬編碼而寫的，這處是漏網的第 6 處。同段落把「plugin 都住在 `psychquant-claude-plugins`」的單一 marketplace 假設一併泛化。
+
+- **`hooks/post-push-deploy-reminder.sh` 印出 `/mcp-tools:mcp-deploy`** —— 那是給使用者照著打的提示，前綴已失效。
+
+**刻意未改的兩處**：`README.md` 中解釋「合併前為何會靜默斷裂」的那句仍寫 `/mcp-tools:mcp-deploy` —— 它描述的正是合併前的情境，改成新前綴會讓句子自相矛盾。同理 `CLAUDE.md` 裡「不要用舊的 `/plugin-tools:` 前綴」的反例。兩處都已標註，檢查腳本據此跳過。
+
 ## [2.0.0] - 2026-07-31
 
 ### Changed

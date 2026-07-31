@@ -82,7 +82,7 @@ python3 "$CLAUDE_PLUGIN_ROOT/scripts/migrate-marketplace.py" "$MARKETPLACE" [其
 提示 user：
 
 1. **開 migration report** — 看哪些 plugin 已 init / 哪些 segment 數異常少（≤1 表示 description 沒歷史）
-2. **跑 changelog-validate** — `for p in plugins/*/; do /changelog-tools:changelog-validate $p; done`（或 batch 模式 — 留給 Phase 2）
+2. **跑 changelog-validate** — `for p in plugins/*/; do /doc-guardian:changelog-validate $p; done`（或 batch 模式 — 留給 Phase 2）
 3. **手動 review categorization** — script 是 best-effort，section 分類常需要調整
 4. **填補 `(date unknown — please fill in)`** — 找不到 git pickaxe match 的版本要手填
 
@@ -90,19 +90,19 @@ python3 "$CLAUDE_PLUGIN_ROOT/scripts/migrate-marketplace.py" "$MARKETPLACE" [其
 
 ```bash
 # 標準用法：dry-run preview, confirm, write
-/changelog-tools:changelog-migrate /Users/che/Developer/psychquant-claude-plugins
+/doc-guardian:changelog-migrate /Users/che/Developer/psychquant-claude-plugins
 
 # 只 migrate IDD-related plugins
-/changelog-tools:changelog-migrate . --only issue-driven-dev,plugin-tools,mcp-tools
+/doc-guardian:changelog-migrate . --only issue-driven-dev,plugin-tools,mcp-tools
 
 # 排除 binary-based plugin（它們的 description 通常很複雜）
-/changelog-tools:changelog-migrate . --exclude che-word-mcp,che-pdf-mcp,che-pptx-mcp
+/doc-guardian:changelog-migrate . --exclude che-word-mcp,che-pdf-mcp,che-pptx-mcp
 
 # Dry-run only — 不寫檔，看 preview
-/changelog-tools:changelog-migrate . --dry-run
+/doc-guardian:changelog-migrate . --dry-run
 
 # 強制覆寫所有 plugin 的 CHANGELOG.md（包括 issue-driven-dev）
-/changelog-tools:changelog-migrate . --force
+/doc-guardian:changelog-migrate . --force
 ```
 
 ## Migration report 結構

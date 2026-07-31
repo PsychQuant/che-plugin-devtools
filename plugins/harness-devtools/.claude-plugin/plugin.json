@@ -1,7 +1,7 @@
 {
   "name": "harness-devtools",
-  "description": "v2.0.0: Claude Code harness 層的開發工具鏈 —— plugin / MCP server / Swift CLI 的完整發布管道，24 個 skill。v2.0.0 從 devtools 更名為 harness-devtools：舊名只說「開發工具」卻不說管什麼，與環境中 chrome-devtools-mcp 等名稱相近且易混淆；新名指明它管的是 harness 這一層（plugin、MCP server、CLI、skill），harness 亦為 Claude Code 官方用語。呼叫方式由 /devtools:* 改為 /harness-devtools:*，skill 名不變。同版另含 16 個 skill 的 description 重寫（依 auto / manual-only 兩種 invocation 模式採不同寫法）。合併自 plugin-tools 1.18.0、mcp-tools 1.16.0、cli-tools 1.1.2；三者循環依賴且 Claude Code 無 plugin 依賴宣告機制，分開安裝會讓 dependency-aware orchestration 靜默斷裂，故為單一不可分割單元。",
-  "version": "2.0.0",
+  "description": "v2.0.1: Claude Code harness 層的開發工具鏈 —— plugin / MCP server / Swift CLI 的完整發布管道，24 個 skill。2.0.1 修掉改名後殘留的失效引用（兩處指向已不存在的 mcp-tools/rules/、一處 marketplace 審計範例硬編碼絕對路徑、一支 hook 印出失效的 /mcp-tools: 前綴給使用者照打），並新增 check-skill-references.sh —— 掃全 repo 找出指向不存在 skill 的引用與已退役的 plugin 前綴，讓這類殘留可機械偵測。改名的成本不在改名本身而在引用的長尾：本 repo 踩過兩代（changelog-tools → doc-tools → doc-guardian），第二次改名時掃的是當前名字，寫著更早名字的引用搜不到、也就沒人知道它們存在。v2.0.0 從 devtools 更名為 harness-devtools：舊名只說「開發工具」卻不說管什麼，與環境中 chrome-devtools-mcp 等名稱相近且易混淆；新名指明它管的是 harness 這一層（plugin、MCP server、CLI、skill），harness 亦為 Claude Code 官方用語。呼叫方式由 /devtools:* 改為 /harness-devtools:*，skill 名不變。同版另含 16 個 skill 的 description 重寫（依 auto / manual-only 兩種 invocation 模式採不同寫法）。合併自 plugin-tools 1.18.0、mcp-tools 1.16.0、cli-tools 1.1.2；三者循環依賴且 Claude Code 無 plugin 依賴宣告機制，分開安裝會讓 dependency-aware orchestration 靜默斷裂，故為單一不可分割單元。",
+  "version": "2.0.1",
   "author": {
     "name": "Che Cheng"
   },
