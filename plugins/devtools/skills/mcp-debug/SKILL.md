@@ -1,6 +1,9 @@
 ---
 name: mcp-debug
-description: MCP Server 功能除錯（框架分析、權限問題、錯誤診斷）
+description: |
+  MCP Server 功能層除錯：已連線但 tool 行為錯誤時，做框架識別、權限問題排查、錯誤訊息分析，產出除錯日誌。可把錯誤訊息當第二個參數傳入。
+  Use when: 某個 mcp__* tool 叫得出來但回錯誤或結果不對；被 permission denied 擋掉；「這個 MCP tool 壞了」「為什麼回權限錯誤」「debug MCP」。
+  與鄰近 skill 的分工：完全連不上先跑 mcp-diagnose；本 skill 針對單一 tool 的行為問題；全面回歸驗證用 mcp-test。
 argument-hint: <mcp-server-name> [error-message]
 allowed-tools: Bash(sdef:*), Bash(osascript:*), Bash(claude mcp:*), Bash(pkill:*), Bash(swift:*), Bash(tccutil:*), Bash(open:*), Bash(lipo:*), Bash(file:*), Bash(shasum:*), Bash(cp:*), Bash(chmod:*), Bash(rm:*), Bash(ls:*), Bash(grep:*), Bash(codesign:*), Read, Write, Grep, Glob
 ---

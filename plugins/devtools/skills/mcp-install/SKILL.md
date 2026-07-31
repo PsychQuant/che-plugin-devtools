@@ -1,6 +1,8 @@
 ---
 name: mcp-install
-description: 從 GitHub Release 安裝 MCP Server 到 ~/bin
+description: |
+  從 GitHub Release 下載 MCP Server binary 安裝到 ~/bin：偵測專案、選版本（latest 或指定）、下載、設權限、產出完成報告。
+  與鄰近 skill 的分工：mcp-deploy 是把自己的 server 編譯後發到 Release；本 skill 是反向，從 Release 裝到本機。裝完發現行為不如預期、懷疑三處 binary 不一致時用 mcp-sync。
 argument-hint: [version]
 allowed-tools: Bash(gh:*), Bash(curl:*), Bash(chmod:*), Bash(ls:*), Bash(mkdir:*), Bash(rm:*), Read, Glob, AskUserQuestion
 disable-model-invocation: true

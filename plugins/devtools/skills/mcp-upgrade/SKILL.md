@@ -1,6 +1,8 @@
 ---
 name: mcp-upgrade
-description: 分析並提議 MCP Server 專案升級（依賴更新、結構優化、新功能建議）
+description: |
+  分析既有 MCP Server 專案並提出升級建議，分三個 phase：依賴版本、專案結構、可加的新功能。可用 focus-area 參數聚焦單一面向。
+  與鄰近 skill 的分工：本 skill 只分析與提議、不改動 code；想看別人怎麼實作再決定要不要抄，用 mcp-clone（已知 repo）或 mcp-clone-references（要先搜尋）。
 argument-hint: [focus-area]
 allowed-tools: Read, Write, Edit, Bash(swift:*), Bash(git:*), Bash(npm:*), Bash(pip:*), Bash(cat:*), Bash(grep:*), Bash(file:*), Bash(lipo:*), Bash(shasum:*), Bash(ls:*), Bash(rm:*), Grep, Glob, WebFetch, AskUserQuestion
 disable-model-invocation: true

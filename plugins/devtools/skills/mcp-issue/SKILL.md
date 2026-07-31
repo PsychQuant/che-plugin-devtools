@@ -1,6 +1,9 @@
 ---
 name: mcp-issue
-description: 快速對 MCP Server 的 GitHub repo 開 Issue（bug、feature、改善建議），之後再處理
+description: |
+  對 MCP Server 的 GitHub repo 快速開 issue（bug / feature / 改善建議），自動從 git remote、Claude Code MCP 設定、或 plugin 的 mcp.json 三種來源推斷 repo 位置。
+  Use when: 用 MCP 時發現問題但當下不想處理，想先記下來；「幫這個 MCP 開個 issue」「記一下這個 bug」「file issue for MCP」。
+  防止的失敗：想到問題卻沒地方記，過幾天就忘了；手動翻找 repo 位置（MCP 的 repo 通常不在當前工作目錄）。
 argument-hint: <mcp-server-name> <問題描述>
 allowed-tools: Bash(gh:*, ls:*, cat:*), Read, Grep, Glob
 ---

@@ -1,6 +1,8 @@
 ---
 name: mcp-publish
-description: 發布或更新 MCP Server 到官方 MCP Registry 及第三方平台（Glama、awesome-mcp-servers）
+description: |
+  把 MCP Server 上架或更新到官方 MCP Registry，以及 Glama、awesome-mcp-servers 等第三方平台：建立或更新 server.json、通過認證、執行發布。
+  與鄰近 skill 的分工：mcp-deploy 是發到自己的 GitHub Release（決定別人裝不裝得到）；本 skill 是對外曝光那一層（決定別人找不找得到）。兩者都要做，順序是先 deploy 後 publish。
 argument-hint: [project-name]
 allowed-tools: Read, Write, Edit, Bash(brew:*), Bash(curl:*), Bash(mcp-publisher:*), Bash(shasum:*), Bash(git:*), Bash(gh:*), Bash(ls:*), Bash(cat:*), Bash(which:*), Bash(open:*), Bash(python3:*), Bash(cd:*), Bash(osascript:*), Bash(sleep:*), Bash(agent-browser:*), Grep, Glob, AskUserQuestion
 disable-model-invocation: true

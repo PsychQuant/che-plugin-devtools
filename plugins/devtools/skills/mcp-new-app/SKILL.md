@@ -1,6 +1,8 @@
 ---
 name: mcp-new-app
-description: 互動式建立新 MCP Server 專案（Swift/Python/TypeScript）
+description: |
+  互動式建立新 MCP Server 專案骨架，支援 Swift / Python / TypeScript：收集專案資訊、建立目錄結構、設定 git 與 MCPB 打包配置。
+  與鄰近 skill 的分工：建好之後用 mcp-deploy 編譯發布到 GitHub Release、用 mcp-publish 上架到官方 MCP Registry。需要 Developer ID 簽章的走 mcp-sign-pipeline。
 argument-hint: [project-name]
 allowed-tools: Write, Read, Bash(mkdir:*), Bash(git:*), Bash(chmod:*), Bash(swift:*), Bash(npm:*), Bash(python:*), Glob, AskUserQuestion
 disable-model-invocation: true

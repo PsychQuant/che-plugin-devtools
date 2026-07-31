@@ -1,6 +1,8 @@
 ---
 name: mcp-clone
-description: Clone 參考 MCP Server 到 references/ 並自動分析可升級功能
+description: |
+  Clone 一個指定的參考 MCP Server（給定 GitHub URL）到目標專案的 references/，建立 references/README.md，並自動分析該 repo 有哪些功能值得移植。
+  與鄰近 skill 的分工：已經知道要看哪個 repo 用本 skill；還不知道有哪些競品、想先搜尋再挑，用 mcp-clone-references。
 argument-hint: <github-url> [target-mcp-project]
 allowed-tools: Bash(git:*), Bash(ls:*), Bash(mkdir:*), Bash(rm:*), Bash(gh:*), Read, Write, Edit, Grep, Glob, AskUserQuestion, Task, Skill, WebFetch
 disable-model-invocation: true

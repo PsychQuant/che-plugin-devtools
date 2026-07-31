@@ -1,6 +1,8 @@
 ---
 name: mcp-deploy
-description: 部署 MCP Server 專案（編譯、打包 mcpb、建立 GitHub Release）
+description: |
+  部署 MCP Server 專案：編譯 binary、更新版本號、打包 .mcpb bundle、建立 GitHub Release 並上傳 asset。須在 MCP 專案目錄中執行。
+  與鄰近 skill 的分工：本 skill 發到自己的 GitHub Release（讓人裝得到）；要讓人「找得到」需另外用 mcp-publish 上架官方 Registry；發完若懷疑改動沒生效，用 mcp-sync 檢查三處 binary 一致性。
 argument-hint: [version]
 allowed-tools: Read, Write, Edit, Bash(swift:*), Bash(lipo:*), Bash(file:*), Bash(shasum:*), Bash(git:*), Bash(gh:*), Bash(zip:*), Bash(rm:*), Bash(cp:*), Bash(mkdir:*), Bash(ls:*), Bash(chmod:*), Bash(npm:*), Bash(python:*), Bash(pip:*), Bash(codesign:*), Grep, Glob, AskUserQuestion
 disable-model-invocation: true

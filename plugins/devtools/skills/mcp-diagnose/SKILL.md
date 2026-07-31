@@ -1,6 +1,9 @@
 ---
 name: mcp-diagnose
-description: MCP Server 連線診斷（檢查連線、binary、基本呼叫）
+description: |
+  MCP Server 連線層診斷：檢查 server 有沒有連上、binary 在不在 ~/bin、基本 tool 呼叫通不通，並產出診斷日誌。
+  Use when: mcp__* tool 完全叫不出來；Claude 說找不到某個 MCP 工具；剛裝完 MCP 想確認有沒有活；「MCP 連不上」「mcp 沒反應」「diagnose MCP」。
+  與鄰近 skill 的分工：完全連不上用本 skill；連得上但某個 tool 行為錯用 mcp-debug；想逐一驗證每個 tool 都能用跑 mcp-test。
 argument-hint: <mcp-server-name>
 allowed-tools: Bash(ls:*, file:*, claude:mcp*), Read, Grep, mcp__*
 ---

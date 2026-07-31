@@ -1,6 +1,8 @@
 ---
 name: mcp-sync
-description: 同步 MCP Binary（.build → mcpb/server → ~/bin 一致性檢查和修復）
+description: |
+  檢查並修復 MCP binary 的三處一致性：.build（編譯產物）→ mcpb/server（打包用）→ ~/bin（實際執行的那份）。可用 --check-only 只檢查不修改，必要時重新打包 .mcpb。
+  與鄰近 skill 的分工：deploy 之後出現「明明改了卻沒生效」，多半就是這三處不同步——本 skill 專治此症。純粹裝不起來則先用 mcp-diagnose。
 argument-hint: [--check-only]
 allowed-tools: Read, Bash(swift:*), Bash(lipo:*), Bash(file:*), Bash(shasum:*), Bash(cp:*), Bash(rm:*), Bash(ls:*), Bash(chmod:*), Bash(mkdir:*), Bash(grep:*), Bash(cat:*), Bash(zip:*), Bash(unzip:*), Bash(codesign:*), Grep, Glob, AskUserQuestion
 disable-model-invocation: true

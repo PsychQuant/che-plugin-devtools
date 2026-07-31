@@ -1,6 +1,9 @@
 ---
 name: mcp-test
-description: MCP Server 完整功能測試（驗證所有 tools）
+description: |
+  MCP Server 完整功能測試：發現該 server 的所有 tool、逐一實際呼叫驗證、產出測試報告與日誌。
+  Use when: 改完 MCP server 想確認沒有 regression；發 release 前的驗收；接手別人的 MCP 想知道哪些 tool 真的能用；「測一下這個 MCP」「跑 MCP 測試」。
+  與鄰近 skill 的分工：連不上用 mcp-diagnose；單一 tool 出錯用 mcp-debug；本 skill 是全面掃描，最慢但最完整。
 argument-hint: <mcp-server-name>
 allowed-tools: Bash(claude mcp:*), Bash(grep:*), Read, Grep, Glob
 ---

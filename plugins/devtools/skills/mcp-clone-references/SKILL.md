@@ -1,6 +1,8 @@
 ---
 name: mcp-clone-references
-description: Clone 競品 MCP Server 原始碼到 references/ 進行分析
+description: |
+  搜尋同類 MCP Server 競品（給關鍵字）、列出候選讓你挑選、批次 clone 選定的 repo 到 references/ 供後續分析。
+  與鄰近 skill 的分工：已有特定 GitHub URL 要 clone 用 mcp-clone；本 skill 多了「搜尋競品 + 挑選」的前置階段，適合還不知道市面上有什麼的時候。
 argument-hint: [search-query]
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(mkdir:*), Bash(rm:*), Read, Write, Edit, Grep, Glob, AskUserQuestion, Task
 disable-model-invocation: true
