@@ -1,0 +1,18 @@
+{
+  "name": "harness-devtools",
+  "description": "v2.0.0: Claude Code harness 層的開發工具鏈 —— plugin / MCP server / Swift CLI 的完整發布管道，24 個 skill。v2.0.0 從 devtools 更名為 harness-devtools：舊名只說「開發工具」卻不說管什麼，與環境中 chrome-devtools-mcp 等名稱相近且易混淆；新名指明它管的是 harness 這一層（plugin、MCP server、CLI、skill），harness 亦為 Claude Code 官方用語。呼叫方式由 /devtools:* 改為 /harness-devtools:*，skill 名不變。同版另含 16 個 skill 的 description 重寫（依 auto / manual-only 兩種 invocation 模式採不同寫法）。合併自 plugin-tools 1.18.0、mcp-tools 1.16.0、cli-tools 1.1.2；三者循環依賴且 Claude Code 無 plugin 依賴宣告機制，分開安裝會讓 dependency-aware orchestration 靜默斷裂，故為單一不可分割單元。",
+  "version": "2.0.0",
+  "author": {
+    "name": "Che Cheng"
+  },
+  "keywords": [
+    "plugin",
+    "mcp",
+    "cli",
+    "marketplace",
+    "deploy",
+    "release",
+    "lifecycle",
+    "harness-devtools"
+  ]
+}

@@ -188,7 +188,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 if [ -d "$REPO_ROOT/plugins" ]; then
   REAL=$(bash "$AUDIT" --repo "$REPO_ROOT" --format table 2>&1)
   assert_contains "report has a header row"      "description" "$REAL"
-  assert_contains "finds devtools mcp-deploy"    "mcp-deploy"  "$REAL"
+  assert_contains "finds harness-devtools mcp-deploy"    "mcp-deploy"  "$REAL"
   assert_contains "finds doc-guardian skills"    "changelog-validate" "$REAL"
   assert_contains "emits a summary line"         "SUMMARY"     "$REAL"
   # Every emitted verdict must be one of the known enum values — guards against

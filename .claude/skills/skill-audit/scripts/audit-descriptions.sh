@@ -18,7 +18,7 @@
 #   2  the requested root does not exist
 #
 # WHY THESE THRESHOLDS
-#   Per plugins/devtools/rules/skill-description-budget.md, `description` is the
+#   Per plugins/harness-devtools/rules/skill-description-budget.md, `description` is the
 #   ONLY trigger surface — SKILL.md body loads only AFTER the skill triggers. A
 #   description that fits in one clause has no room for the "when to use it"
 #   phrasing the model matches against, so the skill effectively becomes

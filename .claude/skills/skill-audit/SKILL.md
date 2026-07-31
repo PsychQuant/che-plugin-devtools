@@ -11,7 +11,7 @@ description: 稽核並重寫本 repo 的 skill description 與 SKILL.md 篇幅�
 
 `skill-creator`（已安裝的 plugin）會寫 skill，但它不知道**本 repo 的標準**：`skill-description-budget.md` 的判準、哪些既有 skill 是合格範本、目前有多少不合格。這支 skill 補的是那個缺口 —— 它薄，不重造 skill-creator 的輪子。
 
-它是**工廠設備**，不是產品：只在維護這個 marketplace 時用，不隨 `devtools` / `doc-guardian` 分發給使用者。放在 `.claude/skills/` 正是為此（判準見 repo 根 `CLAUDE.md`）。
+它是**工廠設備**，不是產品：只在維護這個 marketplace 時用，不隨 `harness-devtools` / `doc-guardian` 分發給使用者。放在 `.claude/skills/` 正是為此（判準見 repo 根 `CLAUDE.md`）。
 
 ## 先跑稽核
 
@@ -27,7 +27,7 @@ bash .claude/skills/skill-audit/scripts/audit-descriptions.sh
 
 ## 核心事實：description 是唯一的觸發面
 
-`plugins/devtools/rules/skill-description-budget.md` 寫的關鍵推論：
+`plugins/harness-devtools/rules/skill-description-budget.md` 寫的關鍵推論：
 
 > **description 是唯一的觸發面**。SKILL.md body 是**觸發之後**才載入的；描述沒進 listing = 模型看不到 = 只能靠名字觸發。
 
@@ -158,4 +158,4 @@ Use when: 觸發情境。
 
 ## Rules
 
-- `plugins/devtools/rules/skill-description-budget.md` —— listing budget 機制、`skillListingBudgetFraction` 設定、診斷 name-only 的方法
+- `plugins/harness-devtools/rules/skill-description-budget.md` —— listing budget 機制、`skillListingBudgetFraction` 設定、診斷 name-only 的方法
