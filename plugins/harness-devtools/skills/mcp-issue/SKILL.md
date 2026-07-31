@@ -40,7 +40,8 @@ TaskCreate(name="report_result", description="Step 4: 回報 issue number + URL"
 
 ```bash
 # 方法 1: 從本地專案目錄的 git remote 推斷
-cd ~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/$1 2>/dev/null && git remote get-url origin 2>/dev/null
+source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-mcp-project.sh"
+PROJ=$(resolve_mcp_project "$1") && git -C "$PROJ" remote get-url origin 2>/dev/null
 
 # 方法 2: 從 Claude Code MCP 設定推斷
 cat ~/.claude.json 2>/dev/null | python3 -c "

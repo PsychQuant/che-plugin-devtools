@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-07-31
+
+六個 `mcp-*` skill 有 11 處指向一個**已經不存在**的專案目錄。修的是 #2。
+
+### Fixed
+
+- **11 處硬編碼 `~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/<name>`** —— 該路徑在本機不存在（連 `projects/mcp` 那層都沒有）。
+
+  **失效方式是靜默的**：`cd <deadpath>/$1` 沒帶 `2>/dev/null &&`，`cd` 失敗後 shell 照樣往下執行，於是 `mcp-debug` / `mcp-test` / `mcp-diagnose` 會對**呼叫者當時的 cwd** 做檢查、建 `logs/`、然後回報結果。看起來成功，對象卻是錯的專案。
+
+  改用新的 `scripts/resolve-mcp-project.sh`；找不到時 `require_mcp_project` 印出搜尋過的位置與可用專案清單並回非零。
+
+### Added
+
+- **`scripts/resolve-mcp-project.sh`** —— MCP 專案路徑的 single source of truth，與 `resolve-marketplace.sh` 同構。25 個測試（fixture 以覆寫 `HOME` 建合成樹，因此 precedence 與收錄判準都可測，且順帶 pin 住「root 是 HOME 相對而非絕對路徑」這個契約）。
+
+  三個 umbrella 各有收錄模式：
+
+  | Root | Mode | 理由 |
+  |---|---|---|
+  | `~/Developer/che-mcps` | `any` | 主 umbrella，含共用 library |
+  | `~/Developer/che-msg` | `any` | telegram 家族自己的 umbrella |
+  | `~/Developer` | `mcp-suffix` | 一般目錄，只收 `*-mcp` |
+
+  兩個判準都是實測校正出來的，不是預設對的：
+
+  - **`~/Developer` 若當成 `any`**，`list_mcp_projects` 會從 24 個變成 **42 個** —— 多出的 22 個是 `macdoc` / `rush` / `safari-browser` 等與 MCP 無關的 Swift package，會讓錯誤訊息裡的「可用的專案」清單反而誤導人。
+  - **收錄判準若只認 `Package.swift`**，會靜默漏掉 `iss-compute-mcp` —— 它是 Python，只有 `requirements.txt`。改為接受任一語言的 package metadata。
+
+### Notes（診斷推翻了 issue 的原假設）
+
+#2 原本寫「需先定組織原則」，理由是 `che-telegram-mcp` 內嵌在 `psychquant-claude-plugins/plugins/` 而非 `che-mcps/`。**那句話是錯的**：該目錄底下 `find -name Package.swift` 回 0 —— 它是下載 binary 的 plugin wrapper，不是原始碼專案。真正的 telegram MCP 在 `che-mcps/` 與 `che-msg/` 底下。
+
+所以本次**不搬動任何專案**，只加一支能跨 umbrella 解析的函式。順帶查到一件確實需要決定、但不屬本 issue 的事：`che-telegram-all-mcp` 與 `che-telegram-bot-mcp` 在 `che-mcps/` 與 `che-msg/` **各有一份不同 inode 的實體目錄**（不是 symlink）。resolver 依 precedence 取 `che-mcps` 那份，但兩份副本本身該不該合併，留待另開 issue。
+
 ## [2.0.1] - 2026-07-31
 
 修掉改名後殘留的失效引用，並補上一支讓這類殘留可機械偵測的檢查腳本。修的是 #1。
