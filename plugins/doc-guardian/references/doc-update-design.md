@@ -69,7 +69,7 @@ Heuristic for "significant change":
 
 Not derived from data; chosen as a safe-default that errs on the side of **not annoying**. User can lower to `1` (paranoid mode) or raise to `5` (noisy-mode-resistant) via config.
 
-Override: `min_changed_files` in `~/.cache/doc-tools/config.json` or `<repo>/.claude/doc-tools.json`.
+Override: `min_changed_files` in `~/.cache/doc-guardian/config.json` or `<repo>/.claude/doc-guardian.json`. (The pre-2.0.0 `doc-tools` names are still read as a fallback, but new configs should use the current ones.)
 
 ---
 
@@ -129,16 +129,20 @@ This is **mandatory plumbing**, not a design choice. Documented in Anthropic's h
 Precedence high → low:
 
 ```
-1. <repo>/.claude/doc-tools.json    ← per-project (highest)
-2. ~/.cache/doc-tools/config.json   ← per-machine
-3. built-in defaults                ← in scripts/doc-update-config.sh
+1. <repo>/.claude/doc-guardian.json    ← per-project (highest)
+2. ~/.cache/doc-guardian/config.json   ← per-machine
+3. built-in defaults                   ← in scripts/doc-update-config.sh
 ```
 
 Plus kill-switch:
 
 ```
-~/.cache/doc-tools/disabled         ← touch this file → hook short-circuits exit 0
+~/.cache/doc-guardian/disabled         ← touch this file → hook short-circuits exit 0
 ```
+
+The pre-2.0.0 `doc-tools` spellings of all four paths are still read (applied
+first, then overlaid by the current ones), so existing setups keep working
+without edits. Write new configs against the names above.
 
 ### Why this layering
 
@@ -191,12 +195,17 @@ All four keys optional; missing keys fall through to defaults.
 
 | Hook | Plugin | Event | Action | Pattern matched |
 |------|--------|-------|--------|----------------|
-| `doc-update-guard.sh` | `doc-tools` | Stop | block | This hook |
-| `claude-md-reminder.sh` | (still in `~/.claude/hooks/`) | PostToolUse(Bash) | warn | Project state drift hint |
+| `doc-update-guard.sh` | `doc-guardian` | Stop | block | This hook |
+| `claude-md-reminder.sh` | `doc-guardian` | PostToolUse(Bash) | block | Architectural files changed, CLAUDE.md did not |
+| `sync-wiki-check.sh` | `doc-guardian` | Stop | block | `changelog/` touched, wiki not synced |
 | `pending-tasks-nudge.py` | (still in `~/.claude/hooks/`) | PostToolUse(state-changing) | warn | Pending TaskCreate count |
 | `archive-first` block hooks | `archive-first` | PreToolUse(Bash/Write/Edit) | deny | Destructive ops on `archived/` |
 
-Future migration candidate: `claude-md-reminder.sh` is logically a doc-tools hook (warns about CLAUDE.md drift). Phase 2 may absorb it.
+`claude-md-reminder.sh` was listed here as a future migration candidate while it
+still lived in `~/.claude/hooks/`. **v2.0.0 absorbed it** (together with
+`sync-wiki-check.sh`) and moved its judgement criteria into config
+(`claude_md.*` / `wiki_sync.*`), so both now sit in the table above as
+first-class plugin hooks rather than as pending work.
 
 ---
 

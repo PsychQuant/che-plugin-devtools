@@ -73,10 +73,10 @@ Capture both for routing.
 
 | Exit | Meaning | Recommended next action (tell user) |
 |------|---------|------------------------------------|
-| 0 | pass | ✓ 沒事。如要 release，跑 `/changelog-tools:changelog-release` (Phase 2) |
-| 1 | CHANGELOG.md missing | → 跑 `/changelog-tools:changelog-init <plugin-path>` 從 plugin.json description 反向 bootstrap |
-| 2 | KAC violation | → 顯示 violation list；若是 em-dash format（PsychQuant legacy 風格），跑 `/changelog-tools:changelog-init --normalize <plugin-path>`；若是個別 section name 錯誤，手動修 |
-| 3 | sync drift | → 顯示 drift list；通常是 plugin.json / marketplace.json description 沒跟 CHANGELOG 最新 entry 同步；下個 release 時 `/changelog-tools:changelog-release` 會自動同步，現在可手動 Edit |
+| 0 | pass | ✓ 沒事。如要 release，跑 `/doc-guardian:changelog-release` (Phase 2) |
+| 1 | CHANGELOG.md missing | → 跑 `/doc-guardian:changelog-init <plugin-path>` 從 plugin.json description 反向 bootstrap |
+| 2 | KAC violation | → 顯示 violation list；若是 em-dash format（PsychQuant legacy 風格），跑 `/doc-guardian:changelog-init --normalize <plugin-path>`；若是個別 section name 錯誤，手動修 |
+| 3 | sync drift | → 顯示 drift list；通常是 plugin.json / marketplace.json description 沒跟 CHANGELOG 最新 entry 同步；`/doc-guardian:changelog-release`（Phase 2，**尚未實作**）將會自動同步，目前請手動 Edit |
 | 4 | IO / CLI error | → 報錯給使用者，通常是路徑寫錯 |
 
 ## Engine 模式
@@ -87,13 +87,13 @@ Capture both for routing.
 
 ```bash
 # 單一 plugin 驗證（含 marketplace sync）
-/changelog-tools:changelog-validate plugins/issue-driven-dev --marketplace .claude-plugin/marketplace.json
+/doc-guardian:changelog-validate plugins/issue-driven-dev --marketplace .claude-plugin/marketplace.json
 
 # 只驗 CHANGELOG.md 本身（跳過 sync）
-/changelog-tools:changelog-validate plugins/changelog-tools
+/doc-guardian:changelog-validate plugins/changelog-tools
 
 # CI mode（only JSON to stdout）
-/changelog-tools:changelog-validate plugins/issue-driven-dev --quiet
+/doc-guardian:changelog-validate plugins/issue-driven-dev --quiet
 ```
 
 ## 鐵律

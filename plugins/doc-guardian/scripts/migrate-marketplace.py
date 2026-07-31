@@ -130,7 +130,7 @@ def render_report(
             "3. Sentence splitting in non-English content (Chinese punctuation `。` not split)",
             "4. Cross-referenced versions (mentioned multiple times) — content from later mentions absorbed into prior segment",
             "",
-            "Run `/changelog-tools:changelog-validate <plugin-path>` on each plugin after review.",
+            "Run `/doc-guardian:changelog-validate <plugin-path>` on each plugin after review.",
         ]
     )
 

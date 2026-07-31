@@ -27,6 +27,6 @@ cat <<EOF
 [mcp-tools] Detected git push in MCP project: $PROJECT_NAME
 
 If you changed server functionality, consider running:
-  /mcp-tools:mcp-deploy — build, package mcpb, create GitHub Release, update Plugin
-  /mcp-tools:mcp-publish — publish to MCP Registry + Glama
+  /harness-devtools:mcp-deploy — build, package mcpb, create GitHub Release, update Plugin
+  /harness-devtools:mcp-publish — publish to MCP Registry + Glama
 EOF

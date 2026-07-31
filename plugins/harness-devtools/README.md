@@ -23,7 +23,7 @@ Claude Code 開發工具鏈 — plugin / MCP server / CLI 的完整發布管道�
        └───────────────────┘          ← mcp-tools 反向呼叫 plugin-tools
 ```
 
-而 Claude Code **沒有 plugin 依賴宣告機制**（`plugin.json` 沒有 `dependencies` 欄位）。只裝 `plugin-tools` 而不裝 `mcp-tools` 時，`plugin-update` 的 dependency-aware orchestration 會在呼叫 `/mcp-tools:mcp-deploy` 時找不到 skill，**而且沒有任何機制事先警告**。
+而 Claude Code **沒有 plugin 依賴宣告機制**（`plugin.json` 沒有 `dependencies` 欄位）。只裝 `plugin-tools` 而不裝 `mcp-tools` 時，`plugin-update` 的 dependency-aware orchestration 會在呼叫 `/mcp-tools:mcp-deploy` 時找不到 skill，**而且沒有任何機制事先警告**。（此處刻意保留舊前綴——這句描述的正是合併前的失效情境。）
 
 所以「分成三個讓使用者只裝需要的」是假選項——能選，但選了會靜默壞掉。合併成單一不可分割單元。
 

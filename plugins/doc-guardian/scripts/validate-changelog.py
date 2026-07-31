@@ -376,7 +376,7 @@ def render_report(result: ValidationResult) -> str:
     if not result.has_changelog:
         lines.append(f"❌ MISSING: {result.changelog_path}")
         lines.append(
-            "→ Run `/changelog-tools:changelog-init` to bootstrap from plugin.json description"
+            "→ Run `/doc-guardian:changelog-init` to bootstrap from plugin.json description"
         )
         return "\n".join(lines)
 
