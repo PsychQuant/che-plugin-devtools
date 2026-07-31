@@ -89,6 +89,21 @@ floor, cap, ceiling = int(floor), int(cap), int(ceiling)
 text = open(path, encoding="utf-8", errors="replace").read()
 lines = text.count("\n") + (0 if text.endswith("\n") else 1)
 
+# Fenced blocks are frequently TEMPLATE payload — CHANGELOG / README / release-note
+# boilerplate the skill hands to the user's project — not prose the reader must get
+# through. mcp-deploy is 914 lines of which 384 sit inside fences; judging it by raw
+# line count says "split this" when the説明 itself is not the bulky part.
+# prose_lines is the honest denominator for the "should this move to references/"
+# question; raw lines still matters for context cost, so both are reported.
+_prose = 0
+_infence = False
+for _l in text.split("\n"):
+    if _l.lstrip().startswith("```"):
+        _infence = not _infence
+        continue
+    if not _infence:
+        _prose += 1
+
 m = re.match(r"^---\n(.*?)\n---", text, re.S)
 if not m:
     desc, fm = None, ""
@@ -162,40 +177,40 @@ else:
 if yaml_ok == "invalid":
     verdict = "yaml-invalid"
 
-oversized = "yes" if lines > ceiling else "no"
-print("\t".join([name, str(n), str(lines), verdict, oversized, group, invocation, yaml_ok]))
+oversized = "yes" if _prose > ceiling else "no"
+print("\t".join([name, str(n), str(lines), str(_prose), verdict, oversized, group, invocation, yaml_ok]))
 PY
     done
   done | sort -t"$(printf '\t')" -k2,2n
 )
 
 if [ "$FORMAT" = "tsv" ]; then
-  printf 'name\tdesc_chars\tbody_lines\tverdict\toversized_body\tgroup\tinvocation\tyaml\n'
+  printf 'name\tdesc_chars\tbody_lines\tprose_lines\tverdict\toversized_body\tgroup\tinvocation\tyaml\n'
   [ -n "$ROWS" ] && printf '%s\n' "$ROWS"
 else
-  printf '%-26s %11s %11s %-14s %-9s %-8s %-6s %s\n' name description body_lines verdict body_over invoke yaml group
-  printf '%-26s %11s %11s %-14s %-9s %-8s %-6s %s\n' "$(printf '%.0s-' {1..26})" ----------- ----------- -------------- --------- -------- ------ -----
+  printf '%-24s %6s %6s %6s %-13s %-6s %-7s %-6s %s\n' name desc body prose verdict over invoke yaml group
+  printf '%-24s %6s %6s %6s %-13s %-6s %-7s %-6s %s\n' "$(printf '%.0s-' {1..24})" ------ ------ ------ ------------- ------ ------- ------ -----
   if [ -n "$ROWS" ]; then
-    printf '%s\n' "$ROWS" | while IFS=$'\t' read -r n d b v o g inv y; do
+    printf '%s\n' "$ROWS" | while IFS=$'\t' read -r n d b pr v o g inv y; do
       mark=" "
       [ "$v" != "ok" ] && mark="!"
       [ "$o" = "yes" ] && mark="${mark}B"
       [ "$y" = "invalid" ] && mark="${mark}Y"
-      printf '%-26s %11s %11s %-14s %-9s %-8s %-6s %s %s\n' "$n" "$d" "$b" "$v" "$o" "$inv" "$y" "$g" "$mark"
+      printf '%-24s %6s %6s %6s %-13s %-6s %-7s %-6s %s %s\n' "$n" "$d" "$b" "$pr" "$v" "$o" "$inv" "$y" "$g" "$mark"
     done
   fi
 fi
 
 # Summary + exit code
 TOTAL=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | wc -l | tr -d ' ' || echo 0 )
-BAD_DESC=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$4 != "ok"' | wc -l | tr -d ' ' || echo 0 )
-BAD_BODY=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$5 == "yes"' | wc -l | tr -d ' ' || echo 0 )
-BAD_YAML=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$8 == "invalid"' | wc -l | tr -d ' ' || echo 0 )
-MANUAL=$(  [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$7 == "manual"' | wc -l | tr -d ' ' || echo 0 )
+BAD_DESC=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$5 != "ok"' | wc -l | tr -d ' ' || echo 0 )
+BAD_BODY=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$6 == "yes"' | wc -l | tr -d ' ' || echo 0 )
+BAD_YAML=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$9 == "invalid"' | wc -l | tr -d ' ' || echo 0 )
+MANUAL=$(  [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$8 == "manual"' | wc -l | tr -d ' ' || echo 0 )
 
 if [ "$FORMAT" != "tsv" ]; then
   echo
-  echo "SUMMARY: $TOTAL skills — $BAD_DESC with description findings, $BAD_BODY with oversized body (> $BODY_CEILING lines), $BAD_YAML with unparseable frontmatter"
+  echo "SUMMARY: $TOTAL skills — $BAD_DESC with description findings, $BAD_BODY with oversized prose (> $BODY_CEILING non-fence lines), $BAD_YAML with unparseable frontmatter"
   echo "  thresholds: floor=$DESC_FLOOR cap=$DESC_CAP body_ceiling=$BODY_CEILING"
   echo "  floor is where 'unusable' ends, not where 'good' begins — aim for the 150–700 band"
   echo "  $MANUAL skill(s) are manual-only (disable-model-invocation: true) — trigger phrasing"

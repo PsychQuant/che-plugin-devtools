@@ -79,16 +79,16 @@ field() {  # $1 = skill name, $2 = column index (1-based)
   echo "$OUT" | awk -F'\t' -v n="$1" -v c="$2" '$1 == n { print $c }'
 }
 
-assert_eq "tiny-desc (29) → undersized"    "undersized" "$(field tiny-desc 4)"
-assert_eq "just-under (99) → undersized"   "undersized" "$(field just-under 4)"
-assert_eq "at-floor (100) → ok"            "ok"         "$(field at-floor 4)"
-assert_eq "healthy (400) → ok"             "ok"         "$(field healthy 4)"
-assert_eq "over-cap (1600) → over-cap"     "over-cap"   "$(field over-cap 4)"
+assert_eq "tiny-desc (29) → undersized"    "undersized" "$(field tiny-desc 5)"
+assert_eq "just-under (99) → undersized"   "undersized" "$(field just-under 5)"
+assert_eq "at-floor (100) → ok"            "ok"         "$(field at-floor 5)"
+assert_eq "healthy (400) → ok"             "ok"         "$(field healthy 5)"
+assert_eq "over-cap (1600) → over-cap"     "over-cap"   "$(field over-cap 5)"
 assert_eq "desc length reported verbatim"  "29"         "$(field tiny-desc 2)"
 assert_eq "body lines reported"            "905"        "$(field long-body 3)"
-assert_eq "long-body desc still ok"        "ok"         "$(field long-body 4)"
-assert_eq "long-body flagged oversized"    "yes"        "$(field long-body 5)"
-assert_eq "healthy body not flagged"       "no"         "$(field healthy 5)"
+assert_eq "long-body desc still ok"        "ok"         "$(field long-body 5)"
+assert_eq "long-body flagged oversized"    "yes"        "$(field long-body 6)"
+assert_eq "healthy body not flagged"       "no"         "$(field healthy 6)"
 
 echo
 echo "exit code signals actionable findings:"
@@ -168,12 +168,12 @@ EOF
 OUT_Y=$(bash "$AUDIT" --skills-root "$YML" --format tsv 2>&1)
 yfield() { echo "$OUT_Y" | awk -F'\t' -v n="$1" -v c="$2" '$1 == n { print $c }'; }
 
-assert_eq "flush-left multiline → yaml invalid"    "invalid"      "$(yfield flush-left-multiline 8)"
-assert_eq "flush-left multiline → verdict overridden" "yaml-invalid" "$(yfield flush-left-multiline 4)"
-assert_eq "block scalar → yaml valid"              "valid"        "$(yfield block-scalar 8)"
-assert_eq "block scalar → verdict ok"              "ok"           "$(yfield block-scalar 4)"
-assert_eq "disable-model-invocation → manual"      "manual"       "$(yfield manual-only 7)"
-assert_eq "normal skill → auto"                    "auto"         "$(yfield block-scalar 7)"
+assert_eq "flush-left multiline → yaml invalid"    "invalid"      "$(yfield flush-left-multiline 9)"
+assert_eq "flush-left multiline → verdict overridden" "yaml-invalid" "$(yfield flush-left-multiline 5)"
+assert_eq "block scalar → yaml valid"              "valid"        "$(yfield block-scalar 9)"
+assert_eq "block scalar → verdict ok"              "ok"           "$(yfield block-scalar 5)"
+assert_eq "disable-model-invocation → manual"      "manual"       "$(yfield manual-only 8)"
+assert_eq "normal skill → auto"                    "auto"         "$(yfield block-scalar 8)"
 
 # A yaml-invalid skill must make the run exit non-zero even when every length
 # verdict would otherwise pass.
@@ -194,7 +194,7 @@ if [ -d "$REPO_ROOT/plugins" ]; then
   # Every emitted verdict must be one of the known enum values — guards against
   # a future refactor silently introducing an unhandled state.
   BAD=$(bash "$AUDIT" --repo "$REPO_ROOT" --format tsv 2>/dev/null \
-        | awk -F'\t' 'NR>1 && $4 !~ /^(undersized|ok|over-cap|no-description|yaml-invalid)$/ { print $4 }' | sort -u)
+        | awk -F'\t' 'NR>1 && $5 !~ /^(undersized|ok|over-cap|no-description|yaml-invalid)$/ { print $4 }' | sort -u)
   assert_eq "no unknown verdicts in real data" "" "$BAD"
 else
   echo "  (skipped — repo layout not found)"

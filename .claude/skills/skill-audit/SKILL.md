@@ -129,12 +129,28 @@ Use when: 觸發情境。
 
 ## 拆 references/ 的時機
 
-`BODY_CEILING=500` 只是訊號，不是硬規則。判準是**內容性質**：
+`BODY_CEILING=500` 量的是 **`prose_lines`（扣掉 code fence 的行數）**，不是原始行數。判準是**內容性質**：
 
 - **留在 SKILL.md**：判準、流程、必讀紀律 —— 每次觸發都需要
 - **移到 references/**：長表格、完整範例、歷史脈絡、邊界案例目錄 —— 需要時才讀
 
 在 SKILL.md 用一行指出參照檔的內容與時機，模型才知道何時該去讀。
+
+### 為什麼量 prose 而不是原始行數
+
+**踩過的坑**：第一版用原始行數，5 個 skill 被標為需要拆分。實際看內容後全部撤銷：
+
+| skill | 原始行數 | prose | fence 內容是什麼 |
+|---|---:|---:|---|
+| `plugin-update` | 980 | 448 | bash 操作步驟 |
+| `mcp-deploy` | 914 | 437 | CHANGELOG / README / Release notes 樣板 |
+| `mcp-publish` | 689 | 382 | server.json 範本 |
+| `mcp-upgrade` | 510 | 306 | 分析用指令 |
+| `mcp-new-app` | 672 | **191** | Package.swift / main.swift / Version.swift 範本 |
+
+`mcp-new-app` 是極端案例：672 行裡 481 行是專案樣板 —— **那正是它要交付的產物**。把產物搬進 `references/` 不會讓 skill 變好，只會讓它每次執行都多讀一個檔案。
+
+**所以：看到大檔案先問「這些行是說明還是產物」。** 說明超標才拆；產物超標是這支 skill 本來的樣子。稽核報表的 `body_lines` 與 `prose_lines` 並列就是為了讓這個區別一眼可見。
 
 ## 已知的 scope
 
