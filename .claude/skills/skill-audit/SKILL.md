@@ -66,16 +66,55 @@ description: 檢查所有已安裝 plugin 的健康狀態（載入錯誤、版�
 
 兩段：**做什麼（含具體檢查項）** + **使用者會怎麼說**。列出真實語句比抽象描述有效 —— 模型比對的是使用者的實際措辭。
 
+## YAML 格式鐵律：多行 description 一律用 block scalar
+
+**這是本 skill 最容易犯、且失敗最安靜的一條。**
+
+多行 description **必須**寫成 block scalar（`description: |` + 每行 2 空格縮排）：
+
+```yaml
+# ✓ 正確 —— block scalar
+description: |
+  做什麼的說明。
+  Use when: 觸發情境。
+  防止的失敗：後果。
+```
+
+```yaml
+# ✗ 錯誤 —— 頂格續行，整份 frontmatter 解析失敗
+description: 做什麼的說明。
+Use when: 觸發情境。
+防止的失敗：後果。
+```
+
+**為什麼錯的那個特別危險**：`Use when: text` 頂格其實是**合法** YAML（key 可含空格），單獨看不會炸。真正打爆 parser 的是下一行 `防止的失敗：` —— 全形冒號「：」不是 YAML 的分隔符，那行變成前一個 value 的續行，接著再遇到 `argument-hint:` 就報 `could not find expected ':' while scanning a simple key`。
+
+也就是說：**failure 需要兩個條件疊加**（頂格半形 `key:` ＋ 全形冒號續行），而我們的 description 慣例恰好兩個都會用到。
+
+**稽核腳本會抓**（`yaml` 欄位 = `invalid`，verdict 覆寫為 `yaml-invalid`，exit 1）。但別依賴它當唯一防線 —— 一開始就寫 block scalar。
+
+## manual-only skill 不需要觸發語
+
+`disable-model-invocation: true` 的 skill **永遠不會被模型自動觸發**，只能使用者打 `/<plugin>:<skill>`。對這類 skill：
+
+- 寫 `Use when:` 觸發語 **對觸發毫無作用**
+- description 的唯一功能是「讓人看懂它做什麼」
+- 仍需過 100 字元 floor（說清楚做什麼本來就需要這個篇幅），但不必為了塞觸發詞而膨脹
+
+稽核報表的 `invocation` 欄位會標出來（`manual` / `auto`）。本 repo 目前 `cli-deploy` 是 manual-only。
+
 ## 重寫流程
 
 逐一處理，不批次亂改：
 
 1. **跑稽核**拿到 undersized 清單，從最短的開始
 2. **讀該 skill 的 SKILL.md body** —— 觸發語要從它實際會做的事提煉，不能憑名字猜
-3. **寫四段**：做什麼 / 可觀察輸出 / Use when / 防止的失敗。精簡群組可省第二、四段，但 **Use when 不可省**
-4. **檢查長度**落在 150–700
-5. **重跑稽核**確認該列翻成 `ok`
-6. **bump 版本**：改的是 `plugins/<name>/` 底下的 skill → `plugin.json` 與 `marketplace.json` 版本必須同步 bump，否則 `claude plugin update` 判定 already-latest 而跳過（改 `.claude/skills/` 則不需要，project skills 有 live change detection）
+3. **看 `invocation` 欄位**：`manual` 則跳過觸發語，只求說清楚做什麼
+4. **寫四段**：做什麼 / 可觀察輸出 / Use when / 防止的失敗。精簡群組可省第二、四段，但 auto-invocation 的 skill **Use when 不可省**
+5. **用 block scalar**（見上方鐵律）
+6. **檢查長度**落在 150–700
+7. **重跑稽核**確認該列翻成 `ok` **且 `yaml` 欄位是 `valid`**
+8. **bump 版本**：改的是 `plugins/<name>/` 底下的 skill → `plugin.json` 與 `marketplace.json` 版本必須同步 bump，否則 `claude plugin update` 判定 already-latest 而跳過（改 `.claude/skills/` 則不需要，project skills 有 live change detection）
 
 ## 觸發語怎麼寫才有效
 

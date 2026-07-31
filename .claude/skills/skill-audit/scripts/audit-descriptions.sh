@@ -91,7 +91,7 @@ lines = text.count("\n") + (0 if text.endswith("\n") else 1)
 
 m = re.match(r"^---\n(.*?)\n---", text, re.S)
 if not m:
-    desc = None
+    desc, fm = None, ""
 else:
     fm = m.group(1)
     d = re.search(r"^description:\s*(.*?)(?=\n[A-Za-z_-]+:|\Z)", fm, re.S | re.M)
@@ -101,6 +101,54 @@ else:
         # the count reflects actual prose, not YAML syntax.
         desc = re.sub(r"^[|>][-+]?\s*\n?", "", desc).strip()
 
+# --- YAML validity -----------------------------------------------------------
+# The regex above extracts a description even from frontmatter a real YAML parser
+# would REJECT. Concretely: a multi-line description whose continuation lines are
+# flush-left and contain `Something: text` — YAML reads those as new mapping keys
+# and the whole document fails to load, but the regex happily returns the prose
+# and we report `ok`. That false green is exactly how four skills got "fixed"
+# into an unparseable state before this check existed.
+#
+# The fix authors must use is a block scalar (`description: |` + 2-space indent),
+# which is what the healthy doc-guardian group already does.
+#
+# No stdlib YAML in Python. Try PyYAML, else ruby -ryaml, else report `unknown`
+# rather than claiming validity we did not establish.
+def yaml_status(fm_text):
+    if not fm_text:
+        return "no-frontmatter"
+    try:
+        import yaml  # type: ignore
+        try:
+            parsed = yaml.safe_load(fm_text)
+            return "valid" if isinstance(parsed, dict) else "invalid"
+        except Exception:
+            return "invalid"
+    except ImportError:
+        pass
+    import shutil, subprocess
+    if shutil.which("ruby"):
+        p = subprocess.run(
+            ["ruby", "-ryaml", "-e",
+             'begin; d=YAML.safe_load($stdin.read); '
+             'print(d.is_a?(Hash) ? "valid" : "invalid"); '
+             'rescue; print "invalid"; end'],
+            input=fm_text, capture_output=True, text=True)
+        out = p.stdout.strip()
+        if out in ("valid", "invalid"):
+            return out
+    return "unknown"
+
+yaml_ok = yaml_status(fm)
+
+# --- Invocation mode ---------------------------------------------------------
+# `disable-model-invocation: true` means Claude never auto-triggers this skill —
+# it runs only when the user types /<plugin>:<skill>. For those, trigger phrasing
+# in the description has no effect on triggering at all; the description's only
+# job is telling a human what the skill does. Surfacing this stops us from
+# "fixing" a manual-only skill by adding trigger phrases that can never fire.
+invocation = "manual" if re.search(r"^disable-model-invocation:\s*true\s*$", fm, re.M) else "auto"
+
 if desc is None or desc == "":
     verdict, n = "no-description", 0
 else:
@@ -109,25 +157,31 @@ else:
     elif n < floor:  verdict = "undersized"
     else:            verdict = "ok"
 
+# Unparseable frontmatter outranks any length verdict: a skill whose frontmatter
+# does not load is broken regardless of how long its description reads.
+if yaml_ok == "invalid":
+    verdict = "yaml-invalid"
+
 oversized = "yes" if lines > ceiling else "no"
-print("\t".join([name, str(n), str(lines), verdict, oversized, group]))
+print("\t".join([name, str(n), str(lines), verdict, oversized, group, invocation, yaml_ok]))
 PY
     done
   done | sort -t"$(printf '\t')" -k2,2n
 )
 
 if [ "$FORMAT" = "tsv" ]; then
-  printf 'name\tdesc_chars\tbody_lines\tverdict\toversized_body\tgroup\n'
+  printf 'name\tdesc_chars\tbody_lines\tverdict\toversized_body\tgroup\tinvocation\tyaml\n'
   [ -n "$ROWS" ] && printf '%s\n' "$ROWS"
 else
-  printf '%-26s %11s %11s %-15s %-9s %s\n' name description body_lines verdict body_over group
-  printf '%-26s %11s %11s %-15s %-9s %s\n' "$(printf '%.0s-' {1..26})" ----------- ----------- --------------- --------- -----
+  printf '%-26s %11s %11s %-14s %-9s %-8s %-6s %s\n' name description body_lines verdict body_over invoke yaml group
+  printf '%-26s %11s %11s %-14s %-9s %-8s %-6s %s\n' "$(printf '%.0s-' {1..26})" ----------- ----------- -------------- --------- -------- ------ -----
   if [ -n "$ROWS" ]; then
-    printf '%s\n' "$ROWS" | while IFS=$'\t' read -r n d b v o g; do
+    printf '%s\n' "$ROWS" | while IFS=$'\t' read -r n d b v o g inv y; do
       mark=" "
       [ "$v" != "ok" ] && mark="!"
       [ "$o" = "yes" ] && mark="${mark}B"
-      printf '%-26s %11s %11s %-15s %-9s %s %s\n' "$n" "$d" "$b" "$v" "$o" "$g" "$mark"
+      [ "$y" = "invalid" ] && mark="${mark}Y"
+      printf '%-26s %11s %11s %-14s %-9s %-8s %-6s %s %s\n' "$n" "$d" "$b" "$v" "$o" "$inv" "$y" "$g" "$mark"
     done
   fi
 fi
@@ -136,13 +190,17 @@ fi
 TOTAL=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | wc -l | tr -d ' ' || echo 0 )
 BAD_DESC=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$4 != "ok"' | wc -l | tr -d ' ' || echo 0 )
 BAD_BODY=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$5 == "yes"' | wc -l | tr -d ' ' || echo 0 )
+BAD_YAML=$( [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$8 == "invalid"' | wc -l | tr -d ' ' || echo 0 )
+MANUAL=$(  [ -n "$ROWS" ] && printf '%s\n' "$ROWS" | awk -F'\t' '$7 == "manual"' | wc -l | tr -d ' ' || echo 0 )
 
 if [ "$FORMAT" != "tsv" ]; then
   echo
-  echo "SUMMARY: $TOTAL skills — $BAD_DESC with description findings, $BAD_BODY with oversized body (> $BODY_CEILING lines)"
+  echo "SUMMARY: $TOTAL skills — $BAD_DESC with description findings, $BAD_BODY with oversized body (> $BODY_CEILING lines), $BAD_YAML with unparseable frontmatter"
   echo "  thresholds: floor=$DESC_FLOOR cap=$DESC_CAP body_ceiling=$BODY_CEILING"
   echo "  floor is where 'unusable' ends, not where 'good' begins — aim for the 150–700 band"
+  echo "  $MANUAL skill(s) are manual-only (disable-model-invocation: true) — trigger phrasing"
+  echo "    cannot fire for those; their description only has to read well to a human"
 fi
 
-[ "$BAD_DESC" -gt 0 ] || [ "$BAD_BODY" -gt 0 ] && exit 1
+[ "$BAD_DESC" -gt 0 ] || [ "$BAD_BODY" -gt 0 ] || [ "$BAD_YAML" -gt 0 ] && exit 1
 exit 0

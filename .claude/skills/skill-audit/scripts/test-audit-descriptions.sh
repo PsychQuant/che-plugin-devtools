@@ -117,6 +117,72 @@ assert_eq "nonexistent root exits 2" "2" \
   "$(bash "$AUDIT" --skills-root "$TMPROOT/does-not-exist" >/dev/null 2>&1; echo $?)"
 
 echo
+echo "YAML validity (the false-green this check exists to stop):"
+YML="$TMPROOT/yaml"
+mkdir -p "$YML"
+
+# The exact shape that broke 4 skills: multi-line description, continuation lines
+# flush-left, containing `Something: text`. A regex extractor happily returns the
+# prose; a real YAML parser reads `Use when:` as a new mapping key and rejects the
+# document. Must be caught.
+mkdir -p "$YML/flush-left-multiline"
+cat > "$YML/flush-left-multiline/SKILL.md" <<'EOF'
+---
+name: flush-left-multiline
+description: 第一行說明這個 skill 做什麼，長度足夠越過 floor 門檻所以長度判定本來會是 ok，重點在於後面兩行會不會讓 YAML 解析失敗。
+Use when: 這一行頂格且含半形冒號，YAML 會把它當成新 mapping key
+防止的失敗：這一行用全形冒號，YAML 不認得它是分隔符，於是成為前一個 value 的續行
+argument-hint: <x>
+---
+
+body
+EOF
+
+# Same prose, correct form: block scalar + 2-space indent. Must pass.
+mkdir -p "$YML/block-scalar"
+cat > "$YML/block-scalar/SKILL.md" <<'EOF'
+---
+name: block-scalar
+description: |
+  第一行說明這個 skill 做什麼，長度足夠越過 floor 門檻所以長度判定本來會是 ok，重點在於後面兩行會不會讓 YAML 解析失敗。
+  Use when: 這一行有縮排且在 block scalar 內，是安全的寫法
+  防止的失敗：全形冒號在 block scalar 內也完全安全，因為整段都是純文字
+argument-hint: <x>
+---
+
+body
+EOF
+
+# Manual-only skill — trigger phrasing can never fire for it.
+mkdir -p "$YML/manual-only"
+cat > "$YML/manual-only/SKILL.md" <<'EOF'
+---
+name: manual-only
+description: 這個 skill 只能手動呼叫，描述寫得夠長會通過 floor 門檻，但它的觸發語永遠不會真的被用到，因為模型不會自動叫它，只有使用者打指令才會執行。
+disable-model-invocation: true
+---
+
+body
+EOF
+
+OUT_Y=$(bash "$AUDIT" --skills-root "$YML" --format tsv 2>&1)
+yfield() { echo "$OUT_Y" | awk -F'\t' -v n="$1" -v c="$2" '$1 == n { print $c }'; }
+
+assert_eq "flush-left multiline → yaml invalid"    "invalid"      "$(yfield flush-left-multiline 8)"
+assert_eq "flush-left multiline → verdict overridden" "yaml-invalid" "$(yfield flush-left-multiline 4)"
+assert_eq "block scalar → yaml valid"              "valid"        "$(yfield block-scalar 8)"
+assert_eq "block scalar → verdict ok"              "ok"           "$(yfield block-scalar 4)"
+assert_eq "disable-model-invocation → manual"      "manual"       "$(yfield manual-only 7)"
+assert_eq "normal skill → auto"                    "auto"         "$(yfield block-scalar 7)"
+
+# A yaml-invalid skill must make the run exit non-zero even when every length
+# verdict would otherwise pass.
+mkdir -p "$TMPROOT/yamlonly/bad"
+cp "$YML/flush-left-multiline/SKILL.md" "$TMPROOT/yamlonly/bad/SKILL.md"
+bash "$AUDIT" --skills-root "$TMPROOT/yamlonly" --format tsv >/dev/null 2>&1
+assert_eq "yaml-invalid alone drives exit 1" "1" "$?"
+
+echo
 echo "smoke test against this repo (no hardcoded counts — see header):"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 if [ -d "$REPO_ROOT/plugins" ]; then
@@ -128,7 +194,7 @@ if [ -d "$REPO_ROOT/plugins" ]; then
   # Every emitted verdict must be one of the known enum values — guards against
   # a future refactor silently introducing an unhandled state.
   BAD=$(bash "$AUDIT" --repo "$REPO_ROOT" --format tsv 2>/dev/null \
-        | awk -F'\t' 'NR>1 && $4 !~ /^(undersized|ok|over-cap|no-description)$/ { print $4 }' | sort -u)
+        | awk -F'\t' 'NR>1 && $4 !~ /^(undersized|ok|over-cap|no-description|yaml-invalid)$/ { print $4 }' | sort -u)
   assert_eq "no unknown verdicts in real data" "" "$BAD"
 else
   echo "  (skipped — repo layout not found)"
