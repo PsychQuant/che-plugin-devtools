@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-07-31
+
+六個 `mcp-*` skill 有 11 處指向一個**已經不存在**的專案目錄。修的是 #2。
+
+### Fixed
+
+- **11 處硬編碼 `~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/<name>`** —— 該路徑在本機不存在（連 `projects/mcp` 那層都沒有）。
+
+  **失效方式是靜默的**：`cd <deadpath>/$1` 沒帶 `2>/dev/null &&`，`cd` 失敗後 shell 照樣往下執行，於是 `mcp-debug` / `mcp-test` / `mcp-diagnose` 會對**呼叫者當時的 cwd** 做檢查、建 `logs/`、然後回報結果。看起來成功，對象卻是錯的專案。
+
+  改用新的 `scripts/resolve-mcp-project.sh`；找不到時 `require_mcp_project` 印出搜尋過的位置與可用專案清單並回非零。
+
+### Added
+
+- **`scripts/resolve-mcp-project.sh`** —— MCP 專案路徑的 single source of truth，與 `resolve-marketplace.sh` 同構。25 個測試（fixture 以覆寫 `HOME` 建合成樹，因此 precedence 與收錄判準都可測，且順帶 pin 住「root 是 HOME 相對而非絕對路徑」這個契約）。
+
+  三個 umbrella 各有收錄模式：
+
+  | Root | Mode | 理由 |
+  |---|---|---|
+  | `~/Developer/che-mcps` | `any` | 主 umbrella，含共用 library |
+  | `~/Developer/che-msg` | `any` | telegram 家族自己的 umbrella |
+  | `~/Developer` | `mcp-suffix` | 一般目錄，只收 `*-mcp` |
+
+  兩個判準都是實測校正出來的，不是預設對的：
+
+  - **`~/Developer` 若當成 `any`**，`list_mcp_projects` 會從 24 個變成 **42 個** —— 多出的 22 個是 `macdoc` / `rush` / `safari-browser` 等與 MCP 無關的 Swift package，會讓錯誤訊息裡的「可用的專案」清單反而誤導人。
+  - **收錄判準若只認 `Package.swift`**，會靜默漏掉 `iss-compute-mcp` —— 它是 Python，只有 `requirements.txt`。改為接受任一語言的 package metadata。
+
+### Notes（診斷推翻了 issue 的原假設）
+
+#2 原本寫「需先定組織原則」，理由是 `che-telegram-mcp` 內嵌在 `psychquant-claude-plugins/plugins/` 而非 `che-mcps/`。**那句話是錯的**：該目錄底下 `find -name Package.swift` 回 0 —— 它是下載 binary 的 plugin wrapper，不是原始碼專案。真正的 telegram MCP 在 `che-mcps/` 與 `che-msg/` 底下。
+
+所以本次**不搬動任何專案**，只加一支能跨 umbrella 解析的函式。順帶查到一件確實需要決定、但不屬本 issue 的事：`che-telegram-all-mcp` 與 `che-telegram-bot-mcp` 在 `che-mcps/` 與 `che-msg/` **各有一份不同 inode 的實體目錄**（不是 symlink）。resolver 依 precedence 取 `che-mcps` 那份，但兩份副本本身該不該合併，留待另開 issue。
+
+## [2.0.1] - 2026-07-31
+
+修掉改名後殘留的失效引用，並補上一支讓這類殘留可機械偵測的檢查腳本。修的是 #1。
+
+### Added
+
+- **`scripts/check-skill-references.sh`** —— 掃全 repo 找出「指向不存在 skill 的引用」與「已退役的 plugin 前綴」。exit 0 全過 / 1 有 findings / 2 路徑錯，附 `--format tsv` 供 CI 消費。15 個測試（`test-check-skill-references.sh`）。
+
+  **為什麼需要它**：改名的成本不在改名本身，在引用的長尾。本 repo 踩過兩代 —— `changelog-tools → doc-tools → doc-guardian`。第二次改名時掃的是「當前名字」，所以寫著更早的 `changelog-tools` 的引用**搜不到、也就沒人知道它們存在**，一路存活到兩代之後。skill 引用不像 `import`，指向不存在的目標時是完全靜默的。
+
+  刻意的前瞻／歷史引用不需 allowlist 檔：同一行寫明 `Phase 2` / `尚未實作` / `刻意保留` 等字樣即跳過，`CHANGELOG.md` 與 `test-*` 整份跳過（前者的舊名是當時的事實，後者的舊名是 fixture 資料）。
+
+### Fixed
+
+- **`rules/tool-readme-sync-plugin.md` 與 `skills/plugin-deploy/SKILL.md` 指向 `mcp-tools/rules/tool-readme-sync.md`** —— 該路徑在合併後已不存在。改為同目錄的 `tool-readme-sync-mcp.md`。
+
+- **`rules/tool-readme-sync-plugin.md` 的 marketplace 審計範例硬編碼絕對路徑**（`/Users/che/Developer/psychquant-claude-plugins/`）。改為 `resolve-marketplace.sh` —— 那支腳本正是 v1.0.0 為了消滅這類硬編碼而寫的，這處是漏網的第 6 處。同段落把「plugin 都住在 `psychquant-claude-plugins`」的單一 marketplace 假設一併泛化。
+
+- **`hooks/post-push-deploy-reminder.sh` 印出 `/mcp-tools:mcp-deploy`** —— 那是給使用者照著打的提示，前綴已失效。
+
+**刻意未改的兩處**：`README.md` 中解釋「合併前為何會靜默斷裂」的那句仍寫 `/mcp-tools:mcp-deploy` —— 它描述的正是合併前的情境，改成新前綴會讓句子自相矛盾。同理 `CLAUDE.md` 裡「不要用舊的 `/plugin-tools:` 前綴」的反例。兩處都已標註，檢查腳本據此跳過。
+
 ## [2.0.0] - 2026-07-31
 
 ### Changed

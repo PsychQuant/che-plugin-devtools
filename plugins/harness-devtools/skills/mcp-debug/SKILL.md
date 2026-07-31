@@ -44,7 +44,8 @@ TaskCreate(name="post_fix_verify", description="Phase 3: 若修復了，重新 b
 在專案根目錄建立 `logs/mcptools/debug/` 結構：
 
 ```bash
-cd ~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/$1
+source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-mcp-project.sh"
+cd "$(require_mcp_project "$1")" || exit 1
 mkdir -p logs/mcptools/debug
 ```
 
@@ -97,7 +98,8 @@ claude mcp list 2>&1 | grep -A1 "$1"
 ### Step 1: 找到原始碼
 
 ```bash
-ls -la ~/Library/CloudStorage/Dropbox/che_workspace/projects/mcp/$1/
+source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-mcp-project.sh"
+ls -la "$(require_mcp_project "$1")/"
 ```
 
 ### Step 2: 判斷框架

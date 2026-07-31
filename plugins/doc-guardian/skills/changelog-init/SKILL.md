@@ -26,7 +26,7 @@ allowed-tools:
 ### `init` — 從 plugin.json description 產生 CHANGELOG.md
 
 ```bash
-/changelog-tools:changelog-init init <plugin-path> [--force] [--dry-run]
+/doc-guardian:changelog-init init <plugin-path> [--force] [--dry-run]
 ```
 
 行為：
@@ -42,7 +42,7 @@ allowed-tools:
 ### `normalize` — 修既有非 KAC CHANGELOG.md
 
 ```bash
-/changelog-tools:changelog-init normalize <plugin-path> [--dry-run]
+/doc-guardian:changelog-init normalize <plugin-path> [--dry-run]
 ```
 
 行為：
@@ -95,24 +95,24 @@ python3 "$CLAUDE_PLUGIN_ROOT/scripts/init-changelog.py" "$MODE" "$PLUGIN_PATH" [
 
 | 完成情境 | 下一步 |
 |---------|-------|
-| init 成功 | → 跑 `/changelog-tools:changelog-validate $PLUGIN_PATH` 驗格式；review section categorization；填補 `(date unknown)` |
-| normalize 成功 | → 跑 `/changelog-tools:changelog-validate` 確認 |
+| init 成功 | → 跑 `/doc-guardian:changelog-validate $PLUGIN_PATH` 驗格式；review section categorization；填補 `(date unknown)` |
+| normalize 成功 | → 跑 `/doc-guardian:changelog-validate` 確認 |
 | init `EXIT=1`（CHANGELOG 已存在） | → 改用 normalize mode；或加 `--force` overwrite |
 
 ## Examples
 
 ```bash
 # 為 che-word-mcp 補 CHANGELOG.md
-/changelog-tools:changelog-init init plugins/che-word-mcp
+/doc-guardian:changelog-init init plugins/che-word-mcp
 
 # Preview only
-/changelog-tools:changelog-init init plugins/che-word-mcp --dry-run
+/doc-guardian:changelog-init init plugins/che-word-mcp --dry-run
 
 # Overwrite existing CHANGELOG.md
-/changelog-tools:changelog-init init plugins/che-word-mcp --force
+/doc-guardian:changelog-init init plugins/che-word-mcp --force
 
 # Normalize issue-driven-dev 的 em-dash format
-/changelog-tools:changelog-init normalize plugins/issue-driven-dev
+/doc-guardian:changelog-init normalize plugins/issue-driven-dev
 ```
 
 ## Limitations & manual cleanup needed

@@ -79,9 +79,9 @@ done
 
 ## GitHub Repo About Metadata（和 README 同等級的使用者第一印象）
 
-**重要提醒**：多數 plugin 沒有自己的 repo（都住在 `psychquant-claude-plugins` 這個 monorepo 底下）。這個章節主要適用於：
+**重要提醒**：多數 plugin 沒有自己的 repo（都住在某個 marketplace monorepo 底下 —— `psychquant-claude-plugins`、`che-plugin-devtools`、`sinica-claude-plugins`…）。這個章節主要適用於：
 
-1. **Marketplace repo 本身**（`psychquant-claude-plugins`）— 整個 marketplace 的 About
+1. **Marketplace repo 本身** — 整個 marketplace 的 About
 2. **含 binary 的 plugin 家族** — 例如 `che-word-mcp` plugin 對應的 `PsychQuant/che-word-mcp` repo
 3. **從 monorepo 拆出去的獨立 plugin repo** — 極少數情況
 
@@ -89,13 +89,13 @@ done
 
 ### Plugin 對應的 binary repo（最常見的情況）
 
-當 plugin 包 MCP binary（`che-word-mcp-wrapper.sh` → `~/bin/CheWordMCP`）時，**binary repo 的 About metadata** 才是使用者主要會看到的。規則見 `mcp-tools/rules/tool-readme-sync.md` 的 GitHub Repo About Metadata 章節。
+當 plugin 包 MCP binary（`che-word-mcp-wrapper.sh` → `~/bin/CheWordMCP`）時，**binary repo 的 About metadata** 才是使用者主要會看到的。規則見同目錄的 [`tool-readme-sync-mcp.md`](tool-readme-sync-mcp.md) 的 GitHub Repo About Metadata 章節。
 
 ### Marketplace repo 的 About（如果你是 maintainer）
 
 | 欄位 | 位置 | 應該同步的時機 |
 |------|------|-------------|
-| **Description** | `gh repo view PsychQuant/psychquant-claude-plugins --json description` | 加了新 plugin 類別（如第一個 OCR plugin、第一個 bioinformatics plugin）|
+| **Description** | `gh repo view <owner>/<marketplace> --json description` | 加了新 plugin 類別（如第一個 OCR plugin、第一個 bioinformatics plugin）|
 | **Topics** | 同上 | 隨 plugin 家族成長；例如首次加入 `rust-plugin` 類型就該加 `rust` topic |
 | **Homepage URL** | 同上 | 通常指 marketplace 首頁或 docs 網站 |
 
@@ -112,15 +112,22 @@ Curated Claude Code plugins marketplace with N plugins — MCP servers (Word / P
 ### Deploy 前的 marketplace 審計
 
 ```bash
+# 路徑一律經 resolve-marketplace.sh，不要寫死 —— 見 CLAUDE.md「Marketplace 路徑解析」
+source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-marketplace.sh"
+
+MP=psychquant-claude-plugins          # 換成你要審計的 marketplace
+MP_ROOT=$(resolve_marketplace_root "$MP") || { echo "未知的 marketplace: $MP"; exit 1; }
+MP_REPO="PsychQuant/$MP"
+
 # 抓實際 plugin 數量
-PLUGIN_COUNT=$(ls -d /Users/che/Developer/psychquant-claude-plugins/plugins/*/ | wc -l | tr -d ' ')
+PLUGIN_COUNT=$(ls -d "$MP_ROOT"/plugins/*/ | wc -l | tr -d ' ')
 
 # marketplace repo description 是否反映
-CURRENT_DESC=$(gh repo view PsychQuant/psychquant-claude-plugins --json description -q .description)
+CURRENT_DESC=$(gh repo view "$MP_REPO" --json description -q .description)
 echo "$CURRENT_DESC" | grep -qE "[0-9]+ plugins" || echo "⚠️ Marketplace description 沒提到 plugin 總數"
 
 # topics 數量
-TOPIC_COUNT=$(gh repo view PsychQuant/psychquant-claude-plugins --json repositoryTopics -q '.repositoryTopics | length')
+TOPIC_COUNT=$(gh repo view "$MP_REPO" --json repositoryTopics -q '.repositoryTopics | length')
 [ "$TOPIC_COUNT" -ge 5 ] || echo "⚠️ Marketplace topics 只有 $TOPIC_COUNT 個（建議 15-20）"
 ```
 

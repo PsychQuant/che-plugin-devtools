@@ -132,8 +132,8 @@ echo '{"enabled": false}' > .claude/doc-guardian.json
 
 | Skill / Integration | Purpose |
 |---------------------|---------|
-| `/doc-guardian:changelog-add <plugin-path>` | Interactive `[Unreleased]` entry creation. Calls Composio's `changelog-generator` for git-commit parsing. |
-| `/doc-guardian:changelog-release <plugin-path>` | Promote `[Unreleased]` → `vX.Y.Z` + DATE. Auto-bump semver from sections. Sync 3 files. |
+| `/doc-guardian:changelog-add <plugin-path>` *(Phase 2 — not implemented)* | Interactive `[Unreleased]` entry creation. Calls Composio's `changelog-generator` for git-commit parsing. |
+| `/doc-guardian:changelog-release <plugin-path>` *(Phase 2 — not implemented)* | Promote `[Unreleased]` → `vX.Y.Z` + DATE. Auto-bump semver from sections. Sync 3 files. |
 | Hooks into `plugin-deploy` / `mcp-deploy` / `cli-deploy` | Deploy-time CHANGELOG freshness check |
 | ~~Absorb `claude-md-reminder.sh`~~ | **Done in v2.0.0** — merged from doc-guardian 1.0.2, judgement criteria moved to config |
 
