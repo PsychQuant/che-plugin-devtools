@@ -158,6 +158,19 @@ curl -fsSL https://modelcontextprotocol.io/llms.txt \
 
 同頁也列出版本規則：格式 `YYYY-MM-DD`，**只在 backwards-incompatible 變更時才遞增**。所以兩個版本之間的距離不是「幾個月」，是「幾次 breaking change」。
 
+**要算「落後幾代」就需要完整版本序列。** `llms.txt` 只列 current 一個，改從 spec repo 的目錄拿（可機器讀、無需解析 HTML）：
+
+```bash
+ALL_VERSIONS=$(gh api repos/modelcontextprotocol/modelcontextprotocol/contents/docs/specification \
+  --jq '.[] | select(.type=="dir") | .name' 2>/dev/null \
+  | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort)
+
+# 落後幾代 = 序列中位於 DECLARED 之後的版本數
+GENERATIONS=$(printf '%s\n' "$ALL_VERSIONS" | awk -v d="$DECLARED_ONE" '$0 > d' | wc -l | tr -d ' ')
+```
+
+日期字串按 `YYYY-MM-DD` 格式做字典序比較即等同時間序，不需轉換。若 `gh` 不可用或 repo 結構改變，**退回只報「落後 / 未落後」而不報代數** —— 報不出代數是可接受的降級，報錯的代數不是。
+
 ### Step 2: 偵測專案宣告的版本
 
 三種情況要分開判定——**它們的風險完全不同**：

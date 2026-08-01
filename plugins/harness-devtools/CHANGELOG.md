@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2. **偵測專案宣告** —— 分三種情況判定，風險不同：硬編碼（最高，SDK 升級也不會帶動）／引用 SDK 常數（中）／未宣告（低）。
   3. **判定遷移工作量** —— 跨 breaking change 時列出該版 Negotiation 段實際要求的必要項，不報告成「改個字串」。
 
+  「落後幾代」從 spec repo 的 `docs/specification/` 目錄取完整版本序列計算（`llms.txt` 只給 current 一個）。日期字串按 `YYYY-MM-DD` 字典序比較即等同時間序。取不到序列時**退回只報「落後 / 未落後」** —— 報不出代數是可接受的降級，報錯的代數不是。
+
   同步擴充 Phase 4 報告（新增 `🔌 Protocol 版本` 段）與 Phase 5 執行選項（落後時才出現「Protocol 版本遷移」）。
 
 ### Fixed
