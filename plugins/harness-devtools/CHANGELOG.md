@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-08-01
+
+修 2.0.2 引入的 live bug：resolver 確定地指向四個月前的過時原始碼。修的是 #11。
+
+### Fixed
+
+- **`MCP_ROOTS_SPEC` 順序：`che-msg` 移到 `che-mcps` 之前。**
+
+  `che-telegram-all-mcp` / `che-telegram-bot-mcp` 在兩處都有，但**不是同一個專案的兩份副本**：
+
+  | | `che-msg/` | `che-mcps/` |
+  |---|---|---|
+  | 形態 | monorepo 子目錄（無自己的 `.git`）| 獨立 clone（有自己的 `.git`）|
+  | remote | `PsychQuant/che-msg` | `kiki830621/che-telegram-*-mcp` |
+  | 最後 commit | **2026-06-14** | 2026-02-22 |
+  | 檔案結構 | 重構後（`TelegramAllLib/`、`CLIBootstrap.swift`…）| 重構前（`TDLibClient.swift`）|
+
+  舊順序把 `che-mcps` 排前面，於是六個 `mcp-*` skill 被確定地導向**落後四個月**的原始碼。#2 的 closing summary 寫「resolver 依 precedence 取 che-mcps 那份，行為確定且有測試 pin 住，所以工具層安全」—— 前半正確、結論錯誤。**確定不等於正確**：測試 pin 住的是「第一個 root 勝出」這條規則，不是「勝出的那份是對的」。
+
+- **同名遮蔽從靜默變可見**。`resolve_mcp_project` 現在偵測「同一名稱存在於多個 umbrella」，往 **stderr** 印出全部候選並標明取了哪個。stdout 仍只有單一路徑，呼叫端的 `cd "$(resolve_mcp_project x)"` 不受影響。
+
+  這正是本 issue 的根因形狀：靜默地在數份同名之中挑一個，挑錯了也沒有任何訊號。無遮蔽時不印任何東西（不製造雜訊）。
+
+### Added
+
+- **`mcp_project_candidates <name>`** —— 依 precedence 順序列出所有候選路徑。讓「有幾份、分別在哪」成為可查詢的事實，而非只能從警告訊息推斷。
+
+**未做的事**：本機 `~/Developer/che-mcps/che-telegram-{all,bot}-mcp` 這兩個過時 clone **未刪除** —— 那是不可逆的資料層動作，留給使用者決定。resolver 現在不會取到它們，且若取到會警告，所以留著不影響正確性。
+
 ## [2.0.2] - 2026-07-31
 
 六個 `mcp-*` skill 有 11 處指向一個**已經不存在**的專案目錄。修的是 #2。
