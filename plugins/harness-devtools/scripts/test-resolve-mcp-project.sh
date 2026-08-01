@@ -96,10 +96,35 @@ assert_eq "同名時取 che-mcps 而非 Developer 根" \
 assert_eq "list_mcp_projects 對同名只列一次" "1" \
   "$(run 'list_mcp_projects' | grep -c '^dup-mcp$')"
 
+# #11：che-msg 必須排在 che-mcps 之前。原順序讓 resolver 確定地指向
+# 四個月前的 stale clone —— 確定不等於正確。
+mk_project Developer/che-msg        shadowed-mcp
+mk_project Developer/che-mcps       shadowed-mcp
+assert_eq "che-msg 優先於 che-mcps（#11 stale-clone 修正）" \
+  "$FAKE/Developer/che-msg/shadowed-mcp" "$(run 'resolve_mcp_project shadowed-mcp')"
+
+echo
+echo "shadowing 必須可見（#11 — 靜默取勝者正是本 issue 的根因）:"
+SHADOW_ERR=$(HOME="$FAKE" bash -c "source '$RESOLVER'; resolve_mcp_project shadowed-mcp" 2>&1 >/dev/null)
+case "$SHADOW_ERR" in
+  *"同時存在於多個 umbrella"*) PASS=$((PASS+1)); echo "  ✓ 遮蔽時往 stderr 警告" ;;
+  *) FAIL=$((FAIL+1)); echo "  ✗ 遮蔽時往 stderr 警告" ;;
+esac
+case "$SHADOW_ERR" in
+  *che-mcps/shadowed-mcp*) PASS=$((PASS+1)); echo "  ✓ 警告列出被遮蔽的那份" ;;
+  *) FAIL=$((FAIL+1)); echo "  ✗ 警告列出被遮蔽的那份" ;;
+esac
+assert_eq "  警告不污染 stdout（呼叫端 cd \$(...) 仍安全）" \
+  "$FAKE/Developer/che-msg/shadowed-mcp" "$(run 'resolve_mcp_project shadowed-mcp')"
+NOSHADOW_ERR=$(HOME="$FAKE" bash -c "source '$RESOLVER'; resolve_mcp_project che-ical-mcp" 2>&1 >/dev/null)
+assert_eq "  無遮蔽時 stderr 全空（不製造雜訊）" "" "$NOSHADOW_ERR"
+assert_eq "  mcp_project_candidates 列出全部候選" "2" \
+  "$(run 'mcp_project_candidates shadowed-mcp' | wc -l | tr -d ' ')"
+
 echo
 echo "listing:"
 assert_eq "list_mcp_roots 只列出實際存在的" "3" "$(run 'list_mcp_roots' | wc -l | tr -d ' ')"
-assert_eq "list_mcp_projects 列出全部 7 個" "7" "$(run 'list_mcp_projects' | wc -l | tr -d ' ')"
+assert_eq "list_mcp_projects 列出全部 8 個" "8" "$(run 'list_mcp_projects' | wc -l | tr -d ' ')"
 
 MISSING_ROOT="$TMPROOT/empty-home"
 mkdir -p "$MISSING_ROOT"

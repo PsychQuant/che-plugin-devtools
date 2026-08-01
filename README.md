@@ -14,7 +14,7 @@ claude plugin install doc-guardian@che-plugin-devtools
 
 | Plugin | 版本 | 做什麼 |
 |---|---|---|
-| [`harness-devtools`](plugins/harness-devtools) | 2.0.2 | plugin / MCP server / Swift CLI 的完整發布管道（24 skills）|
+| [`harness-devtools`](plugins/harness-devtools) | 2.0.3 | plugin / MCP server / Swift CLI 的完整發布管道（24 skills）|
 | [`doc-guardian`](plugins/doc-guardian) | 2.0.2 | 文件紀律守門：CHANGELOG / README / CLAUDE.md / wiki 不准落後於 code（4 skills + 3 hooks）|
 
 兩者互補：**harness-devtools 管「怎麼把東西發布出去」，doc-guardian 管「發布時文件要對」。**
@@ -39,7 +39,7 @@ claude plugin install doc-guardian@che-plugin-devtools
 # 單元測試
 bash    plugins/harness-devtools/scripts/test-resolve-marketplace.sh     # 11
 bash    plugins/harness-devtools/scripts/test-check-skill-references.sh  # 15
-bash    plugins/harness-devtools/scripts/test-resolve-mcp-project.sh     # 25
+bash    plugins/harness-devtools/scripts/test-resolve-mcp-project.sh     # 31
 bash    plugins/doc-guardian/scripts/test-doc-update-config.sh           # 20
 python3 plugins/doc-guardian/scripts/test-validate-changelog.py          # 11
 

@@ -59,7 +59,20 @@ set -u
 # nothing to do with MCP (macdoc, rush, safari-browser, …). Treating it as `any`
 # made list_mcp_projects report 42 projects instead of 24, which would have made
 # require_mcp_project's "可用的專案" list actively misleading.
-MCP_ROOTS_SPEC="Developer/che-mcps:any Developer/che-msg:any Developer:mcp-suffix"
+#
+# ORDER MATTERS — che-msg BEFORE che-mcps (#11)
+#   che-telegram-all-mcp / che-telegram-bot-mcp exist under both. They are not
+#   copies of one project: che-msg/ holds them as a monorepo (no per-directory
+#   .git, remote PsychQuant/che-msg, last touched 2026-06), while che-mcps/ holds
+#   pre-migration standalone clones (own .git, remote kiki830621/*, stopped at
+#   2026-02, still on the old file layout before the TelegramAllLib refactor).
+#
+#   The original order put che-mcps first, so the resolver deterministically
+#   pointed six mcp-* skills at four-month-stale source. Determinism is not
+#   correctness — the earlier claim "行為確定且有測試 pin 住，所以工具層安全"
+#   confused the two. The test pinned "first root wins", never "the winner is
+#   the right one".
+MCP_ROOTS_SPEC="Developer/che-msg:any Developer/che-mcps:any Developer:mcp-suffix"
 
 # A directory counts as a project only if it carries package metadata for SOME
 # language. Two reasons this is not just `Package.swift`:
@@ -95,7 +108,9 @@ list_mcp_roots() {
 }
 
 # resolve_mcp_project <name> → absolute path on stdout, or exit 1 with no output.
-resolve_mcp_project() {
+# All roots holding a project of this name, in precedence order, one per line.
+# Exposed so callers (and tests) can see shadowing rather than infer it.
+mcp_project_candidates() {
   local name="${1:-}"
   [ -n "$name" ] || return 1
   local spec rel mode root
@@ -104,12 +119,33 @@ resolve_mcp_project() {
     root="$HOME/$rel"
     [ -d "$root" ] || continue
     _name_ok_for_mode "$name" "$mode" || continue
-    if _is_mcp_project "$root/$name"; then
-      echo "$root/$name"
-      return 0
-    fi
+    _is_mcp_project "$root/$name" && echo "$root/$name"
   done
-  return 1
+  return 0
+}
+
+resolve_mcp_project() {
+  local name="${1:-}"
+  [ -n "$name" ] || return 1
+  local all first
+  all=$(mcp_project_candidates "$name")
+  [ -n "$all" ] || return 1
+  first=$(printf '%s\n' "$all" | head -1)
+
+  # Shadowing must be VISIBLE. A silently-picked winner among several同名 copies
+  # is exactly the failure this whole issue was about: the resolver deterministically
+  # returned four-month-stale source and nothing said so. stdout stays the single
+  # path (callers `cd "$(resolve_mcp_project x)"`); the warning goes to stderr.
+  if [ "$(printf '%s\n' "$all" | wc -l | tr -d ' ')" -gt 1 ]; then
+    {
+      echo "⚠ MCP 專案 '$name' 同時存在於多個 umbrella，取第一個（precedence 依 MCP_ROOTS_SPEC）："
+      printf '%s\n' "$all" | sed '1s/^/    → /; 2,$s/^/      /'
+      echo "  若取到的不是你要的那份，改 MCP_ROOTS_SPEC 順序，或清掉過時的副本。"
+    } >&2
+  fi
+
+  echo "$first"
+  return 0
 }
 
 # Every resolvable project, deduplicated by name (first root wins, matching
