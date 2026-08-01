@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-01
+
+`mcp-upgrade` 新增 MCP protocol 版本維度，並修正它 description 與實作矛盾之處。做的是 #14。
+
+### Added
+
+- **`mcp-upgrade` Phase 1.5：Protocol 版本檢查（語言無關）**。
+
+  Phase 1 查的是 **SDK 套件版本**（`swift-sdk 0.12.0`），Phase 1.5 查的是 **protocol 版本**（`YYYY-MM-DD`）—— 兩者是不同的東西，升一個不保證升另一個。此前 24 個 skill **沒有任何一個**處理後者（`grep -rl protocolVersion skills/` 零命中）。
+
+  三段結構：
+
+  1. **現查官方 current 版本** —— 版本號**不寫進 skill**。protocol 每隔數月換一次，寫死等於埋一個保證過期的事實（本輪 #11 剛因為同一個形狀吃虧）。
+  2. **偵測專案宣告** —— 分三種情況判定，風險不同：硬編碼（最高，SDK 升級也不會帶動）／引用 SDK 常數（中）／未宣告（低）。
+  3. **判定遷移工作量** —— 跨 breaking change 時列出該版 Negotiation 段實際要求的必要項，不報告成「改個字串」。
+
+  同步擴充 Phase 4 報告（新增 `🔌 Protocol 版本` 段）與 Phase 5 執行選項（落後時才出現「Protocol 版本遷移」）。
+
+### Fixed
+
+- **`mcp-upgrade` description 與實作矛盾**。原文寫「本 skill 只分析與提議、**不改動 code**」，但它的 `allowed-tools` 含 `Write, Edit`，且 Phase 5「等待核可並執行」會編輯 `Package.swift`、跑 `swift package update` / `npm update` / `pip install --upgrade`。
+
+  那句話是 v2.0.0（27 個 description 重寫）時寫的 —— 當時讀了 Phase 0–3 就下結論，**沒讀到 Phase 5**。而該次自訂的流程第 2 條正是「讀該 skill 的 SKILL.md body，觸發語要從它實際會做的事提煉，不能憑名字猜」；照做了，但讀得不夠遠。新 description 明確寫出「核可的項目才動手改」及會執行的實際指令。
+
+- **偵測腳本漏排除建置產物**（實作過程中自己踩到並修正）。`.build/checkouts/` 底下是整包 MCP SDK 原始碼，當然含 `protocolVersion` 與各版本日期；不排除的話，一個「未宣告、完全交給 SDK」的乾淨專案會被報成「硬編碼三個版本」。
+
+  **這個坑在 Claude Code 環境裡看不到** —— 它注入的 `grep` 實為 `ugrep --ignore-files`，自動遵守 `.gitignore`（`.build/` 正在裡面）。同一個專案：原生 `grep` 掃出 184 行、Claude Code 的 `grep` 掃出 0 行。skill 交付給原生環境跑，必須自己寫 `--exclude-dir`。
+
 ## [2.0.3] - 2026-08-01
 
 修 2.0.2 引入的 live bug：resolver 確定地指向四個月前的過時原始碼。修的是 #11。

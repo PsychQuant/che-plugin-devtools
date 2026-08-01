@@ -1,8 +1,9 @@
 ---
 name: mcp-upgrade
 description: |
-  分析既有 MCP Server 專案並提出升級建議，分三個 phase：依賴版本、專案結構、可加的新功能。可用 focus-area 參數聚焦單一面向。
-  與鄰近 skill 的分工：本 skill 只分析與提議、不改動 code；想看別人怎麼實作再決定要不要抄，用 mcp-clone（已知 repo）或 mcp-clone-references（要先搜尋）。
+  分析既有 MCP Server 專案並提出升級建議，四個維度：依賴套件版本、MCP protocol 版本、專案結構、可加的新功能。彙整成報告後用 AskUserQuestion 讓你挑選，**核可的項目才動手改**（編輯 Package.swift、跑 swift package update / npm update / pip install --upgrade 等）。可用 focus-area 參數聚焦單一面向。
+  依賴版本與 protocol 版本是兩件事：前者是函式庫（swift-sdk 0.12.0），後者是 spec 本身（YYYY-MM-DD），升一個不保證升另一個。protocol 版本一律現查官方文檔，不寫死在 skill 裡。
+  與鄰近 skill 的分工：想看別人怎麼實作再決定要不要抄，用 mcp-clone（已知 repo）或 mcp-clone-references（要先搜尋）；本 skill 不建新專案（用 mcp-new-app）、不發布（用 mcp-deploy）。
 argument-hint: [focus-area]
 allowed-tools: Read, Write, Edit, Bash(swift:*), Bash(git:*), Bash(npm:*), Bash(pip:*), Bash(cat:*), Bash(grep:*), Bash(file:*), Bash(lipo:*), Bash(shasum:*), Bash(ls:*), Bash(rm:*), Grep, Glob, WebFetch, AskUserQuestion
 disable-model-invocation: true
@@ -32,6 +33,7 @@ disable-model-invocation: true
 ```
 TaskCreate(name="project_analysis", description="Phase 0: 確認專案位置 + 識別語言/框架 + 收集資訊")
 TaskCreate(name="dependency_analysis", description="Phase 1: 依賴分析（過時、安全漏洞、版本差距）")
+TaskCreate(name="protocol_version_check", description="Phase 1.5: MCP protocol 版本檢查（語言無關）——現查官方 current 版本、偵測專案宣告（硬編碼 / 靠 SDK / 未宣告）、跨 breaking change 時列出四個必要項")
 TaskCreate(name="structure_analysis", description="Phase 2: 目錄結構 + 程式碼品質 + Binary 一致性（Swift only）")
 TaskCreate(name="feature_analysis", description="Phase 3: 現有工具 + API 能力對比 + 建議新功能")
 TaskCreate(name="generate_upgrade_report", description="Phase 4: 彙整報告，列出所有建議 + 優先級")
@@ -130,6 +132,87 @@ npm outdated 2>/dev/null
 ```bash
 npm view @modelcontextprotocol/sdk version
 ```
+
+---
+
+## Phase 1.5: Protocol 版本檢查（語言無關）
+
+Phase 1 查的是 **SDK 套件版本**。這一步查的是 **MCP protocol 版本**——兩者是不同的東西，升一個不保證升另一個：
+
+```
+SDK 版本        swift-sdk 0.12.0 / @modelcontextprotocol/sdk 1.x   ← 函式庫
+protocol 版本   YYYY-MM-DD                                          ← spec 本身
+```
+
+### Step 1: 查官方 current 版本
+
+**絕不把版本號寫進本 skill。** protocol 版本每隔數月就換一次，寫死等於埋一個保證過期的事實。每次執行都現查：
+
+```bash
+# 首選：llms.txt 的 versioning 頁（權威且穩定）
+curl -fsSL https://modelcontextprotocol.io/llms.txt \
+  | grep -oE 'docs/[0-9]{4}-[0-9]{2}-[0-9]{2}/' | head -1 | tr -d 'docs/'
+```
+
+或用 `livedocs:look-up` / WebFetch 讀 `modelcontextprotocol.io/docs/<ver>/learn/versioning.md`，該頁明文寫「The **current** protocol version is ...」。
+
+同頁也列出版本規則：格式 `YYYY-MM-DD`，**只在 backwards-incompatible 變更時才遞增**。所以兩個版本之間的距離不是「幾個月」，是「幾次 breaking change」。
+
+### Step 2: 偵測專案宣告的版本
+
+三種情況要分開判定——**它們的風險完全不同**：
+
+```bash
+# 用 protocolVersion 當錨點，而不是裸抓日期字串
+#（裸抓會撈到測試用的 date fixture，實測撈到過 "2026-13-01" 這種 13 月的假日期）
+#
+# --exclude-dir 不可省：.build/checkouts/ 底下是整包 MCP SDK 原始碼，
+# 裡面當然有 protocolVersion 與各版本日期。不排除的話，一個「未宣告、
+# 完全交給 SDK」的乾淨專案會被報成「硬編碼三個版本」。
+HITS=$(grep -rhiE "protocolVersion" . \
+  --include="*.swift" --include="*.py" --include="*.ts" --include="*.json" \
+  --exclude-dir=.build --exclude-dir=node_modules --exclude-dir=.git \
+  --exclude-dir=venv --exclude-dir=.venv --exclude-dir=__pycache__ \
+  --exclude-dir=dist --exclude-dir=Pods 2>/dev/null || true)
+
+DECLARED=$(printf '%s' "$HITS" | grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}' | sort -u || true)
+MENTIONS=$(printf '%s' "$HITS" | grep -c . || true)   # `|| true`：無匹配時 grep exit 1，set -e 下會中斷
+```
+
+> **兩個親手踩過的坑，都會靜默給出錯的答案：**
+>
+> 1. **漏了 `--exclude-dir=.build`** —— 在 Claude Code 環境裡不會發現，因為它注入的 `grep` 其實是 `ugrep --ignore-files`（自動遵守 `.gitignore`，而 `.build/` 正在裡面）。同一個專案用原生 `grep` 掃出 184 行、用 Claude Code 的 `grep` 掃出 0 行。**skill 是給原生環境跑的，必須自己排除。**
+>
+> 2. **寫成 `|| echo 0`** —— `grep -c` 無匹配時**已經印了 `0`**，再 echo 一次會得到 `0\n0`，後續 `[ "$MENTIONS" -gt 0 ]` 直接報 `integer expression expected`。用 `|| true`。
+
+| 情況 | 判定 | 風險 |
+|---|---|---|
+| `DECLARED` 非空 | **硬編碼**——版本鎖死在原始碼 | **最高**：SDK 升級也不會帶動它 |
+| `DECLARED` 空但 `MENTIONS > 0` | 引用 SDK 提供的常數 | 中：跟著 SDK 走，但要確認 SDK 夠新 |
+| 兩者皆空 | 完全由 SDK 處理 | 低：升 SDK 即可 |
+
+### Step 3: 判定遷移工作量
+
+若 `DECLARED` 落後於 current，**不要報告成「改個字串」**。跨越 breaking change 時實際要做的事，以 `2025-11-25 → 2026-07-28` 為例（現查該版 versioning 頁的 Negotiation 段確認細節）：
+
+```
+舊（handshake-based）  initialize 一次議定版本，之後沿用
+新（per-request）      每個 request 在 _meta 帶 io.modelcontextprotocol/protocolVersion
+                       server 逐一接受或拒絕，不支援時回 UnsupportedProtocolVersionError
+                       Streamable HTTP 另在 MCP-Protocol-Version header 帶同值
+                       新增 mandatory RPC: server/discover
+```
+
+四個必要項，**缺一不可**：
+
+1. per-request `_meta` 版本宣告
+2. 實作 `server/discover`（**mandatory**）
+3. Streamable HTTP 的 header 處理（若有 HTTP transport）
+4. **保留對 handshake-based 舊版的相容**
+
+第 4 項最容易漏——直接切到新機制會讓還在跑舊 client 的環境全斷。官方有 Backward Compatibility 專節，遷移前必讀。
+
+**報告時只列查證到的事實**：目前宣告什麼、官方 current 是什麼、該版本的 Negotiation 段實際要求什麼。不要憑記憶複述遷移步驟——那正是會過期的部分。
 
 ---
 
@@ -321,6 +404,18 @@ swift package update
 
 ---
 
+## 🔌 Protocol 版本
+
+| | 值 |
+|---|---|
+| 專案宣告 | {硬編碼 YYYY-MM-DD / 由 SDK 決定 / 未宣告} |
+| 官方 current | {現查所得，附查詢時間} |
+| 判定 | {up-to-date / 落後（跨 N 次 breaking change）/ 無法判定} |
+
+落後時列出該版 Negotiation 段實際要求的必要項（per-request `_meta` / `server/discover` / HTTP header / backward compat），**逐項標明「已符合 / 待實作 / 不適用」**——不適用要寫理由（例如無 HTTP transport 則 header 那項不適用）。
+
+up-to-date 或未宣告（完全靠 SDK）時，本段只留一行結論，不展開。
+
 ## 🏗️ 結構優化
 
 ### 建議改進
@@ -399,6 +494,7 @@ swift package update
 
 **選項**：
 - [ ] 更新依賴
+- [ ] **Protocol 版本遷移**（僅在 Phase 1.5 判定落後時出現；跨 breaking change 屬大改動，建議獨立成一次 commit）
 - [ ] 結構優化（加入缺失檔案）
 - [ ] 修復潛在問題
 - [ ] 實作新功能（需另外討論細節）
