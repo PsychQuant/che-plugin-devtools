@@ -70,8 +70,10 @@ TaskCreate(name="invoke_dependency_skill", description="Phase 1.5 auto-sync: 呼
 ```bash
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 
-# 給 plugin 名，反查它屬於哪個 marketplace
-IFS="|" read -r MP_NAME MP_ROOT <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+# 給 plugin 名，反查它屬於哪個 marketplace。
+# **必須先檢查回傳碼再拆欄位**——見下方 Step 0.1。
+RESOLVED=$(find_plugin_marketplace "$PLUGIN_NAME") || RESOLVED=""
+IFS="|" read -r MP_NAME MP_ROOT <<< "$RESOLVED"
 
 # 或直接解析已知名稱
 MP_ROOT="$(resolve_marketplace_root psychquant-claude-plugins)"
@@ -83,6 +85,50 @@ claude plugin marketplace list 2>&1
 
 新增 marketplace 時只改 `resolve-marketplace.sh` 一處；`scripts/test-resolve-marketplace.sh`
 會斷言每個列出的名稱都解析得到。
+
+### Step 0.1: Marketplace Resolution Gate（v2.2.0+ #16）
+
+**這道 gate 必須在 Phase 0.3 之前，因為 0.3 與 0.5 兩道 gate 都預設它已經成立。**
+
+`find_plugin_marketplace` 找不到時 `return 1` 且**不輸出任何東西**。先前這裡直接
+`IFS="|" read <<< "$(find_plugin_marketplace ...)"`，於是 `MP_NAME` / `MP_ROOT` 靜默
+變成空字串，而後面每一個 phase 都建立在那兩個空字串上：
+
+| Phase | 用法 | 空值時 |
+|---|---|---|
+| 0.3 | `PLUGIN_DIR="$MP_ROOT/plugins/$PLUGIN_NAME"` | `/plugins/<name>` → 偵測全部落空 → `IS_BINARY_BACKED=false`，binary gate 整個失效 |
+| 0.5 | `cd "$MP_ROOT"` | `cd ""` 是 no-op → **git state gate 跑在使用者當下所在的 repo 上** |
+| 2 | 讀寫 `$MP_ROOT/.claude-plugin/marketplace.json` | 讀不到 |
+
+**0.5 那條最危險**：使用者剛改完 plugin 原始碼、就在那個 repo 裡跑 `/plugin-update`
+是最自然的動作，而那個 repo 通常真的有未推送的 commit——於是 gate 會 preview 錯誤
+repo 的狀態並問「要 push 嗎」，而那個問句看起來完全合理。
+
+```bash
+if [ -z "$MP_ROOT" ] || [ ! -d "$MP_ROOT" ]; then
+    echo "✗ Phase 0.1: plugin '$PLUGIN_NAME' 不在任何已註冊的 marketplace 裡。" >&2
+    echo "  已搜尋：$(list_marketplaces | tr '\n' ' ')" >&2
+    echo "" >&2
+    echo "  plugin-update 只同步**已上架**的 plugin。你要的可能是：" >&2
+    echo "    · plugin 檔案已存在（例如在它自己的原始碼 repo 裡）但還沒上架" >&2
+    echo "      → /harness-devtools:plugin-deploy $PLUGIN_NAME" >&2
+    echo "    · plugin 還不存在" >&2
+    echo "      → /harness-devtools:plugin-create" >&2
+    echo "" >&2
+    echo "  若它是 binary-backed（MCP server / CLI），plugin-deploy 的 Step 2.5 會在" >&2
+    echo "  release 沒有 binary asset 時 BLOCK，所以更前面要先在 binary 的原始碼 repo 跑：" >&2
+    echo "    → /harness-devtools:mcp-deploy   （或 CLI 專案用 /harness-devtools:cli-deploy）" >&2
+    exit 1
+fi
+```
+
+**這是 abort，不是 warn。** 繼續下去的每一條路徑都是對錯的目標動手，而其中一條會
+主動邀請使用者 push 一個不相干的 repo。
+
+> **為什麼 Phase 2 Step 3「新 Plugin 需加入 entry」不涵蓋這個情形**：那一步處理的是
+> 「plugin 檔案**已經在** marketplace repo 的 `plugins/` 底下，但 `marketplace.json`
+> 還沒有它的 entry」。首次上架缺的是**把 plugin 放進 marketplace repo** 這一步，而
+> 那是 `plugin-deploy` 的工作。兩者字面上都像「新 plugin」，但缺的東西不同。
 
 ---
 

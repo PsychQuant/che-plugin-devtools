@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-26
+
+### Fixed
+
+- **`resolve-marketplace.sh` 在 zsh 下對每一個 plugin 都解析失敗**（#16）。
+  `for mp in $MARKETPLACE_NAMES` 依賴 unquoted 變數的 word-split，而 zsh 預設不做
+  那件事。這個檔案是被 `source` 的，所以跑它的是呼叫端的 shell——`#!/bin/bash`
+  那行不生效，而 **Claude Code 的 Bash 工具跑在 zsh**。實測 `find_plugin_marketplace
+  harness-devtools` 在 bash 回 0 並印出正確結果、在 zsh 回 1 且無輸出。改成換行
+  分隔 + `while read`（here-doc，不是 pipe——pipe 的 subshell 會讓 `return 0` 只
+  結束子 shell）。五個 skill 都 source 它。
+- **`plugin-update` Phase 0 不檢查 marketplace 解析失敗**（#16）。`MP_NAME` /
+  `MP_ROOT` 靜默變空字串後，Phase 0.3 的 `PLUGIN_DIR` 變成 `/plugins/<name>`
+  （binary gate 整個失效），Phase 0.5 的 `cd "$MP_ROOT"` 成為 no-op ——**git state
+  gate 因此跑在使用者當下所在的 repo 上，並邀請他 push 一個不相干的 repo**。
+  新增 Step 0.1 marketplace resolution gate，abort 並指出正確的下一步
+  （`plugin-deploy` 首次上架 / `plugin-create` / binary-backed 要先 `mcp-deploy`）。
+
+### Added
+
+- 測試套件新增 zsh 分支。先前整份測試只跑 bash（檔頭逐字寫著
+  "Deliberately runs under /bin/bash"），**那正是上面第一個 bug 活下來的原因**。
+  變異確認：改回空白分隔後 zsh 兩條紅、bash 全部照樣綠。
+- README 新增「哪個 skill、什麼順序」段。先前 24 個 skill 逐條列出但沒有任何一處
+  說明首次上架與後續同步的差別，而 `plugin-update` 的描述（marketplace.json 同步 +
+  安裝檢查）字面上讀起來就像涵蓋首次上架。
+
 ## [2.1.0] - 2026-08-01
 
 `mcp-upgrade` 新增 MCP protocol 版本維度，並修正它 description 與實作矛盾之處。做的是 #14。

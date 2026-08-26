@@ -27,6 +27,35 @@ Claude Code 開發工具鏈 — plugin / MCP server / CLI 的完整發布管道�
 
 所以「分成三個讓使用者只裝需要的」是假選項——能選，但選了會靜默壞掉。合併成單一不可分割單元。
 
+## 先看這個：哪個 skill、什麼順序
+
+下面的表把 24 個 skill 逐條列出，但**逐條列表答不出「現在該跑哪一個」**——
+而選錯的代價不對稱：`plugin-update` 對一個還沒上架的 plugin 會走進錯誤的 repo
+（#16）。
+
+判準是**這個 plugin 現在在哪裡**，不是「我想做什麼」：
+
+| plugin 現在的狀態 | 跑什麼 |
+|---|---|
+| 還不存在 | `plugin-create` |
+| 檔案在某個原始碼 repo 裡，**沒進過任何 marketplace** | `plugin-deploy`（首次上架）|
+| 已在 marketplace，這次改了 skill / rule / hook | `plugin-update` |
+| 已在 marketplace，這次改的是它依賴的 binary | 先在 binary 的 repo 跑 `mcp-deploy`（CLI 專案用 `cli-deploy`），再 `plugin-update` |
+
+**binary-backed 的 plugin 首次上架是三步，不是一步**，而順序是依賴不是偏好：
+
+```
+① mcp-deploy    在 binary 的原始碼 repo 跑：編譯 → GitHub Release 上傳 asset
+       ↓         （沒有這步，plugin-deploy 的 Step 2.5 會 BLOCK：release 沒 binary
+                   ＝ 新使用者裝了 plugin 就壞）
+② plugin-deploy 把 plugin 放進 marketplace repo、加 marketplace.json entry、push
+       ↓
+③ plugin-update 之後每次改 plugin shell 都跑這個
+```
+
+怎麼判斷是不是 binary-backed：`plugin.json` 有 `mcpServers`、或 `bin/` 底下有
+wrapper script、或 hook 會去 curl GitHub Release——三者任一即是。
+
 ## Skills
 
 ### Plugin 生命週期

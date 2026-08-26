@@ -37,8 +37,23 @@
 
 set -u
 
-# Space-delimited; order defines search precedence for find_plugin_marketplace.
-MARKETPLACE_NAMES="che-plugin-devtools psychquant-claude-plugins sinica-claude-plugins che-local-plugins"
+# Newline-delimited; order defines search precedence for find_plugin_marketplace.
+#
+# **換行分隔 + `while read`，不是空白分隔 + `for mp in $VAR`**（#16）。
+# 後者依賴 unquoted 變數的 word-split，而 **zsh 預設不做那件事**——這個檔案是被
+# `source` 的，所以跑它的是呼叫端的 shell，`#!/bin/bash` 那行不生效。
+#
+# 實測：`zsh -c 'source ...; find_plugin_marketplace harness-devtools'` 回 rc=1，
+# 同一句在 bash 下回 0 並印出正確的 marketplace。**Claude Code 的 Bash 工具跑在
+# zsh**，所以照 skill 教的做（source 之後呼叫）在 session 裡對**每一個** plugin
+# 都解析不到，而呼叫端多半不檢查回傳碼——失敗於是變成一個空字串。
+#
+# 檔頭那句「test suite asserts a clean stderr under /bin/bash」正是它活下來的原因：
+# 測試只跑 bash。現在測試兩個 shell 都跑。
+MARKETPLACE_NAMES='che-plugin-devtools
+psychquant-claude-plugins
+sinica-claude-plugins
+che-local-plugins'
 
 # Resolve a marketplace name to its local repo root.
 # Returns 1 for unknown or empty names.
@@ -58,10 +73,7 @@ resolve_marketplace_root() {
 
 # Print every known marketplace name, one per line.
 list_marketplaces() {
-  local mp
-  for mp in $MARKETPLACE_NAMES; do
-    echo "$mp"
-  done
+  printf '%s\n' "$MARKETPLACE_NAMES"
 }
 
 # Given a plugin name, find which marketplace contains it.
@@ -72,12 +84,17 @@ find_plugin_marketplace() {
   [ -n "$plugin" ] || return 1
 
   local mp root
-  for mp in $MARKETPLACE_NAMES; do
+  # here-doc（不是 pipe）：pipe 會開 subshell，`return 0` 就只結束那個 subshell、
+  # 函式照樣走到最後的 `return 1`。here-doc 的 while 跑在當前 shell。
+  while IFS= read -r mp; do
+    [ -n "$mp" ] || continue
     root=$(resolve_marketplace_root "$mp") || continue
     if [ -d "$root/plugins/$plugin" ]; then
       echo "$mp|$root"
       return 0
     fi
-  done
+  done <<EOF
+$MARKETPLACE_NAMES
+EOF
   return 1
 }

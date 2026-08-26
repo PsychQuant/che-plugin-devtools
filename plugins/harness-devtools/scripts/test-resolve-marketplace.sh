@@ -99,6 +99,33 @@ NOISE=$(/bin/bash -c "source '$SCRIPT_DIR/resolve-marketplace.sh' && resolve_mar
 assert_eq "sourcing under /bin/bash emits no stderr" "" "$NOISE"
 
 echo
+echo "zsh compatibility (#16):"
+# **這一節是這個 bug 活下來的原因的補救。** 先前整份測試只跑 bash，而這個檔案是被
+# `source` 的——跑它的是呼叫端的 shell，`#!/bin/bash` 不生效。Claude Code 的 Bash
+# 工具跑在 zsh，而 zsh 預設不對 unquoted 變數做 word-split，於是
+# `for mp in $MARKETPLACE_NAMES` 只迭代一次（整個字串當一個項目），
+# `find_plugin_marketplace` 對**每一個** plugin 都回 rc=1。
+#
+# 破壞實作確認過會紅：把 MARKETPLACE_NAMES 改回空白分隔 + `for mp in $VAR`，
+# 下面兩條在 zsh 那邊會失敗（bash 那邊仍然全綠——那正是重點）。
+if command -v zsh >/dev/null 2>&1; then
+  ZSH_HIT=$(zsh -c "source '$SCRIPT_DIR/resolve-marketplace.sh' && find_plugin_marketplace harness-devtools" 2>/dev/null)
+  assert_eq "sourcing under zsh finds harness-devtools" \
+    "che-plugin-devtools|$HOME/Developer/che-plugin-devtools" \
+    "$ZSH_HIT"
+
+  ZSH_COUNT=$(zsh -c "source '$SCRIPT_DIR/resolve-marketplace.sh' && list_marketplaces | wc -l" 2>/dev/null | tr -d ' ')
+  BASH_COUNT=$(list_marketplaces | wc -l | tr -d ' ')
+  assert_eq "list_marketplaces yields the same count under zsh and bash" \
+    "$BASH_COUNT" "$ZSH_COUNT"
+
+  ZSH_NOISE=$(zsh -c "source '$SCRIPT_DIR/resolve-marketplace.sh' && resolve_marketplace_root che-plugin-devtools >/dev/null" 2>&1)
+  assert_eq "sourcing under zsh emits no stderr" "" "$ZSH_NOISE"
+else
+  echo "  ⊘ zsh not on PATH — skipped (這台機器不是 macOS 預設環境?)"
+fi
+
+echo
 echo "─────────────────────────────"
 echo "PASS: $PASS   FAIL: $FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
