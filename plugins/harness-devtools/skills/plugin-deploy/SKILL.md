@@ -96,12 +96,30 @@ fi
 # 2. 若是 MCP plugin，掃 bin/ 下的 wrapper 抓 BINARY_NAME + GITHUB_REPO
 if [ "$IS_MCP_PLUGIN" = "true" ]; then
     MCP_STALE=false
+    MCP_UNDETERMINED=""        # 抽不出來的 wrapper，逐一具名（#17）
     for wrapper in "$PLUGIN_DIR/bin/"*wrapper.sh; do
         [ -f "$wrapper" ] || continue
-        BINARY_NAME=$(grep '^BINARY_NAME=' "$wrapper" | head -1 | cut -d'"' -f2)
-        GITHUB_REPO=$(grep '^GITHUB_REPO=' "$wrapper" | head -1 | cut -d'"' -f2)
-        [ -z "$BINARY_NAME" ] && continue
-        [ -z "$GITHUB_REPO" ] && continue
+        # 兩種常見寫法都試：`GITHUB_REPO=` 與 `REPO=`。**這兩行不是判準，是便利**
+        # ——真正的判準是下面那個「抽不出來就不算驗過」，見該處的說明。
+        BINARY_NAME=$(grep -E '^BINARY_NAME=' "$wrapper" | head -1 | cut -d'"' -f2)
+        GITHUB_REPO=$(grep -E '^(GITHUB_)?REPO=' "$wrapper" | head -1 | cut -d'"' -f2)
+
+        # **抽不到 → 記下來，不是 `continue`**（#17）。
+        #
+        # 先前這裡是 `[ -z "$BINARY_NAME" ] && continue`：不 echo、不計入
+        # `MCP_STALE`、不影響結束碼。使用者看到一片安靜，而 deploy 照常往下走。
+        #
+        # 實測（2026-08-26，`psychquant-claude-plugins`）：12 個真實 wrapper 裡
+        # **只有 3 個**兩行都抽得到。也就是這道 BLOCK 對四分之三的 plugin
+        # **從來沒有執行過**，而它們每一次 deploy 都「通過」了。
+        #
+        # 修法刻意**不是**再多列舉一種寫法（上面確實多認了 `REPO=`，但那只是
+        # 減少誤報，不是保證）——下一個方言還會出現。判準是：
+        # **抽不出來就代表我沒驗過，那必須說出來。**
+        if [ -z "$BINARY_NAME" ] || [ -z "$GITHUB_REPO" ]; then
+            MCP_UNDETERMINED="$MCP_UNDETERMINED$wrapper"$'\n'
+            continue
+        fi
 
         # 3. 查詢該 repo 的 latest release 是否含對應 binary asset
         HAS_BINARY=$(curl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" \
@@ -117,6 +135,17 @@ if [ "$IS_MCP_PLUGIN" = "true" ]; then
         fi
     done
 
+    # 3.5 抽不出來的 wrapper：**具名報出來，並要求人回答**（#17）
+    if [ -n "$MCP_UNDETERMINED" ]; then
+        echo ""
+        echo "❓ 以下 wrapper 判定不出它需要哪個 binary / 哪個 repo："
+        printf '%s' "$MCP_UNDETERMINED" | sed 's/^/     /'
+        echo "   **這道 BLOCK 對它們沒有驗證任何東西。**"
+        echo "   補救二選一："
+        echo "     · 在 wrapper 補上 BINARY_NAME=\"...\" 與 GITHUB_REPO=\"owner/repo\"（行首）"
+        echo "     · 或手動確認 latest release 確實含對應 asset"
+    fi
+
     # 4. 如果有任何 binary 不在 release → BLOCK deploy
     if [ "$MCP_STALE" = "true" ]; then
         echo ""
@@ -126,6 +155,20 @@ if [ "$IS_MCP_PLUGIN" = "true" ]; then
     fi
 fi
 ```
+
+**若 `MCP_UNDETERMINED` 非空，先用 AskUserQuestion 處理它**（#17）——這一問不能省，
+因為此時 BLOCK 什麼都沒驗到：
+
+```
+question: "有 N 個 wrapper 判定不出 binary / repo，Step 2.5 對它們沒驗證任何東西。怎麼處理？"
+options:
+  - "我已手動確認 release 有對應 asset" — 繼續 deploy，並在最終報告標註「Step 2.5 部分未驗證」
+  - "先去補 wrapper 的 BINARY_NAME / GITHUB_REPO" — 中止 deploy
+  - "中止" — 什麼都不動
+```
+
+**預設是中止**。這道 BLOCK 存在的理由是「release 沒 binary ＝ 新使用者裝了就壞」，
+而「我沒辦法判斷」與「我判斷過沒問題」不是同一件事。
 
 **用 AskUserQuestion 再確認 binary 是否為當前 source code 版本**：
 

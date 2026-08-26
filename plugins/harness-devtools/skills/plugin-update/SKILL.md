@@ -534,7 +534,13 @@ for wrapper in plugins/{name}/bin/*-wrapper.sh; do
     [ -f "$wrapper" ] || continue
     BINARY_NAME=$(grep '^BINARY_NAME=' "$wrapper" | head -1 | cut -d'"' -f2)
     GITHUB_REPO=$(grep '^GITHUB_REPO=' "$wrapper" | head -1 | cut -d'"' -f2)
-    [ -z "$BINARY_NAME" ] && continue
+    # **抽不到就報出來，不是靜默 continue**（#17）。實測 12 個 wrapper 只有 3 個
+    # 抽得到，也就是這個信號對四分之三的 plugin 從沒跑過。這裡是 warn 不是
+    # BLOCK（plugin-update 的定位是協助），但**沉默與「檢查過沒問題」不可區分**。
+    if [ -z "$BINARY_NAME" ]; then
+        echo "❓ $wrapper 判定不出 BINARY_NAME — Signal 1 對它沒驗證任何東西"
+        continue
+    fi
 
     # === Signal 1: asset present in latest release? ===
     HAS_BINARY=$(curl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" \

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-08-26
+
+### Fixed
+
+- **`plugin-deploy` Step 2.5 的 BLOCK 對 75% 的 wrapper 從沒執行過**（#17）。
+  它靠 `grep '^BINARY_NAME='` 與 `grep '^GITHUB_REPO='` 認出要查什麼，**抽不到就
+  `continue`**——不 echo、不計入 `MCP_STALE`、不影響結束碼。使用者看到一片安靜，
+  而 deploy 照常往下走。
+
+  實測 `psychquant-claude-plugins` 的 12 個真實 wrapper：**只有 3 個**兩行都抽得到。
+  野生有三種方言——`GITHUB_REPO=`+`BINARY_NAME=`、**`REPO=`**+`BINARY_NAME=`（8 個）、
+  以及 binary 名當函式參數（agent-cacher、claude-ltm）。
+
+  修法**不是**再多列舉一種寫法（雖然順手多認了 `REPO=`，那只減少誤報、不是保證）
+  ——下一個方言還會出現。判準改成：**抽不出來就代表沒驗過，那必須說出來。**
+  抽不到的 wrapper 逐一具名報出，並用 AskUserQuestion 三選一（已手動確認 /
+  去補 wrapper / 中止），**預設中止**。
+
+  修正後涵蓋率 25% → 92%，剩下的一個不再靜默。
+
+- **`plugin-update` Phase 1.5 Signal 1 同一段**，同樣改成具名報出（該處是 warn 不是
+  BLOCK，符合 plugin-update 的協助型定位，但沉默與「檢查過沒問題」不可區分）。
+
+### 這是同一個失敗類別的第三次
+
+`#16` 修的兩個（`resolve-marketplace.sh` 的 zsh word-split、`plugin-update` 不檢查
+回傳碼）與本次是同一形狀：**失敗變成空字串，然後被當成沒事**。三次都不是「寫錯
+邏輯」，是**沒有問「這個 API 失敗時我怎麼知道」**。
+
 ## [2.2.0] - 2026-08-26
 
 ### Fixed
