@@ -115,13 +115,18 @@ wrapper script、或 hook 會去 curl GitHub Release——三者任一即是。
 source scripts/resolve-marketplace.sh
 
 resolve_marketplace_root che-plugin-devtools
-# → /Users/che/Developer/che-plugin-devtools
+# → ~/Developer/che-plugin-devtools
 
 find_plugin_marketplace akashic-mcp
-# → psychquant-claude-plugins|/Users/che/Developer/psychquant-claude-plugins
+# → psychquant-claude-plugins|~/Developer/psychquant-claude-plugins
+
+marketplace_candidates che-local-plugins   # 一行一個 root，precedence 序
+list_marketplaces                          # 所有已發現的名稱
 ```
 
 取代先前散落 5 處的硬編碼 `psychquant-claude-plugins` 路徑。harness-devtools 搬到獨立 marketplace 後仍需管理其他 marketplace 的 plugin——工具住哪裡與工具管哪裡是兩回事。
+
+**解析方式是掃描而非列舉**（#20）：掃搜尋根底下的 `*/.claude-plugin/marketplace.json`，讀各檔自報的 `name`。新增 marketplace 不必改程式碼。同名多候選時，擁有 `plugins/` 目錄的優先——那只是 **tie-break**，不是准入條件（單一 plugin 的 marketplace 沒有 `plugins/`，它的 repo 本身就是那個 plugin）。
 
 ## 參考資源
 

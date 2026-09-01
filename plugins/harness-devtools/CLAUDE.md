@@ -21,11 +21,17 @@ MARKETPLACE_ROOT=$(resolve_marketplace_root che-plugin-devtools)
 
 # 或反查：給 plugin 名，找它在哪個 marketplace
 IFS='|' read -r MP_NAME MP_ROOT <<< "$(find_plugin_marketplace akashic-mcp)"
+
+# 同名多候選時看得到 shadowing（一行一個 root，precedence 序）
+marketplace_candidates che-local-plugins
 ```
 
 **為什麼**：harness-devtools 住在 `che-plugin-devtools`，但它管理的 plugin 分布在 `psychquant-claude-plugins`(28)、`sinica-claude-plugins`(2)、`che-local-plugins`(8) 等多個 marketplace。工具住哪裡與工具管哪裡是兩回事。v1.0.0 之前有 5 處把 `psychquant-claude-plugins` 寫死，是單一 marketplace 假設的殘留。
 
-新增 marketplace 時只改 `resolve-marketplace.sh` 一處。
+**新增 marketplace 不必改任何程式碼**（#20）。resolver 掃搜尋根底下的
+`*/.claude-plugin/marketplace.json`，讀各檔**自報的 `name`**——不是目錄名，兩者
+13/33 不同（`bestasr` 住在 `bestASR-project/bestASR`）。在此之前是兩份必須手動
+同步的硬編清單，各只有 4 筆，漏掉本機 33 個裡的 29 個。
 
 ## MCP 專案路徑解析（同理）
 

@@ -37,7 +37,7 @@ claude plugin install doc-guardian@che-plugin-devtools
 
 ```bash
 # 單元測試
-bash    plugins/harness-devtools/scripts/test-resolve-marketplace.sh     # 11
+bash    plugins/harness-devtools/scripts/test-resolve-marketplace.sh     # 28
 bash    plugins/harness-devtools/scripts/test-check-skill-references.sh  # 15
 bash    plugins/harness-devtools/scripts/test-resolve-mcp-project.sh     # 31
 bash    plugins/doc-guardian/scripts/test-doc-update-config.sh           # 20
