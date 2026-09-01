@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-01
+
 ### Changed
 
 - **`resolve-marketplace.sh` 改為發現式，不再硬編列舉**（#20）。原本兩份必須手動
