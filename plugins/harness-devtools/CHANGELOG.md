@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   那類 repo 本身就是那個 plugin，manifest 的 source 寫 `./plugin`（**單數**）。等於
   一邊修 #20 的覆蓋率缺口、一邊用另一個機制把它重新造出來。已有 fixture 測試釘住。
 
+- **`find_plugin_marketplace` 查一個 plugin 會噴出別的 marketplace 的警告。** 它對每個
+  名稱各呼叫一次 `resolve_marketplace_root`，而後者在同名多候選時會 warn ——於是查
+  `macdoc` 會印出 `che-apple-mail-mcp` 的多重 checkout 警告。那個警告對**呼叫者指名**
+  的 marketplace 是對的，對這輪掃描剛好走過的則純屬雜訊。同一個迴圈也讓一次查詢重建
+  33 次索引。改成直接走訪索引一次。
+
+  **`[ -d "$root/plugins/$plugin" ]` 那行沒有動**——它是 [#18](https://github.com/PsychQuant/che-plugin-devtools/issues/18)
+  的範圍。本次只改列舉候選的方式。
+
 - **git worktree 不得被選中**。選中它會讓 `plugin-update` 的 Phase 0.5 git gate 跑在
   worktree 上，正是 #16 要防的「gate 跑在錯的 repo 上」換一條路徑進來。
 
@@ -53,13 +62,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-一次完整掃描 **0.90s → 0.25s**，測試 suite **103.6s → 39s**。兩處，都是砍 spawn：
+一次完整掃描 **0.90s → 0.25s**，測試 suite **103.6s → 21s**。兩處，都是砍 spawn：
 
 - **worktree 判定加了無 subprocess 的快路徑。** 原本每個候選一次 `git rev-parse`。
   改成先往上走到最近的 `.git` 看型態：**是目錄就必定是 main checkout、不可能是
   worktree**，直接判定——38 個候選裡 33 個走這條。只有 `.git` 是**檔案**時才呼叫 git，
   因為 linked worktree 與 submodule 都用檔案（本機那 5 個檔案裡有 2 個是 submodule），
   這一格確實不能只看型態決定。git 呼叫 38 → 5。
+
+- **`find_plugin_marketplace` 一次查詢從 33 次索引重建降為 1 次**（見 Fixed）。
 
 - **走訪與剖析改用 shell 內建。** `dirname` 換成 `${var%/*}`（每個 manifest 省 2 次、
   walk-up 每層各省 1 次），抽名字的 `sed | sed | head` 併成單一 sed。約 340 次 spawn

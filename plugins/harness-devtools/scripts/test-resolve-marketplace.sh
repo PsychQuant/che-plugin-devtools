@@ -98,6 +98,13 @@ assert_fails "unknown plugin returns non-zero" \
 assert_fails "empty plugin name returns non-zero" \
   find_plugin_marketplace ""
 
+# 查一個 plugin 不該印出**別的** marketplace 的警告。find_plugin_marketplace 原本
+# 對每個名稱各呼叫一次 resolve_marketplace_root，而後者在同名多候選時會 warn ——
+# 於是查 macdoc 會噴出 che-apple-mail-mcp 的多重 checkout 警告。既有的 stderr 測試
+# 只涵蓋 **source 當下**，涵蓋不到呼叫時，所以這條是另一個軸。
+LOOKUP_NOISE=$(find_plugin_marketplace harness-devtools 2>&1 >/dev/null)
+assert_eq "find_plugin_marketplace emits no stderr" "" "$LOOKUP_NOISE"
+
 echo
 echo
 echo "discovery (#20) — registry is scanned, not enumerated:"

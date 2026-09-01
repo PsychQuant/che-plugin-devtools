@@ -219,21 +219,35 @@ list_marketplaces() {
 # Prints "<marketplace-name>|<repo-root>" and returns 0 on hit; returns 1 if the
 # plugin is not found in any known marketplace.
 find_plugin_marketplace() {
-  local plugin="${1:-}"
+  local plugin="${1:-}" name root
   [ -n "$plugin" ] || return 1
 
-  local mp root
-  # here-doc（不是 pipe）：pipe 會開 subshell，`return 0` 就只結束那個 subshell、
-  # 函式照樣走到最後的 `return 1`。here-doc 的 while 跑在當前 shell。
-  while IFS= read -r mp; do
-    [ -n "$mp" ] || continue
-    root=$(resolve_marketplace_root "$mp") || continue
+  # Walks the index directly rather than calling resolve_marketplace_root per
+  # name. Two reasons, both found while verifying #20:
+  #
+  #   * that loop rebuilt the whole index once per marketplace — 33 scans for one
+  #     lookup;
+  #   * resolve_marketplace_root warns on ambiguous names, so looking up `macdoc`
+  #     printed a multi-checkout warning about che-apple-mail-mcp. The warning is
+  #     right for a name the *caller* asked for and pure noise for one this sweep
+  #     happened to walk past.
+  #
+  # Skipping the tie-break loses nothing here: the tie-break prefers candidates
+  # owning a plugins/ directory, and the test below already requires
+  # plugins/<plugin>, so a tie-break loser can only match when it genuinely hosts
+  # the plugin.
+  #
+  # here-doc, not a pipe: a pipe opens a subshell, so `return 0` would end only
+  # that subshell and the function would fall through to `return 1`.
+  while IFS="$(printf '\t')" read -r name root; do
+    [ -n "$root" ] || continue
     if [ -d "$root/plugins/$plugin" ]; then
-      echo "$mp|$root"
+      echo "$name|$root"
       return 0
     fi
   done <<EOF
-$(list_marketplaces | sort -u)
+$(_marketplace_index)
 EOF
   return 1
 }
+
