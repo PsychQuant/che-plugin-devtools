@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`resolve-marketplace.sh` 改為發現式，不再硬編列舉**（#20）。原本兩份必須手動
+  同步的清單——`MARKETPLACE_NAMES` 與 `resolve_marketplace_root` 的 `case`——各只有
+  4 筆。實測本機 38 份 manifest、24 個相異 marketplace：**硬編漏掉 20 個**，含
+  `macdoc`、`bestasr`、`issue-driven-development`。零假陰性（硬編知道的 4 個掃描全
+  找得到），所以那是純覆蓋率缺口、不是取捨。
+
+  後果不只是「找不到」。`plugin-update` 的 Phase 0.1 gate 會 abort 並建議去
+  `plugin-deploy` / `plugin-create`——**對一個已上架且安裝好的 plugin，那是錯的補救
+  方向**。
+
+  改法：掃 `~/Developer` 底下的 `*/.claude-plugin/marketplace.json`（`find`，最多 4
+  層），讀各檔**自報的 `name`**。名稱與目錄名 13/33 不同（`bestasr` 住在
+  `bestASR-project/bestASR`），所以目錄名不能當身分。**新增 marketplace 不再需要改
+  任何程式碼。**
+
+  三個既有函式的簽章與回傳格式不變（14 個 consumer 不必動）。
+
+### Added
+
+- **`marketplace_candidates <name>`**——回傳所有命中的 root，一行一個，precedence
+  序。契約對齊姊妹檔 `resolve-mcp-project.sh` 的 `mcp_project_candidates`：讓 caller
+  與測試**看得到** shadowing，而不是靠推測。
+
+### Fixed
+
+- **同名多候選的消歧**。`che-local-plugins` 有兩份 manifest 自報同名：父層
+  `che-claude-config` 是 aggregator（source 指進子層、自己沒有 `plugins/`），子層才是
+  實體 marketplace。規則是**擁有 `plugins/` 的候選優先**。
+
+  這條規則**只在同名多候選時當 tie-break，不是全域准入條件**——實作中途曾把它當成
+  後者，結果砍掉 9 個合法 marketplace（`rush`、`che-keychain`、`che-ical-mcp`…）：
+  那類 repo 本身就是那個 plugin，manifest 的 source 寫 `./plugin`（**單數**）。等於
+  一邊修 #20 的覆蓋率缺口、一邊用另一個機制把它重新造出來。已有 fixture 測試釘住。
+
+- **git worktree 不得被選中**。選中它會讓 `plugin-update` 的 Phase 0.5 git gate 跑在
+  worktree 上，正是 #16 要防的「gate 跑在錯的 repo 上」換一條路徑進來。
+
+  判別 `--git-dir` ≠ `--git-common-dir`，但**兩者必須先正規化成絕對路徑**：git 會回
+  相對當下 cwd 較短的那個形式，從 main checkout 的子目錄查會拿到絕對的 `--git-dir`
+  配相對的 `../.git`。直接比字串會把**每一個這樣的子目錄**都判成 worktree——實際踩到，
+  `che-local-plugins` 因此完全解析不到。
+
+### Performance
+
+一次完整掃描 **0.90s → 0.25s**，測試 suite **103.6s → 39s**。兩處，都是砍 spawn：
+
+- **worktree 判定加了無 subprocess 的快路徑。** 原本每個候選一次 `git rev-parse`。
+  改成先往上走到最近的 `.git` 看型態：**是目錄就必定是 main checkout、不可能是
+  worktree**，直接判定——38 個候選裡 33 個走這條。只有 `.git` 是**檔案**時才呼叫 git，
+  因為 linked worktree 與 submodule 都用檔案（本機那 5 個檔案裡有 2 個是 submodule），
+  這一格確實不能只看型態決定。git 呼叫 38 → 5。
+
+- **走訪與剖析改用 shell 內建。** `dirname` 換成 `${var%/*}`（每個 manifest 省 2 次、
+  walk-up 每層各省 1 次），抽名字的 `sed | sed | head` 併成單一 sed。約 340 次 spawn
+  降到約 40 次。合併後的 sed 在真實的多行 manifest 上與原三段式輸出相同；單行 JSON
+  兩者都回空字串、同樣退回 `python3` fallback，行為未變。
+
+**不做 shell 變數快取**（曾實作、已移除）。所有呼叫點都是
+`$(resolve_marketplace_root x)`，函式整個跑在子 shell 裡，它設的變數回不到父 shell
+——那份快取一次都沒生效。留著會讓讀者以為有快取，比沒有更糟。
+
+提案階段寫的是「不加快取，已量測 0.079s」。那個數字**只量了 sed 抽名字**，沒把
+worktree 偵測算進去；結論碰巧對，但依據是錯的。真正的成本在 spawn，所以修在那裡。
+
 ## [2.3.0] - 2026-08-26
 
 ### Fixed

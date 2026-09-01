@@ -67,8 +67,15 @@ assert_fails "empty argument returns non-zero" \
 
 echo
 echo "list_marketplaces:"
+# **不斷言確切數字。** 這裡原本是 `assert_eq "lists 4 marketplaces" "4"` ——
+# 它不只沒抓到 registry 的覆蓋率缺口，還把缺口鎖住：任何人加第 5 個 marketplace
+# 都會弄紅它。下界 + 「已知的都還在」才是這條該驗的東西。
 COUNT=$(list_marketplaces | grep -c .)
-assert_eq "lists 4 marketplaces" "4" "$COUNT"
+if [ "$COUNT" -ge 4 ]; then
+    PASS=$((PASS + 1)); echo "  ✓ lists at least the four originally hardcoded (got $COUNT)"
+else
+    FAIL=$((FAIL + 1)); echo "  ✗ lists at least the four originally hardcoded"; echo "      actual: $COUNT"
+fi
 
 # Every listed name must itself resolve — guards against a name being added to
 # the list but not to the case statement.
@@ -92,6 +99,123 @@ assert_fails "empty plugin name returns non-zero" \
   find_plugin_marketplace ""
 
 echo
+echo
+echo "discovery (#20) — registry is scanned, not enumerated:"
+
+# 存在性先驗。沒有這兩條，下面用到 _marketplace_name_of / marketplace_candidates
+# 的斷言在函式**不存在**時也會綠（呼叫失敗 → assert_fails 通過；無輸出 → grep
+# 找不到東西）。假綠在函式日後被刪掉時同樣不會亮。
+for fn in _marketplace_name_of marketplace_candidates; do
+    if command -v "$fn" >/dev/null 2>&1 || type "$fn" >/dev/null 2>&1; then
+        PASS=$((PASS + 1)); echo "  ✓ $fn is defined"
+    else
+        FAIL=$((FAIL + 1)); echo "  ✗ $fn is defined"
+    fi
+done
+
+# 硬編的 4 筆漏掉本機 29 個 marketplace。macdoc 是觸發本 issue 的那一個：
+# 它是正常運作的 self-hosted marketplace，plugin 也裝著，但 resolver 不認得。
+assert_eq "macdoc resolves (was missing from the hardcoded case)" \
+    "$HOME/Developer/macdoc" \
+    "$(resolve_marketplace_root macdoc)"
+
+# 不斷言確切數字 —— 那正是舊測試 `lists 4 marketplaces` 犯的錯（它把缺口鎖住，
+# 任何人加第 5 個 marketplace 都會弄紅它）。下界即可。
+DISCOVERED=$(list_marketplaces | grep -c .)
+if [ "$DISCOVERED" -ge 20 ]; then
+    PASS=$((PASS + 1)); echo "  ✓ discovers >= 20 marketplaces (got $DISCOVERED)"
+else
+    FAIL=$((FAIL + 1)); echo "  ✗ discovers >= 20 marketplaces"; echo "      actual: $DISCOVERED"
+fi
+
+echo
+echo "name extraction is bounded to the top-level key:"
+
+# 樸素的「抓第一個 \"name\"」對這種 manifest 會靜默回傳 **plugin 的名字**當成
+# marketplace 名。抽取必須限定在第一個 "plugins" 之前，取不到才退回真 JSON parser。
+NAME_TMP=$(mktemp -d)
+cat > "$NAME_TMP/plugins-first.json" <<'FIXTURE'
+{
+  "plugins": [ { "name": "some-plugin", "source": "./p" } ],
+  "name": "real-marketplace-name"
+}
+FIXTURE
+assert_eq "plugins-before-name manifest still yields the marketplace name" \
+    "real-marketplace-name" \
+    "$(_marketplace_name_of "$NAME_TMP/plugins-first.json")"
+
+cat > "$NAME_TMP/normal.json" <<'FIXTURE'
+{ "name": "ordinary", "plugins": [ { "name": "a-plugin" } ] }
+FIXTURE
+assert_eq "ordinary manifest yields its own name" \
+    "ordinary" "$(_marketplace_name_of "$NAME_TMP/normal.json")"
+
+assert_fails "missing manifest returns non-zero" \
+    _marketplace_name_of "$NAME_TMP/does-not-exist.json"
+rm -rf "$NAME_TMP"
+
+echo
+echo "multi-hit disambiguation:"
+
+# che-local-plugins 有兩份 manifest 自報同名：父層 che-claude-config 是 aggregator
+# （source 指進子層、自己沒有 plugins/），子層才是實體 marketplace。候選必須自帶
+# plugins/ —— 這條規則讓上面那條既有斷言（解析到子層）繼續成立。
+CANDS=$(marketplace_candidates che-local-plugins)
+assert_eq "candidates exclude the aggregator parent (no plugins/ of its own)" \
+    "" \
+    "$(printf '%s\n' "$CANDS" | grep -x "$HOME/Developer/che-claude-config" || true)"
+
+# git worktree 帶著同一份 marketplace.json。選中它會讓 plugin-update 的 Phase 0.5
+# git gate 跑在 worktree 上 —— 正是 #16 要防的「gate 跑在錯的 repo 上」換一條路徑進來。
+assert_eq "candidates exclude git worktrees" \
+    "" \
+    "$(marketplace_candidates che-local-plugins | grep -c '_wt-' | sed 's/^0$//')"
+
+# 契約與姊妹檔 resolve-mcp-project.sh 的 mcp_project_candidates 對齊：
+# 讓 caller 與測試看得到 shadowing，而不是靠推測。
+assert_eq "candidates are one per line, resolve_marketplace_root takes the first" \
+    "$(marketplace_candidates che-plugin-devtools | head -1)" \
+    "$(resolve_marketplace_root che-plugin-devtools)"
+
+echo
+echo "marketplace layout independence:"
+
+# **不是每個 marketplace 都有 plugins/ 目錄。** 單一 plugin 的 marketplace（rush、
+# che-keychain、che-ical-mcp…）就是 repo 本身，manifest 的 source 寫 `./plugin`（單數）。
+# 消歧規則若當成全域准入條件用，會把這一整類全部砍掉 —— 那是把 #20 的覆蓋率缺口
+# 換一個機制重新造出來。所以 plugins/ 只在**同名多候選**時當 tie-break。
+LAYOUT_TMP=$(mktemp -d)
+mkdir -p "$LAYOUT_TMP/solo/.claude-plugin" "$LAYOUT_TMP/solo/plugin"
+cat > "$LAYOUT_TMP/solo/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "fixture-solo", "plugins": [ { "name": "fixture-solo", "source": "./plugin" } ] }
+JSON
+# 同名兩份：父層無 plugins/、子層有 —— tie-break 必須選子層
+mkdir -p "$LAYOUT_TMP/agg/.claude-plugin" "$LAYOUT_TMP/agg/real/.claude-plugin" "$LAYOUT_TMP/agg/real/plugins"
+cat > "$LAYOUT_TMP/agg/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "fixture-dup", "plugins": [ { "name": "x", "source": "./real/plugins/x" } ] }
+JSON
+cat > "$LAYOUT_TMP/agg/real/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "fixture-dup", "plugins": [ { "name": "x", "source": "./plugins/x" } ] }
+JSON
+
+SAVED_ROOT="$MARKETPLACE_SEARCH_ROOT"
+MARKETPLACE_SEARCH_ROOT="$LAYOUT_TMP"
+
+assert_eq "single-plugin marketplace (no plugins/ dir) resolves" \
+    "$LAYOUT_TMP/solo" \
+    "$(resolve_marketplace_root fixture-solo)"
+
+assert_eq "single-plugin marketplace is listed" \
+    "fixture-solo" \
+    "$(list_marketplaces | grep -x fixture-solo)"
+
+assert_eq "plugins/-bearing candidate wins when two declare the same name" \
+    "$LAYOUT_TMP/agg/real" \
+    "$(resolve_marketplace_root fixture-dup)"
+
+MARKETPLACE_SEARCH_ROOT="$SAVED_ROOT"
+rm -rf "$LAYOUT_TMP"
+
 echo "bash 3.2 compatibility:"
 # The whole point: this file must be sourceable by macOS system bash with no
 # stderr noise. `local -n` would emit "invalid option" here.
