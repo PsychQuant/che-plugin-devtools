@@ -51,17 +51,15 @@ TaskCreate(name="propose_fix", description="Phase 6: 列出修復步驟，建議
 ### Step 2: 找到所有相關路徑
 
 ```bash
-# 源碼路徑（marketplace repo）
-PLUGIN_NAME="{plugin_name}"
-
+# 前導（每個 bash block 都以此開頭；shell 變數不跨 Bash 呼叫存活）。名稱由 agent 代入，
+# 代入前先肉眼核對只含 [A-Za-z0-9._-]。找不到源碼時 SRC 留空並明說，不 exit：
+# cache 端的診斷對「已安裝但本機沒有 checkout」的 plugin 仍然有用（#18 R2）。
+PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-
-# 自動找出這個 plugin 屬於哪個 marketplace（不要假設是 psychquant）
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-# 找不到就停：空的 SRC 會讓下面的 diff -r 印「No skills to diff」——把「讀不到源碼」講成「沒差異」，
-# 對一個 debug 工具是最壞的假陰性（#18 R1）。其餘硬編路徑見 #23。
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ plugin '$PLUGIN_NAME' 不在任何已註冊的 marketplace（find_plugin_marketplace 無命中）" >&2; exit 1; }
-SRC="$PLUGIN_DIR"   # manifest plugins[].source 解析結果（#18）；別再組 plugins/<name>
+case "$PLUGIN_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
+# SRC = manifest plugins[].source 解析結果（#18）；別再組 plugins/<name>。其餘硬編路徑見 #23。
 
 # cache 路徑（可能有多個版本）
 ls -la ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/ 2>/dev/null
@@ -78,8 +76,16 @@ ls "$SRC_LOCAL" 2>/dev/null
 ### Step 1: 比對源碼 vs Cache
 
 ```bash
+# 前導（每個 bash block 都以此開頭；shell 變數不跨 Bash 呼叫存活）。名稱由 agent 代入，
+# 代入前先肉眼核對只含 [A-Za-z0-9._-]。找不到源碼時 SRC 留空並明說，不 exit：
+# cache 端的診斷對「已安裝但本機沒有 checkout」的 plugin 仍然有用（#18 R2）。
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+case "$PLUGIN_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
 # 源碼版本
-cat "$SRC/.claude-plugin/plugin.json" | jq -r '.version'
+[ -n "$SRC" ] && jq -r '.version' "$SRC/.claude-plugin/plugin.json" || echo "UNKNOWN（源碼未解析）"
 
 # Cache 裡有哪些版本
 ls ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/
@@ -93,18 +99,30 @@ claude plugin list 2>&1 | grep -A3 "$PLUGIN_NAME"
 最常見的 bug：源碼改了但 cache 沒更新。
 
 ```bash
+# 前導（每個 bash block 都以此開頭；shell 變數不跨 Bash 呼叫存活）。名稱由 agent 代入，
+# 代入前先肉眼核對只含 [A-Za-z0-9._-]。找不到源碼時 SRC 留空並明說，不 exit：
+# cache 端的診斷對「已安裝但本機沒有 checkout」的 plugin 仍然有用（#18 R2）。
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+case "$PLUGIN_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
 # 找到 cache 裡最新版本的路徑
 CACHE_VER=$(ls ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/ | sort -V | tail -1)
 CACHE="$HOME/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/$CACHE_VER"
 
-# Diff hooks
-diff "$SRC/hooks/hooks.json" "$CACHE/hooks/hooks.json" 2>/dev/null || echo "No hooks to diff"
-
-# Diff skills
-diff -r "$SRC/skills/" "$CACHE/skills/" 2>/dev/null || echo "No skills to diff"
-
-# Diff commands
-diff -r "$SRC/commands/" "$CACHE/commands/" 2>/dev/null || echo "No commands to diff"
+# 「讀不到源碼」與「沒差異」必須分開講（#18）：SRC 空時一律 UNKNOWN，不印 No ... to diff
+if [ -z "$SRC" ]; then
+  echo "UNKNOWN：源碼未解析，無法 diff（見 Phase 1 Step 2）"
+else
+  for part in hooks skills commands; do
+    if [ -e "$SRC/$part" ]; then
+      diff -r "$SRC/$part" "$CACHE/$part" && echo "$part: no diff" || echo "$part: DIFFERS（上方為差異）"
+    else
+      echo "$part: 源碼無此目錄"
+    fi
+  done
+fi
 ```
 
 如果有差異 → 告知用戶需要 `/plugin-update` 同步。

@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Breaking for direct consumers**：`resolve-marketplace.sh` 的 `find_plugin_marketplace` 輸出從 `name|root` 擴為 `name|root|plugin_dir`；`IFS="|" read -r` 需接三欄（#18）。已知消費者 `plugin-update` Step 0.1 與 `plugin-debug`（僅直接消費回傳值的那一行；其餘 9 處硬編路徑見 #23）同步更新。
-- `plugin-update`：Phase 0.3 / 1.5 / 2 / 2.5 / troubleshooting 共 17 處 `plugins/{name}` 硬編路徑改為 `$PLUGIN_DIR`；**每個 bash block 以同一段 resolve 前導開頭**（shell 變數不跨 Bash 呼叫存活）；Phase 0.5 Step 5 與 Phase 1 Step 1 的 `grep '^plugins/'` 佈局猜測改為 `plugin_names_for_paths`（經 manifest 對映）；git pathspec 一律用絕對 `$PLUGIN_DIR`；Step 0.1 未命中時逐候選 root 以 rc 2 / 4 / 5 指名真正原因（#18）。
-- **Security**：`plugin-update` 內所有 `python3 -c` 改以 `sys.argv` 傳路徑——`$PLUGIN_DIR` 現在來自 manifest（第三方檔案），內嵌進原始碼時路徑含 `'` 即任意程式碼執行；`resolve_plugin_dir` 同時拒絕含引號 / 反斜線 / `$` / 控制字元 / `..` 的 source（#18 verify R1）。
+- `plugin-update`：Phase 0.3 / 1.5 / 2 / 2.5 / troubleshooting 共 17 處 `plugins/{name}` 硬編路徑改為 `$PLUGIN_DIR`；**每個 bash block 以同一段前導開頭**——`PLUGIN_NAME` 與 Step 0.1 印出的 `MP_NAME` 以單引號常值代入（代入前核對 `[A-Za-z0-9._-]`），`resolve_marketplace_root` pin 住 marketplace 後 `resolve_plugin_dir`（shell 變數不跨 Bash 呼叫存活；同名多 checkout 時 Step 0.1 的決定綁到後面每個 block）；Step 0.1 的解析與 gate 併為同一個 fence；Phase 0.5 Step 5 自算 `UPSTREAM`、Phase 1 Step 1 對每個 marketplace root 各推斷一次；兩處 `grep '^plugins/'` 改為 `plugin_names_for_paths`；表格儲存格內的 `$PLUGIN_DIR` 改為 `<PLUGIN_DIR>` 敘述；git pathspec 一律用絕對 `$PLUGIN_DIR` 並帶 `--literal-pathspecs`；Step 0.1 未命中時走一次 `marketplace_index`，以 rc 0 / 2 / 3 / 4 / 5 指名真正原因，印出的每個值去控制字元並截斷（#18）。
+- `plugin-debug`：找不到源碼時 `SRC` 留空並回報 UNKNOWN（不再 `exit 1` 砍掉 cache 端診斷，也不再印「No skills to diff」）；用到 `$SRC` 的 block 各自解析（#18）。
+- **Security**：`plugin-update` 內所有 `python3 -c` 改以 `sys.argv` 傳路徑——`$PLUGIN_DIR` 現在來自 manifest（第三方檔案），內嵌進原始碼時路徑含 `'` 即任意程式碼執行；`resolve_plugin_dir` 拒絕含引號 / 反斜線 / `$` / 反引號 / `|` / 控制字元 / `..` 的 source 與絕對路徑，目錄以實體路徑檢查仍在 root 內（symlink 逃逸 → rc 2），`.` 佈局須有 root 的 plugin.json（宣告不等於持有）；plugin 名稱只接受 `[A-Za-z0-9._-]`（rc 6）；`plugin_source_of` 回傳前去控制字元並截斷（#18 verify R1/R2）。
 
 ### Added
-- `resolve-marketplace.sh`：`resolve_plugin_dir <root> <plugin>` 從 manifest 的 `plugins[].source` 解析 plugin 目錄；manifest 給不出本地路徑時（無 entry、git-subdir 物件、URL、JSON 壞掉、python3 缺席或跑不起來）退回探 `plugins/<name>`，兩者都失敗才回 rc 1 / 2 / 4 / 5（不列 / 不可用 / 讀不動 / 非本地）；`.` 與 `./` 解析為 root（repo 即 plugin）。另新增 `plugin_source_of`、`marketplace_plugin_names`、`plugin_names_for_paths`（#18）。
+- `resolve-marketplace.sh`：`resolve_plugin_dir <root> <plugin>` 從 manifest 的 `plugins[].source` 解析 plugin 目錄（正規化 `//`、`/./`）；manifest 給不出可用本地目錄時（無 entry、source 不可用、git-subdir 物件、URL、JSON 壞掉或形狀不對、python3 缺席或跑不起來）退回探 `plugins/<name>`，兩者都失敗才回 rc 1 / 2 / 3 / 4 / 5 / 6（未列 / 不可用 / 無 python3 / 讀不動 / 非本地 / 名稱不合法）；`.` 與 `./` 解析為 root（repo 即 plugin）。另新增 `plugin_source_of`（已消毒）、`marketplace_plugin_names`（manifest 宣告 ∪ `plugins/` 子目錄）、`plugin_names_for_paths`（路徑 → plugin 名，root-sourced plugin 擁有全部路徑）、`marketplace_index`（#18）。
 
 ### Fixed
 - 單一 plugin marketplace（`"source": "./plugin"`，如 che-keychain / che-apple-mail-mcp / che-ical-mcp）在 `plugin-update` Step 0.1 被判為「不在任何 marketplace」，繞過後 Phase 0.3 / 1.5 / 2.5 的偵測全部對不存在的目錄回答「沒有」（#18）。

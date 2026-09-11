@@ -231,11 +231,16 @@ list_marketplaces() {
 # The `source` field of plugin <$2> in manifest <$1>.
 #   rc 0  printed the source: a relative-looking STRING (validated later by
 #         resolve_plugin_dir — this function only classifies, it does not trust)
-#   rc 1  the manifest lists no such plugin
-#   rc 2  listed, but the source is unusable: empty string, number, boolean, null
+#   rc 1  the manifest never mentions the name (cheap pre-filter) or lists no
+#         such plugin. NOTE the pre-filter is a heuristic: a manifest that does
+#         not parse AND never mentions the name is rc 1, not rc 4 — we cannot
+#         afford an interpreter launch per manifest per lookup to tell them apart
+#   rc 2  listed, but the source is unusable: empty string, number, boolean,
+#         null, list — printed as JSON so a caller can show what it saw
 #   rc 3  cannot tell — python3 missing, or present but not runnable (the macOS
 #         CLT stub passes `command -v` and then fails); caller decides how to degrade
-#   rc 4  cannot tell — the manifest exists but does not parse / cannot be read
+#   rc 4  cannot tell — the manifest exists but is unreadable, does not parse, or
+#         is not shaped like a manifest (top level not an object, plugins not a list)
 #   rc 5  listed, but the source is NOT a local path: an object (git-subdir etc.)
 #         or a URL / `github:owner/repo` string — legal schema, just not resolvable
 #         here; printed as-is so a caller can show it
@@ -247,16 +252,16 @@ list_marketplaces() {
 # walks every manifest on the machine (38 here); without the pre-filter that is
 # 38 interpreter launches per lookup (~0.8s measured), with it, one or two.
 #
-# ORDER MATTERS: the python3 check comes BEFORE the grep pre-filter. The first
-# cut had them the other way round, so a manifest that never mentions the name
-# returned rc 1 and the no-python3 legacy probe was unreachable — exactly the
-# "new failure on a machine without an interpreter" the fallback exists to avoid
-# (#18 verify R1). And every non-zero python exit used to collapse into rc 1, so
-# a trailing comma in a hand-edited manifest read as "not on this marketplace".
-# Each verdict now has its own exit code and the shell keeps them apart.
+# ORDER MATTERS: readability, then python3, then the grep pre-filter. The first
+# cut had grep first, so a manifest that never mentions the name returned rc 1
+# and the no-python3 legacy probe was unreachable; and every non-zero python
+# exit collapsed into rc 1, so a trailing comma in a hand-edited manifest read
+# as "not on this marketplace" (#18 verify R1). Each verdict now has its own
+# exit code and the shell keeps them apart.
 _plugin_source_of() {
   local manifest="${1:-}" plugin="${2:-}" src rc
   [ -f "$manifest" ] && [ -n "$plugin" ] || return 1
+  [ -r "$manifest" ] || return 4
   command -v python3 >/dev/null 2>&1 || return 3
   grep -qF "\"$plugin\"" "$manifest" 2>/dev/null || return 1
   src=$(python3 -c 'import json,sys
@@ -264,24 +269,30 @@ try:
     d = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(20)
-plugins = d.get("plugins") if isinstance(d, dict) else None
-for p in plugins or []:
+if not isinstance(d, dict):
+    sys.exit(20)
+plugins = d.get("plugins")
+if plugins is None:
+    plugins = []
+if not isinstance(plugins, list):
+    sys.exit(20)
+for p in plugins:
     if isinstance(p, dict) and p.get("name") == sys.argv[2]:
         s = p.get("source")
         if isinstance(s, str) and s.strip() == "":
-            sys.exit(11)
+            print(json.dumps(s)); sys.exit(11)
         if isinstance(s, str):
             if "://" in s or ":" in s.split("/")[0]:
                 print(s); sys.exit(12)      # URL or scheme:owner/repo
             print(s); sys.exit(0)
         if isinstance(s, dict):
             print(json.dumps(s, ensure_ascii=False)); sys.exit(12)
-        sys.exit(11)                        # number / bool / null / list
+        print(json.dumps(s)); sys.exit(11)  # number / bool / null / list
 sys.exit(10)' "$manifest" "$plugin" 2>/dev/null); rc=$?
   case "$rc" in
     0)  [ -n "$src" ] || return 2; printf '%s\n' "$src"; return 0 ;;
     10) return 1 ;;
-    11) return 2 ;;
+    11) printf '%s\n' "$src"; return 2 ;;
     12) printf '%s\n' "$src"; return 5 ;;
     20) return 4 ;;
     *)  return 3 ;;                         # interpreter itself failed
@@ -289,24 +300,32 @@ sys.exit(10)' "$manifest" "$plugin" 2>/dev/null); rc=$?
 }
 
 # Public form of the above, keyed by marketplace ROOT (what skills have in hand).
-# Same rc table. Skills print the value only after stripping control characters
-# and truncating — it is third-party file content.
+# Same rc table. The value is third-party file content, so it comes back with
+# control characters stripped and capped at 200 bytes — a caller cannot forget
+# to sanitize what it never receives raw. (The raw form stays private.)
 plugin_source_of() {
-  local root="${1:-}" plugin="${2:-}"
+  local root="${1:-}" plugin="${2:-}" out rc
   [ -n "$root" ] && [ -n "$plugin" ] || return 1
-  _plugin_source_of "$root/.claude-plugin/marketplace.json" "$plugin"
+  out=$(_plugin_source_of "$root/.claude-plugin/marketplace.json" "$plugin"); rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-200
+  return "$rc"
 }
 
 # Where plugin <$2> lives inside marketplace root <$1>, read from the manifest.
 #   rc 0  printed the absolute directory
-#   rc 1  no entry in the manifest AND no materialized `plugins/<name>` directory
-#   rc 2  listed with a local-looking source that is unusable: empty / non-string,
-#         absolute path, `..` traversal, quotes / backslash / control characters,
-#         or a relative path whose directory does not exist
-#   rc 4  the manifest does not parse / cannot be read, and there is no
-#         materialized `plugins/<name>` to fall back on
+#   rc 1  not listed (or never mentioned) AND nothing materialized at plugins/<name>
+#   rc 2  listed with a source that is unusable — empty / non-string, absolute
+#         path, `..` traversal, quotes / backslash / `$` / backtick / `|` /
+#         control characters, a directory that does not exist, a `.` layout
+#         without <root>/.claude-plugin/plugin.json, or a directory that resolves
+#         (through a symlink) to outside <root> — AND nothing at plugins/<name>
+#   rc 3  no usable python3 to read the manifest, AND nothing at plugins/<name>
+#   rc 4  the manifest is unreadable / does not parse / is mis-shaped, AND
+#         nothing at plugins/<name>
 #   rc 5  the source is not a local path (object such as git-subdir, or a
-#         URL / github: string) and nothing is materialized at `plugins/<name>`
+#         URL / github: string) AND nothing at plugins/<name>
+#   rc 6  the plugin NAME itself is not a single path segment of [A-Za-z0-9._-]
+#         (the name is interpolated into paths downstream; nothing is probed)
 #
 # WHY THIS EXISTS (#18)
 #   Before it, find_plugin_marketplace decided "this marketplace has the plugin"
@@ -316,76 +335,111 @@ plugin_source_of() {
 #   therefore returned rc 1, and plugin-update's Step 0.1 read that as "not in
 #   any registered marketplace" — a message pointing at the wrong fix.
 #
-# THE LEGACY PROBE IS STILL HERE, ON PURPOSE (#18 verify R1)
-#   The manifest is the source of truth for WHERE a plugin lives, but three
-#   states the old directory probe handled must keep working:
-#     * an entry-less directory under plugins/ — the "new plugin, add its entry"
-#       state Phase 2 Step 3 of plugin-update exists for;
-#     * an object / URL source (git-subdir…) whose subtree has been materialized
-#       under plugins/<name> — akashic-mcp on this machine;
-#     * a manifest that does not parse, or a python3 that will not run — "cannot
-#       tell" must not become "no".
-#   So: manifest first; when it yields nothing LOCAL, probe `plugins/<name>`;
-#   only when both fail does the rc say why, and the rc distinguishes "not
-#   listed" (1) from "listed but unusable" (2) from "unreadable" (4) from
-#   "non-local" (5), so a consumer can say the true cause instead of guessing.
+# THE LEGACY PROBE IS STILL HERE, ON PURPOSE (#18 verify R1/R2)
+#   The manifest is the source of truth for WHERE a plugin lives, but the old
+#   directory probe handled states that must keep working: an entry-less
+#   directory under plugins/ (the "new plugin, add its entry" state Phase 2
+#   Step 3 of plugin-update exists for); an object / URL source whose subtree
+#   has been materialized under plugins/<name> (akashic-mcp here); a manifest
+#   that does not parse, a python3 that will not run, or a typo'd source —
+#   "cannot tell" must not become "no". ONE rule, applied to every non-zero
+#   classification: manifest first; when it yields no USABLE local directory,
+#   probe plugins/<name>; only when both fail does the rc say why.
 #
-# `.` and `./` mean "the repo root is the plugin" (plugin.json at the root) and
-# resolve to <root> itself — a legal layout, not an error. Callers must use the
-# absolute directory as a git pathspec; relativising against <root> gives an
-# empty string for this layout.
+# `.` and `./` mean "the repo root is the plugin" and resolve to <root> itself —
+# accepted only when <root>/.claude-plugin/plugin.json exists, otherwise any
+# manifest on the search path could claim any plugin name by declaring `.`.
+# Callers must use the absolute directory as a git pathspec; relativising
+# against <root> gives an empty string for this layout. A root-sourced plugin
+# owns every path in its repo, so path-to-plugin mapping treats every path as
+# touching it — that is the layout's meaning, not a false positive.
+#
+# The returned path is the LOGICAL path (root + normalized source, no symlink
+# resolution), so it composes with the root the caller already holds; the
+# physical path is only used for the containment check.
+_normalize_rel() {   # collapse //, /./, leading ./, trailing /. and /
+  printf '%s' "${1:-}" | sed -E 's#/+#/#g; s#(^|/)(\./)+#\1#g; s#/\.$##; s#^\./##; s#/$##; s#^\.$##'
+}
 resolve_plugin_dir() {
-  local root="${1:-}" plugin="${2:-}" src dir rc legacy
+  local root="${1:-}" plugin="${2:-}" src dir rc legacy rel rootp dirp
   [ -n "$root" ] && [ -n "$plugin" ] || return 1
   case "$plugin" in
-    *[![:alnum:]._-]*|.|..) return 2 ;;    # the name itself is a path segment downstream
+    *[![:alnum:]._-]*|.|..) return 6 ;;
   esac
   legacy="$root/plugins/$plugin"
   src=$(_plugin_source_of "$root/.claude-plugin/marketplace.json" "$plugin"); rc=$?
-  case "$rc" in
-    0) : ;;
-    1|3|4|5)
-      if [ -d "$legacy" ]; then printf '%s\n' "$legacy"; return 0; fi
-      [ "$rc" -eq 3 ] && return 1          # no interpreter, no directory: not found
-      return "$rc" ;;
-    *) return 2 ;;
-  esac
-  case "$src" in
-    *[[:cntrl:]]*|*\'*|*\"*|*\\*|*\$*|*\`*) return 2 ;;
-    /*) return 2 ;;
-    ..|../*|*/..|*/../*) return 2 ;;
-  esac
-  case "$src" in
-    .|./) dir="$root" ;;
-    *)    dir="$root/${src#./}"; dir="${dir%/}" ;;
-  esac
-  [ -d "$dir" ] || return 2
-  printf '%s\n' "$dir"
+  if [ "$rc" -eq 0 ]; then
+    case "$src" in
+      *[[:cntrl:]]*|*\'*|*\"*|*\\*|*\$*|*\`*|*\|*) rc=2 ;;
+      /*) rc=2 ;;
+      ..|../*|*/..|*/../*) rc=2 ;;
+    esac
+  fi
+  if [ "$rc" -eq 0 ]; then
+    rel=$(_normalize_rel "$src")
+    case "$rel" in
+      ..|../*|*/..|*/../*) rc=2 ;;
+    esac
+  fi
+  if [ "$rc" -eq 0 ]; then
+    if [ -z "$rel" ]; then
+      dir="$root"
+      [ -f "$root/.claude-plugin/plugin.json" ] || rc=2
+    else
+      dir="$root/$rel"
+      [ -d "$dir" ] || rc=2
+    fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    rootp=$(cd "$root" 2>/dev/null && pwd -P) || rc=2
+    dirp=$(cd "$dir" 2>/dev/null && pwd -P) || rc=2
+    if [ "$rc" -eq 0 ]; then
+      case "$dirp" in
+        "$rootp"|"$rootp"/*) : ;;
+        *) rc=2 ;;
+      esac
+    fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    printf '%s\n' "$dir"
+    return 0
+  fi
+  if [ -d "$legacy" ]; then
+    printf '%s\n' "$legacy"
+    return 0
+  fi
+  return "$rc"
 }
 
-# Every plugin name declared by the manifest at <root>, one per line. Falls back
-# to the directory names under plugins/ when python3 is unavailable or the
-# manifest does not parse (same "cannot tell ≠ no" rule as resolve_plugin_dir).
+# Every plugin name declared by the manifest at <root> UNION every directory
+# under <root>/plugins, one per line, sorted, deduped. The union — not a
+# fallback — because an entry-less plugins/<name> is exactly the plugin that
+# most needs plugin-update (its entry has not been written yet), and a
+# manifest-only listing made it invisible to path mapping (#18 verify R2).
 marketplace_plugin_names() {
-  local root="${1:-}" manifest out
+  local root="${1:-}" manifest declared dirs
   [ -n "$root" ] || return 1
   manifest="$root/.claude-plugin/marketplace.json"
-  if [ -f "$manifest" ] && command -v python3 >/dev/null 2>&1; then
-    out=$(python3 -c 'import json,sys
+  declared=""
+  if [ -r "$manifest" ] && command -v python3 >/dev/null 2>&1; then
+    declared=$(python3 -c 'import json,sys
 d = json.load(open(sys.argv[1]))
 for p in (d.get("plugins") if isinstance(d, dict) else None) or []:
-    if isinstance(p, dict) and isinstance(p.get("name"), str): print(p["name"])' "$manifest" 2>/dev/null) \
-      && { printf '%s\n' "$out" | grep .; return $?; }
+    if isinstance(p, dict) and isinstance(p.get("name"), str): print(p["name"])' "$manifest" 2>/dev/null) || declared=""
   fi
-  [ -d "$root/plugins" ] || return 1
-  find "$root/plugins" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sed 's#.*/##' | sort
+  dirs=""
+  [ -d "$root/plugins" ] && dirs=$(find "$root/plugins" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sed 's#.*/##')
+  printf '%s\n%s\n' "$declared" "$dirs" | grep . | sort -u
 }
 
 # Map repo-relative paths (stdin, one per line — `git log --name-only` /
 # `git diff --name-only` output) to the plugin names whose directory contains
 # them, via the manifest — never via a `plugins/<x>/` prefix guess (#18 verify
-# R1: single-plugin marketplaces keep their files under plugin/, and a root-is-
-# plugin repo owns every path). One name per line, deduped.
+# R1: single-plugin marketplaces keep their files under plugin/). One name per
+# line, sorted, deduped. A root-sourced plugin (`source: "."`) owns every path
+# in the repo and is therefore reported for any input — by design (see
+# resolve_plugin_dir); a caller that wants "commits touched nothing" semantics
+# gets none for that layout.
 plugin_names_for_paths() {
   local root="${1:-}" paths name dir rel
   [ -n "$root" ] || return 1
@@ -405,6 +459,14 @@ plugin_names_for_paths() {
 $(marketplace_plugin_names "$root")
 EOF
   return 0
+}
+
+# name<TAB>root for every discovered marketplace, in index order — the public
+# form of _marketplace_index for callers that must walk every root ONCE (the
+# plugin-update Step 0.1 diagnostic loop: per-name marketplace_candidates calls
+# rebuilt the index 33 times, ~14 s before the first line of output).
+marketplace_index() {
+  _marketplace_index
 }
 
 # Given a plugin name, find which marketplace contains it.
@@ -427,20 +489,29 @@ find_plugin_marketplace() {
   #     happened to walk past.
   #
   # Skipping the tie-break loses nothing here: the tie-break prefers candidates
-  # owning a plugins/ directory, and the test below requires the manifest to
-  # declare the plugin AND its source directory to exist, so a tie-break loser
-  # can only match when it genuinely hosts the plugin.
+  # owning a plugins/ directory, and a hit below requires a USABLE local
+  # directory — the manifest's source resolved inside the root (a `.` layout
+  # additionally needs plugin.json at the root), or a materialized
+  # plugins/<name> — so a tie-break loser can only match when it genuinely
+  # hosts the plugin's files. Declaration alone is not possession.
   #
-  # A non-zero resolve_plugin_dir (rc 2 unusable / 4 unreadable / 5 non-local)
-  # is NOT a hit: the same plugin may be complete in another checkout further
-  # down the index. Step 0.1 of plugin-update re-asks resolve_plugin_dir per
-  # candidate root when the whole walk misses, so those rcs still surface in the
-  # abort message with their true cause.
+  # A non-zero resolve_plugin_dir (rc 2 / 3 / 4 / 5) is NOT a hit: the same
+  # plugin may be complete in another checkout further down the index. Step 0.1
+  # of plugin-update re-asks resolve_plugin_dir per root when the whole walk
+  # misses, so those rcs still surface in the abort message with their cause.
+  #
+  # An invalid name (rc 6) cannot match anywhere, so the walk is skipped. A root
+  # containing the field separator would misalign the three-field contract, so
+  # such roots are skipped too.
   #
   # here-doc, not a pipe: a pipe opens a subshell, so `return 0` would end only
   # that subshell and the function would fall through to `return 1`.
+  case "$plugin" in
+    *[![:alnum:]._-]*|.|..) return 1 ;;
+  esac
   while IFS="$(printf '\t')" read -r name root; do
     [ -n "$root" ] || continue
+    case "$root$name" in *\|*) continue ;; esac
     if dir=$(resolve_plugin_dir "$root" "$plugin"); then
       echo "$name|$root|$dir"
       return 0

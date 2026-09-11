@@ -25,14 +25,18 @@ MARKETPLACE_ROOT=$(resolve_marketplace_root che-plugin-devtools)
 IFS='|' read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace harness-devtools)"
 [ -d "${PLUGIN_DIR:-}" ] || exit 1
 
-# 只要 plugin 目錄。rc：0 印目錄 / 1 沒 entry 也沒 plugins/<name> / 2 entry 在但 source 不可用
-# （空、非字串、絕對路徑、..、引號、目錄不存在）/ 4 manifest 讀不動 / 5 非本地 source（git-subdir 物件、URL）
-# 且未物化。entry-less 的 plugins/<name>、物化的 git-subdir、壞掉的 manifest 都先探 plugins/<name>——
-# 「不知道」不能變成「沒有」。
+# 只要 plugin 目錄。rc：0 印目錄 / 1 未列且沒 plugins/<name> / 2 source 不可用（空、非字串、
+# 絕對、..、引號、|、控制字元、目錄不存在、symlink 逃出 root、"." 佈局缺 plugin.json）/
+# 3 無可用 python3 / 4 manifest 讀不動 / 5 非本地 source（git-subdir 物件、URL）/ 6 名稱不合法。
+# 1–5 都先探 plugins/<name>，物化即命中——「不知道」不能變成「沒有」。
 resolve_plugin_dir "$MP_ROOT" harness-devtools
-plugin_source_of "$MP_ROOT" harness-devtools          # 原始 source 值（第三方檔案內容，印之前去控制字元）
-marketplace_plugin_names "$MP_ROOT"                   # manifest 宣告的所有名稱
-git diff --name-only HEAD~3 | plugin_names_for_paths "$MP_ROOT"   # 這些路徑屬於哪些 plugin
+plugin_source_of "$MP_ROOT" harness-devtools          # source 值（已去控制字元、截斷 200；同 rc 表）
+marketplace_plugin_names "$MP_ROOT"                   # manifest 宣告 ∪ plugins/ 子目錄，去重
+git diff --name-only HEAD~3 | plugin_names_for_paths "$MP_ROOT"   # 這些路徑屬於哪些 plugin（不猜佈局）
+marketplace_index                                     # name<TAB>root，一次走完所有 marketplace
+
+# skill 裡的每個 bash block 都是獨立的 Bash 呼叫：名稱以單引號常值代入（代入前核對
+# [A-Za-z0-9._-]），再重新 source + 解析。見 plugin-update 的「前導」。
 
 # 同名多候選時看得到 shadowing（一行一個 root，precedence 序）
 marketplace_candidates che-local-plugins

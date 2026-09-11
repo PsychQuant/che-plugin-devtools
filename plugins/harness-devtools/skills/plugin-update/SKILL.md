@@ -67,27 +67,10 @@ TaskCreate(name="invoke_dependency_skill", description="Phase 1.5 auto-sync: 呼
 
 **路徑一律由 `scripts/resolve-marketplace.sh` 解析——不要在這裡或任何 skill 裡寫死。**
 
-```bash
-source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-
-# 給 plugin 名，反查它屬於哪個 marketplace。
-# **必須先檢查回傳碼再拆欄位**——見下方 Step 0.1。
-RESOLVED=$(find_plugin_marketplace "$PLUGIN_NAME") || RESOLVED=""
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$RESOLVED"
-# 三元組（#18）：第三欄是 manifest `plugins[].source` 解析出的 plugin 目錄。
-# **之後每個 phase 都用 `$PLUGIN_DIR`，不要再組 `$MP_ROOT/plugins/$PLUGIN_NAME`。**
-
-# 或直接解析已知名稱——這條路也必須產出 PLUGIN_DIR，否則後面每個 phase 都是空值
-MP_ROOT="$(resolve_marketplace_root psychquant-claude-plugins)"
-PLUGIN_DIR="$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME")" || { echo "✗ resolve_plugin_dir rc=$? for '$PLUGIN_NAME' in $MP_ROOT" >&2; exit 1; }
-
-# 列出所有已註冊 marketplace（含未被 registry 收錄的）
-list_marketplaces
-claude plugin marketplace list 2>&1
-```
-
 新增 marketplace 時只改 `resolve-marketplace.sh` 一處；`scripts/test-resolve-marketplace.sh`
-會斷言每個列出的名稱都解析得到。
+會斷言每個列出的名稱都解析得到。要看機器上有哪些 marketplace：`list_marketplaces`（或
+`claude plugin marketplace list`）；要 pin 一個已知名稱：`resolve_marketplace_root <name>`——
+但那只給 root，plugin 目錄仍要經 `resolve_plugin_dir`，見下方前導。
 
 ### Step 0.1: Marketplace Resolution Gate（v2.2.0+ #16）
 
@@ -107,7 +90,24 @@ claude plugin marketplace list 2>&1
 是最自然的動作，而那個 repo 通常真的有未推送的 commit——於是 gate 會 preview 錯誤
 repo 的狀態並問「要 push 嗎」，而那個問句看起來完全合理。
 
+**整段是一個 fence**：解析與 gate 在同一個 shell 裡，gate 讀得到它要檢查的變數。
+
 ```bash
+# 代入前先肉眼核對只含 [A-Za-z0-9._-]（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+case "$PLUGIN_NAME" in
+    *[![:alnum:]._-]*|''|.|..)
+        echo "✗ Phase 0.1: plugin 名稱 '$(printf '%s' "$PLUGIN_NAME" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80)' 含非法字元。" >&2
+        echo "  名稱會進路徑與 pathspec，只接受 [A-Za-z0-9._-]。這不是 marketplace 的問題。" >&2
+        exit 1 ;;
+esac
+
+# 三元組（#18）：第三欄是 manifest plugins[].source 解析出的 plugin 目錄。
+# **必須先檢查回傳碼再拆欄位**。
+RESOLVED=$(find_plugin_marketplace "$PLUGIN_NAME") || RESOLVED=""
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$RESOLVED"
+
 if [ -z "$MP_ROOT" ] || [ ! -d "$MP_ROOT" ]; then
     echo "✗ Phase 0.1: plugin '$PLUGIN_NAME' 不在任何已註冊的 marketplace 裡。" >&2
     echo "  已搜尋：$(list_marketplaces | tr '\n' ' ')" >&2
@@ -122,34 +122,35 @@ if [ -z "$MP_ROOT" ] || [ ! -d "$MP_ROOT" ]; then
     echo "  release 沒有 binary asset 時 BLOCK，所以更前面要先在 binary 的原始碼 repo 跑：" >&2
     echo "    → /harness-devtools:mcp-deploy   （或 CLI 專案用 /harness-devtools:cli-deploy）" >&2
     echo "" >&2
-    # 沒命中的四種樣子要分開講（#18）：manifest 根本沒這個 entry（上面的建議才對）、
-    # entry 在但 source 不可用（rc 2：修 manifest）、manifest 讀不動（rc 4：修 JSON）、
-    # source 是合法但非本地的寫法（rc 5：git-subdir 物件 / URL——manifest 沒壞，
-    # plugin-update 只處理本地佈局）。三者都不是「沒上架」，上面兩個建議對它們都是
-    # 錯的方向。逐 marketplace 名稱走**全部**候選 root（與 find_plugin_marketplace
-    # 的遍歷範圍一致；被 shadow 的 checkout 也看得到），source 值是第三方檔案內容：
-    # 去控制字元、截斷、標明 untrusted 再印。
-    while IFS= read -r mp; do
-        [ -n "$mp" ] || continue
-        while IFS= read -r root; do
-            [ -n "$root" ] || continue
-            resolve_plugin_dir "$root" "$PLUGIN_NAME" >/dev/null 2>&1; rc=$?
-            [ "$rc" -eq 1 ] && continue
-            src=$(plugin_source_of "$root" "$PLUGIN_NAME" 2>/dev/null | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-200)
-            case "$rc" in
-                2) echo "  ⚠ '$mp' ($root) 的 manifest 列了 '$PLUGIN_NAME'，但 source（untrusted，已截斷）= '$src'" >&2
-                   echo "    不是可用的相對路徑，或指向的目錄不存在。先修該 manifest。" >&2 ;;
-                4) echo "  ⚠ '$mp' ($root) 的 marketplace.json 讀不動（JSON 解析失敗 / 權限），且 plugins/$PLUGIN_NAME 未物化。" >&2
-                   echo "    這不是「沒上架」——先修 JSON（常見：多餘逗號）。" >&2 ;;
-                5) echo "  ℹ '$mp' ($root) 列了 '$PLUGIN_NAME'，source（untrusted，已截斷）= '$src'" >&2
-                   echo "    是合法但非本地的寫法（git-subdir 物件 / URL），且 plugins/$PLUGIN_NAME 未物化。" >&2
-                   echo "    manifest 沒壞；plugin-update 只處理本地佈局。要更新它，先把 subtree 物化到 plugins/$PLUGIN_NAME。" >&2 ;;
-            esac
-        done <<CANDS
-$(marketplace_candidates "$mp" 2>/dev/null)
-CANDS
+    # 沒命中的幾種樣子要分開講（#18）：manifest 根本沒這個 entry（上面的建議才對）、
+    # entry 在但 source 不可用（rc 2：修 manifest）、此機器沒有可用 python3（rc 3：
+    # 只有 plugins/<name> 佈局能偵測）、manifest 讀不動（rc 4：修 JSON）、source 是
+    # 合法但非本地的寫法（rc 5：git-subdir 物件 / URL——manifest 沒壞，plugin-update
+    # 只處理本地佈局）。後四種都不是「沒上架」，上面兩個建議對它們都是錯的方向。
+    # 走一次 marketplace_index（name<TAB>root，與 find_plugin_marketplace 同一份遍歷，
+    # 被 shadow 的 checkout 也在），不逐名重建索引。印出的每個值都是第三方檔案內容：
+    # 去控制字元、截斷。
+    clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-200; }
+    while IFS="$(printf '\t')" read -r mp root; do
+        [ -n "$root" ] || continue
+        resolve_plugin_dir "$root" "$PLUGIN_NAME" >/dev/null 2>&1; rc=$?
+        [ "$rc" -eq 1 ] && continue
+        src=$(plugin_source_of "$root" "$PLUGIN_NAME" 2>/dev/null)
+        mp=$(clean "$mp"); root=$(clean "$root")
+        case "$rc" in
+            0) echo "  ℹ '$mp' ($root) 其實解析得到——find_plugin_marketplace 沒回它，代表它在走訪時被前面的 root 遮住或 root 含分隔符；請檢查 marketplace_candidates '$mp'。" >&2 ;;
+            2) echo "  ⚠ '$mp' ($root) 的 manifest 列了 '$PLUGIN_NAME'，但 source（untrusted，已截斷）= '$src'" >&2
+               echo "    不是可用的相對路徑（空、非字串、絕對、..、引號、|、控制字元、目錄不存在、symlink 逃出 root、'.' 佈局缺 plugin.json）。先修該 manifest。" >&2 ;;
+            3) echo "  ⚠ '$mp' ($root)：此機器沒有可用的 python3，讀不了 manifest；只有 plugins/$PLUGIN_NAME 這種佈局偵測得到，而它不存在。" >&2 ;;
+            4) echo "  ⚠ '$mp' ($root) 的 marketplace.json 讀不動（權限 / JSON 解析失敗 / 形狀不對），且 plugins/$PLUGIN_NAME 未物化。" >&2
+               echo "    這不是「沒上架」——先修 JSON（常見：多餘逗號）。" >&2 ;;
+            5) echo "  ℹ '$mp' ($root) 列了 '$PLUGIN_NAME'，source（untrusted，已截斷）= '$src'" >&2
+               echo "    是合法但非本地的寫法（git-subdir 物件 / URL），且 plugins/$PLUGIN_NAME 未物化。" >&2
+               echo "    manifest 沒壞；plugin-update 只處理本地佈局。要更新它，先把 subtree 物化到 plugins/$PLUGIN_NAME。" >&2 ;;
+            *) echo "  ⚠ '$mp' ($root)：resolve_plugin_dir 回了未預期的 rc $rc。" >&2 ;;
+        esac
     done <<EOF
-$(list_marketplaces)
+$(marketplace_index)
 EOF
     exit 1
 fi
@@ -157,11 +158,14 @@ fi
 if [ -z "$PLUGIN_DIR" ] || [ ! -d "$PLUGIN_DIR" ]; then
     # find_plugin_marketplace 命中就一定帶第三欄；走到這裡代表 resolver 契約被改了
     # （例如有人把它退回兩欄），不是 marketplace 的問題。一樣 abort——見下段。
-    echo "✗ Phase 0.1: find_plugin_marketplace 回了 '$RESOLVED'，第三欄不是目錄。" >&2
+    echo "✗ Phase 0.1: find_plugin_marketplace 回了 '$(printf '%s' "$RESOLVED" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-200)'，第三欄不是目錄。" >&2
     echo "  resolve-marketplace.sh 的契約是 name|root|plugin_dir（#18）；請對它跑" >&2
     echo "  scripts/test-resolve-marketplace.sh。" >&2
     exit 1
 fi
+
+# 之後每個 block 都要代入這兩個值（見下方「前導」）：記下來。
+echo "→ Step 0.1 OK: marketplace=$MP_NAME root=$MP_ROOT plugin_dir=$PLUGIN_DIR"
 ```
 
 **`PLUGIN_DIR` 也 gate，理由和 `MP_ROOT` 一樣（#18）**：在 #18 之前這個 skill 有 17 處自己
@@ -174,19 +178,27 @@ marketplace（che-keychain、che-apple-mail-mcp、che-ical-mcp）那個目錄不
 **這是 abort，不是 warn。** 繼續下去的每一條路徑都是對錯的目標動手，而其中一條會
 主動邀請使用者 push 一個不相干的 repo。
 
-**每個 bash block 自己重新解析（#18 R1）**：agent 是分次呼叫 Bash 工具執行這份 SKILL.md
+**每個 bash block 自己重新解析（#18）**：agent 是分次呼叫 Bash 工具執行這份 SKILL.md
 的，shell 變數不跨呼叫存活。Step 0.1 設好的 `MP_ROOT` / `PLUGIN_DIR` 到 Phase 0.3 那個
 shell 已經不存在——空的 `$PLUGIN_DIR/.mcp.json` 測的是 `/.mcp.json`，答案是「沒有」，而
 「沒有」正是本 issue 要消滅的那種靜默失敗。所以之後**每一個**用到 `$MP_ROOT` /
-`$PLUGIN_DIR` 的 block 都以同一段前導開頭（重新 `source` + `find_plugin_marketplace` +
-gate）。這不是「重組路徑」：路徑仍然只從 manifest 來，只是每個 shell 各拿一次。
+`$PLUGIN_DIR` 的 block 都以同一段前導開頭。前導把 Step 0.1 印出的 `MP_NAME` 也代入並
+用 `resolve_marketplace_root` pin 住（不再重走 `find_plugin_marketplace`）：同名多
+checkout 時，Step 0.1 決定的那份才是後面 `git push` 的那份。這不是「重組路徑」：路徑仍然
+只從 manifest 來，只是每個 shell 各拿一次。**表格儲存格與散文裡的 `<PLUGIN_DIR>` 是敘述，
+不是可執行的指令；可執行的形式只在帶前導的 fence 裡。**
 
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 ```
 
 > **為什麼 Phase 2 Step 3「新 Plugin 需加入 entry」不涵蓋這個情形**：那一步處理的是
@@ -207,11 +219,16 @@ IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUG
 ### Step 1: 偵測 binary-backed plugin
 
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 
 # Signal: .mcp.json 或 bin/*-wrapper.sh with GITHUB_REPO → MCP binary plugin
 IS_BINARY_BACKED=false
@@ -232,11 +249,16 @@ fi
 ### Step 2: 收集 sync 候選變更（binary-backed only）
 
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 
 # 路徑一律走 sys.argv，不內嵌進 python 原始碼：$PLUGIN_DIR 來自 manifest（第三方檔案），
 # 內嵌成 open('$PLUGIN_DIR/...') 時路徑裡一個 ' 就是任意程式碼執行（#18 R1 security）。
@@ -256,10 +278,12 @@ for p in d["plugins"]:
 MP_DRIFT=$([ "$MP_VERSION" != "$SHELL_VERSION" ] && echo yes || echo no)
 
 # (c) Shell 檔案最近 N 個 commits 是否觸到此 plugin？
-# pathspec 用絕對 $PLUGIN_DIR（git 接受 worktree 內的絕對路徑；同檔 Phase 2.5 亦然）。
-# 不要相對化：${PLUGIN_DIR#$MP_ROOT/} 把 MP_ROOT 當 glob、對 repo 即 plugin 的佈局會變空字串。
+# pathspec 用絕對 $PLUGIN_DIR（git 接受 worktree 內的絕對路徑；同檔 Phase 2.5 亦然），並帶
+# --literal-pathspecs（目錄名含 * ? [ 時不得當 glob）。不要相對化：${PLUGIN_DIR#$MP_ROOT/} 把
+# MP_ROOT 當 glob、對 repo 即 plugin 的佈局會變空字串。root-sourced plugin（source "."）的
+# pathspec 是整個 repo：對它這個信號等於「repo 30 天內有沒有 commit」，是佈局語意，不是誤報。
 cd "$MP_ROOT"
-SHELL_RECENT_TOUCHES=$(git log --since="30 days ago" --name-only --pretty=format: \
+SHELL_RECENT_TOUCHES=$(git --literal-pathspecs log --since="30 days ago" --name-only --pretty=format: \
     -- "$PLUGIN_DIR/" 2>/dev/null \
     | grep -v '^$' | sort -u | head -10)
 
@@ -354,11 +378,16 @@ echo "→ Phase 0.3: sync intent confirmed"
 ### Step 1: Read-only Preview Block
 
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 cd "$MP_ROOT"
 
 # Resolve upstream once + abort on missing/unusual configs (v1.16.0 fix #60-verify P1)
@@ -520,19 +549,29 @@ options:
 
 ### Step 5: Cross-plugin Commits Warning（v1.16.0 Tier A:warn-only)
 
-當 Step 3 選擇 `push N as-is` / `push N+1`,檢查 unpushed commits 有沒有 touch 預期外的 plugin / 完全沒 touch target plugin。**前置條件**:`$TARGET_PLUGIN` 必須先由 Phase 1 Step 1 plugin-name resolution 設定;若 Phase 0.5 在 Phase 1 之前就需要這個 check,要等 Phase 1 inference 完成再回來跑(skill 內由 Step 0 stage TaskList 控制 ordering)。
+當 Step 3 選擇 `push N as-is` / `push N+1`,檢查 unpushed commits 有沒有 touch 預期外的 plugin / 完全沒 touch target plugin。target 就是本次引數 `PLUGIN_NAME`（前導代入）；沒帶名稱的 invocation 先走 Phase 1 Step 1 的推斷、拿到名稱後再回來跑本 step。
 
 ```bash
-# Pre-condition: TARGET_PLUGIN 已由 Phase 1 Step 1 解析(命令列 arg 或從 git inferred)
-# 若 TARGET_PLUGIN 為空,跳過此 check(讓 Phase 1 處理 inference 後再看)
-if [ -z "${TARGET_PLUGIN:-}" ]; then
-    echo "ℹ Cross-plugin scope check deferred — TARGET_PLUGIN not yet resolved (Phase 1 Step 1 will set)."
-    return 0
-fi
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
+cd "$MP_ROOT"
+TARGET_PLUGIN="$PLUGIN_NAME"
+# UPSTREAM 是 Step 1 那個 shell 的變數，這裡重算；空的 "$UPSTREAM"..HEAD 是 git 合法的空集合
+# （rc 0、零輸出），會讓這道 gate 安靜地死掉（#18 R2）。
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) \
+  || { echo "✗ no upstream tracking branch — Step 1 should have aborted" >&2; exit 1; }
 
 # 收集 unpushed commits touch 到的 plugin 名(去重)——經 manifest 對映，不猜 plugins/<x>/ 佈局
-# （單一 plugin marketplace 的檔案在 plugin/ 底下；repo 即 plugin 的佈局擁有全部路徑。#18 R1）
-source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+# （單一 plugin marketplace 的檔案在 plugin/ 底下；repo 即 plugin 的佈局擁有全部路徑，
+# 所以 root-sourced plugin 對任何 commit 都算被 touch——那是佈局語意，case (a) 對它不成立。#18）
 TOUCHED=$(git log --name-only --pretty=format: "$UPSTREAM"..HEAD \
   | plugin_names_for_paths "$MP_ROOT")
 TOUCHED_COUNT=$(echo -n "$TOUCHED" | grep -c . || true)
@@ -554,7 +593,7 @@ elif [ "$TOUCHED_COUNT" = "1" ] && [ "$TOUCHED" = "$TARGET_PLUGIN" ]; then
 else
     # Cross-plugin or wrong target
     echo "⚠ Heads-up: unpushed commits touch plugin(s) other than (or in addition to) target '$TARGET_PLUGIN':"
-    echo "$TOUCHED" | sed 's/^/   - plugins\//'
+    echo "$TOUCHED" | sed 's/^/   - /'
     echo "   Pushing will publish all of them via marketplace update."
     echo "   (warn-only; active scope guard 留給 follow-up issue #65 處理)"
 fi
@@ -575,12 +614,18 @@ fi
 如果用戶指定了 plugin 名稱，直接使用。否則從 git 推斷：
 
 ```bash
+# 這一步還沒有 plugin 名（要推斷的就是它），所以不用前導：對機器上每個 marketplace root 各看一次。
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-MP_ROOT="$(resolve_marketplace_root "$MP_NAME")"   # 使用者指定的 marketplace；沒指定就對每個 list_marketplaces 跑一次
-git -C "$MP_ROOT" diff --name-only HEAD~3 | plugin_names_for_paths "$MP_ROOT"
+while IFS="$(printf '\t')" read -r mp root; do
+    [ -n "$root" ] || continue
+    hits=$(git --literal-pathspecs -C "$root" diff --name-only HEAD~3 2>/dev/null | plugin_names_for_paths "$root")
+    [ -n "$hits" ] && printf '%s\n' "$hits" | awk -v m="$mp" '{ print m ": " $0 }'
+done <<EOF
+$(marketplace_index)
+EOF
 ```
 
-列出最近變更的 plugin（經 manifest 對映，`./plugin` 與 repo-即-plugin 佈局都算得到），請用戶確認要更新哪些。
+列出最近變更的 plugin（經 manifest 對映，`./plugin`、entry-less `plugins/<name>` 與 repo-即-plugin 佈局都算得到），請用戶確認要更新哪些；確認後以該名稱與其 marketplace 名跑 Step 0.1。
 
 ### Step 2: 檢查 Git 狀態
 
@@ -601,10 +646,12 @@ Plugin 如果依賴外部 binary（MCP server、CLI 工具），plugin-update �
 
 | 訊號 | 類型 | 判斷方式 |
 |------|------|---------|
-| `.mcp.json` 存在 | **MCP binary** | `ls "$PLUGIN_DIR"/.mcp.json` |
-| `bin/*-wrapper.sh` 有 `GITHUB_REPO` | **MCP binary** | `grep -l GITHUB_REPO "$PLUGIN_DIR"/bin/*.sh` |
-| `hooks/session-start.sh` curl GitHub API | **CLI tool** | `grep 'api.github.com.*releases' "$PLUGIN_DIR"/hooks/` |
-| Skill / hook 引用 `~/bin/$BINARY` | **CLI tool** | `grep -rn '\$HOME/bin/\|~/bin/' "$PLUGIN_DIR"/{skills,hooks}/` |
+| `.mcp.json` 存在 | **MCP binary** | `<PLUGIN_DIR>/.mcp.json` 存在 |
+| `bin/*-wrapper.sh` 有 `GITHUB_REPO` | **MCP binary** | `<PLUGIN_DIR>/bin/*.sh` 內 grep 到 `GITHUB_REPO` |
+| `hooks/session-start.sh` curl GitHub API | **CLI tool** | `<PLUGIN_DIR>/hooks/` 內 grep 到 `api.github.com.*releases` |
+| Skill / hook 引用 `~/bin/$BINARY` | **CLI tool** | `<PLUGIN_DIR>/{skills,hooks}/` 內 grep 到 `$HOME/bin/` 或 `~/bin/` |
+
+（`<PLUGIN_DIR>` 是敘述；可執行的判斷在 Phase 0.3 Step 1 帶前導的 fence。）
 
 ### Step 2: MCP 情境 — 兩個信號（asset present + repo drift）
 
@@ -616,11 +663,16 @@ Plugin 如果依賴外部 binary（MCP server、CLI 工具），plugin-update �
 兩個信號獨立、各自 warn。
 
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh; do
     [ -f "$wrapper" ] || continue
     BINARY_NAME=$(grep '^BINARY_NAME=' "$wrapper" | head -1 | cut -d'"' -f2)
@@ -696,11 +748,16 @@ done
 ### Step 3: CLI 情境 — 比對本機 binary 和 latest release 版本
 
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 # 從 session-start.sh 抓 GitHub repo
 GFH_REPO=$(grep -oE '[A-Za-z0-9_-]+/[A-Za-z0-9_-]+' "$PLUGIN_DIR"/hooks/session-start.sh | head -1)
 BINARY_NAME=$(basename $(grep -oE '\$HOME/bin/[A-Za-z0-9_-]+' "$PLUGIN_DIR"/hooks/session-start.sh | head -1))
@@ -789,11 +846,16 @@ fi
 ### Step 1: 列出 marketplace 中所有 plugin 版本
 
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 cd "$MP_ROOT"
 cat .claude-plugin/marketplace.json | python3 -c "
 import json, sys
@@ -806,11 +868,16 @@ for p in data['plugins']:
 ### Step 2: 對比 plugin.json 的實際版本
 
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 cat "$PLUGIN_DIR"/.claude-plugin/plugin.json | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -848,11 +915,16 @@ category 常用值：`development`、`productivity`、`creative`
 marketplace.json 的變更也需要 commit + push，才能被 `marketplace update` 抓到。
 
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 cd "$MP_ROOT"
 git add .claude-plugin/marketplace.json
 git commit -m "chore: update marketplace.json for {plugin_name} v{version}"
@@ -877,11 +949,16 @@ git push
 catch-up gap」這三類常見 staleness。
 
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 README="$PLUGIN_DIR/README.md"
 NEW_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_DIR/.claude-plugin/plugin.json")
 
@@ -902,8 +979,8 @@ fi
 #   A. README 完全沒有版本追蹤內容 → mtime drift 沒意義（純 skill plugin / glue plugin）
 #   B. 所有「比 README 新的 commits」都是 wrapper-only / marketplace.json sync 等
 #      不影響使用者可見 surface 的 plumbing 改動 → 不算 stale
-README_MTIME=$(git log -1 --format=%ct -- "$PLUGIN_DIR/README.md" 2>/dev/null)
-CODE_MTIME=$(git log -1 --format=%ct -- "$PLUGIN_DIR/.claude-plugin/plugin.json" "$PLUGIN_DIR/skills" "$PLUGIN_DIR/hooks" "$PLUGIN_DIR/agents" "$PLUGIN_DIR/rules" "$PLUGIN_DIR/commands" 2>/dev/null)
+README_MTIME=$(git --literal-pathspecs log -1 --format=%ct -- "$PLUGIN_DIR/README.md" 2>/dev/null)
+CODE_MTIME=$(git --literal-pathspecs log -1 --format=%ct -- "$PLUGIN_DIR/.claude-plugin/plugin.json" "$PLUGIN_DIR/skills" "$PLUGIN_DIR/hooks" "$PLUGIN_DIR/agents" "$PLUGIN_DIR/rules" "$PLUGIN_DIR/commands" 2>/dev/null)
 if [ -n "$README_MTIME" ] && [ -n "$CODE_MTIME" ] && [ "$README_MTIME" -lt "$CODE_MTIME" ]; then
     if [ "$HAS_VERSION_SECTION" = "false" ]; then
         # Suppression A — 沒版本追蹤標記，mtime drift 沒意義
@@ -911,7 +988,7 @@ if [ -n "$README_MTIME" ] && [ -n "$CODE_MTIME" ] && [ "$README_MTIME" -lt "$COD
     else
         # Suppression B — 過濾掉純 wrapper / marketplace 同步 commits
         # 找出 README mtime 之後、touch 此 plugin 的所有 commits
-        SUBSTANTIVE_COMMITS=$(git log --since="@$README_MTIME" --format='%s' \
+        SUBSTANTIVE_COMMITS=$(git --literal-pathspecs log --since="@$README_MTIME" --format='%s' \
             -- "$PLUGIN_DIR/" 2>/dev/null | \
             grep -vE '^(fix|chore|docs)\(.*\): (add version-aware auto-download|sync marketplace\.json|update repo URLs|bump.*version|wrapper)' | \
             grep -vE 'wrapper.sh\b|marketplace\.json sync|plugin\.json version' | \
@@ -983,7 +1060,7 @@ fi
 # 確保表格涵蓋這段時間出貨的版本 — 不只是「latest 有沒有」（信號 1）而是「中間是否漏版本」。
 # 範圍只看 90 天避免 major rewrite（plugin v1.x → v2.x README 改寫）誤觸發。
 if grep -q '## Version History\|### Changelog' "$README" 2>/dev/null; then
-    SHIPPED_VERSIONS=$(git log --since="90 days ago" --format='%s' -- "$PLUGIN_DIR/" 2>/dev/null | \
+    SHIPPED_VERSIONS=$(git --literal-pathspecs log --since="90 days ago" --format='%s' -- "$PLUGIN_DIR/" 2>/dev/null | \
         grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | sort -uV | tail -8)
     MISSING_VERSIONS=()
     for v in $SHIPPED_VERSIONS; do
@@ -1030,7 +1107,7 @@ options:
 
 | 選項 | 行為 |
 |------|------|
-| 更新 README | Read CHANGELOG.md + `git log --oneline -n 10 -- "$PLUGIN_DIR/"` → 提出 README diff → 使用者確認後 Edit + commit + push |
+| 更新 README | Read CHANGELOG.md + 在帶前導的 fence 內 `git --literal-pathspecs -C "$MP_ROOT" log --oneline -n 10 -- "$PLUGIN_DIR/"` → 提出 README diff → 使用者確認後 Edit + commit + push |
 | 已經沒問題 | 繼續 Phase 3，不記 warning |
 | 先略過 | 繼續 Phase 3，**Phase 5 最終 report 要顯眼標註** README 待補 |
 
@@ -1132,11 +1209,16 @@ Claude Code 有快取機制。需要重啟才能載入新版 skill 內容。
 ### `failed to load` 錯誤？
 通常是 hooks.json 格式問題：
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 claude plugin validate "$PLUGIN_DIR"
 ```
 
@@ -1144,11 +1226,16 @@ claude plugin validate "$PLUGIN_DIR"
 1. 確認 `marketplace.json` 的版本號已更新
 2. 確認已 push 到 remote：
 ```bash
-# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
-# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 兩個常值由 agent 代入：PLUGIN_NAME = 本次引數，MP_NAME = Step 0.1 印出的 marketplace 名。
+# **代入前先肉眼核對兩者都只含 [A-Za-z0-9._-]**；不符就停下來回報，不執行任何指令
+# （單引號裡一個 ' 或 " 就能逃出字串——代入是文字操作，shell 層的檢查在它之後）。
+PLUGIN_NAME='<plugin-name>'
+MP_NAME='<marketplace-name-from-step-0.1>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+case "$PLUGIN_NAME$MP_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+MP_ROOT=$(resolve_marketplace_root "$MP_NAME") && PLUGIN_DIR=$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME") \
+  || { echo "✗ '$PLUGIN_NAME' 在 marketplace '$MP_NAME' 解析失敗（rc $?）— Step 0.1 必須先通過" >&2; exit 1; }
 cd "$MP_ROOT"
 git log origin/main..HEAD --oneline
 ```

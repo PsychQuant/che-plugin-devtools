@@ -313,9 +313,14 @@ cat > "$PD_TMP/agg/.claude-plugin/marketplace.json" <<'JSON'
     { "name": "newline",  "source": "./plugins/q\nx" }
   ] }
 JSON
-mkdir -p "$PD_TMP/rootplugin/.claude-plugin"
+mkdir -p "$PD_TMP/rootplugin/.claude-plugin" "$PD_TMP/claimant/.claude-plugin"
 cat > "$PD_TMP/rootplugin/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "pd-root", "plugins": [ { "name": "dot", "source": "." }, { "name": "dotslash", "source": "./" } ] }
+JSON
+printf '{ "name": "dot", "version": "0.0.1" }\n' > "$PD_TMP/rootplugin/.claude-plugin/plugin.json"   # root IS the plugin
+# a manifest that declares `.` for a name it does not host (no plugin.json at its root)
+cat > "$PD_TMP/claimant/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-claimant", "plugins": [ { "name": "x", "source": "." } ] }
 JSON
 mkdir -p "$PD_TMP/broken/.claude-plugin" "$PD_TMP/broken/plugins/present"
 printf '{ "name": "pd-broken", "plugins": [ { "name": "present", "source": "./plugins/present" }, ] }\n' \
@@ -360,16 +365,28 @@ for bad in empty boolean trav quoted newline; do
   assert_eq "unusable source ($bad) → rc 2" "2" "$RC_BAD"
 done
 resolve_plugin_dir "$PD_TMP/agg" "../x" >/dev/null 2>&1; RC_BADNAME=$?
-assert_eq "plugin NAME with a path segment → rc 2" "2" "$RC_BADNAME"
+assert_eq "plugin NAME with a path segment -> rc 6 (its own code: the manifest is not to blame)" "6" "$RC_BADNAME"
+resolve_plugin_dir "$PD_TMP/agg" 'x"; echo pwned' >/dev/null 2>&1; RC_BADNAME2=$?
+assert_eq "plugin NAME with shell metacharacters -> rc 6" "6" "$RC_BADNAME2"
+assert_fails "find_plugin_marketplace refuses an invalid name without walking" find_plugin_marketplace 'x"; echo pwned'
+
 
 # the manifest is the source of truth for names; paths map through it
-assert_eq "marketplace_plugin_names lists declared names" \
-    "x ghost remote absolute akashic orphan empty boolean trav quoted newline" \
+# declared + materialized: newbie and q have directories but no entry; the plugin
+# that most needs plugin-update (its entry is not written yet) must not vanish here
+assert_eq "marketplace_plugin_names = declared names UNION plugins/ directories, sorted, deduped" \
+    "absolute akashic boolean empty ghost newbie newline orphan q quoted remote trav x" \
     "$(marketplace_plugin_names "$PD_TMP/agg" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "plugin_names_for_paths sees an entry-less plugins/<name> directory" \
+    "newbie" "$(printf 'plugins/newbie/skills/a/SKILL.md\n' | plugin_names_for_paths "$PD_TMP/agg")"
+assert_eq "marketplace_index yields name<TAB>root for the fixtures" \
+    "pd-agg" "$(marketplace_index | awk -F'\t' '$1 == "pd-agg" { print $1 }')"
 assert_eq "plugin_names_for_paths maps ./plugin layout paths (not plugins/<x>/)" \
     "pd-solo" "$(printf 'plugin/skills/a/SKILL.md\nREADME.md\n' | plugin_names_for_paths "$PD_TMP/solo")"
-assert_eq "plugin_names_for_paths: root-is-plugin owns every path" \
+assert_eq "plugin_names_for_paths: root-is-plugin owns every path (by design; see resolve_plugin_dir)" \
     "dot dotslash" "$(printf 'anything.md\n' | plugin_names_for_paths "$PD_TMP/rootplugin" | tr '\n' ' ' | sed 's/ $//')"
+resolve_plugin_dir "$PD_TMP/claimant" x >/dev/null 2>&1; RC_CLAIM=$?
+assert_eq 'source "." without plugin.json at the root -> rc 2 (declaration is not possession)' "2" "$RC_CLAIM"
 assert_eq "plugin_names_for_paths: unrelated paths map to nothing" \
     "" "$(printf 'docs/x.md\n' | plugin_names_for_paths "$PD_TMP/agg")"
 
@@ -378,11 +395,35 @@ FAKEBIN=$(mktemp -d); printf '#!/bin/sh\necho "xcode-select: note: No developer 
 assert_eq "broken python3 interpreter → legacy plugins/<name> probe still hits" \
     "$PD_TMP/agg/plugins/x" "$(PATH="$FAKEBIN:$PATH" resolve_plugin_dir "$PD_TMP/agg" x)"
 PATH="$FAKEBIN:$PATH" resolve_plugin_dir "$PD_TMP/solo" pd-solo >/dev/null 2>&1; RC_FAKE=$?
-assert_eq "broken python3 + ./plugin layout (nothing under plugins/) → rc 1, not a crash" "1" "$RC_FAKE"
+assert_eq "broken python3 + ./plugin layout (nothing under plugins/) -> rc 3 (cannot tell), never rc 1" "3" "$RC_FAKE"
 rm -rf "$FAKEBIN"
 # no python3 at all (command -v fails) → same legacy probe
 NOPY=$(bash -c 'command() { [ "$2" = python3 ] && return 1; builtin command "$@"; }; source "'"$SCRIPT_DIR"'/resolve-marketplace.sh"; resolve_plugin_dir "'"$PD_TMP"'/agg" x')
 assert_eq "no python3 → legacy plugins/<name> probe" "$PD_TMP/agg/plugins/x" "$NOPY"
+
+# R2 verify: symlink escape, field separator, equivalent spellings, sanitized source
+mkdir -p "$PD_TMP/link/.claude-plugin" "$PD_TMP/outside"
+ln -s "$PD_TMP/outside" "$PD_TMP/link/plugin"
+cat > "$PD_TMP/link/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-link", "plugins": [ { "name": "esc", "source": "./plugin" }, { "name": "pipe", "source": "./pl|ugin" },
+                                  { "name": "ctrl", "source": "./plugin\tx" } ] }
+JSON
+resolve_plugin_dir "$PD_TMP/link" esc >/dev/null 2>&1; RC_ESC=$?
+assert_eq "source dir that is a symlink to outside the root -> rc 2 (physical containment)" "2" "$RC_ESC"
+resolve_plugin_dir "$PD_TMP/link" pipe >/dev/null 2>&1; RC_PIPE=$?
+assert_eq "source containing the | field separator -> rc 2" "2" "$RC_PIPE"
+mkdir -p "$PD_TMP/norm/.claude-plugin" "$PD_TMP/norm/plugin/skills"
+cat > "$PD_TMP/norm/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-norm", "plugins": [ { "name": "dotted", "source": "./plugin/." }, { "name": "doubled", "source": ".//plugin//" } ] }
+JSON
+assert_eq 'source "./plugin/." normalizes to the plugin dir' "$PD_TMP/norm/plugin" "$(resolve_plugin_dir "$PD_TMP/norm" dotted)"
+assert_eq 'source ".//plugin//" normalizes to the plugin dir' "$PD_TMP/norm/plugin" "$(resolve_plugin_dir "$PD_TMP/norm" doubled)"
+assert_eq "normalized sources still map paths" "dotted doubled" \
+    "$(printf 'plugin/skills/a.md\n' | plugin_names_for_paths "$PD_TMP/norm" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "plugin_source_of strips control characters from third-party content (a JSON-escaped TAB here)" \
+    "./pluginx" "$(plugin_source_of "$PD_TMP/link" ctrl; :)"
+assert_eq "plugin_source_of shows a non-string source as JSON (rc 2 to the caller)" \
+    "true" "$(plugin_source_of "$PD_TMP/agg" boolean; :)"
 
 PD_NOISE2=$( { resolve_plugin_dir "$PD_TMP/agg" orphan; resolve_plugin_dir "$PD_TMP/broken" absent; resolve_plugin_dir "$PD_TMP/agg" quoted; \
                marketplace_plugin_names "$PD_TMP/broken"; printf 'x\n' | plugin_names_for_paths "$PD_TMP/agg"; } 2>&1 >/dev/null )
