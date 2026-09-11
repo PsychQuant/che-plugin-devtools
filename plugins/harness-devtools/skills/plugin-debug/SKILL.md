@@ -57,8 +57,8 @@ PLUGIN_NAME="{plugin_name}"
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 
 # 自動找出這個 plugin 屬於哪個 marketplace（不要假設是 psychquant）
-IFS="|" read -r MP_NAME MP_ROOT <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
-SRC="$MP_ROOT/plugins/$PLUGIN_NAME"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+SRC="$PLUGIN_DIR"   # manifest plugins[].source 解析結果（#18）；別再組 plugins/<name>
 
 # cache 路徑（可能有多個版本）
 ls -la ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/ 2>/dev/null

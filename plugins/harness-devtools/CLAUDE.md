@@ -19,8 +19,12 @@ source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-marketplace.sh"
 
 MARKETPLACE_ROOT=$(resolve_marketplace_root che-plugin-devtools)
 
-# 或反查：給 plugin 名，找它在哪個 marketplace
-IFS='|' read -r MP_NAME MP_ROOT <<< "$(find_plugin_marketplace akashic-mcp)"
+# 或反查：給 plugin 名，找它在哪個 marketplace——三欄（#18），第三欄是 manifest
+# plugins[].source 解析出的 plugin 目錄；之後用 $PLUGIN_DIR，不要組 $MP_ROOT/plugins/<name>
+IFS='|' read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace akashic-mcp)"
+
+# 只要 plugin 目錄：rc 1 = manifest 沒這個 entry；rc 2 = entry 在但 source 不是相對路徑或目錄不存在
+resolve_plugin_dir "$MP_ROOT" akashic-mcp
 
 # 同名多候選時看得到 shadowing（一行一個 root，precedence 序）
 marketplace_candidates che-local-plugins

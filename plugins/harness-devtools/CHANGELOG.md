@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Breaking for direct consumers**：`resolve-marketplace.sh` 的 `find_plugin_marketplace` 輸出從 `name|root` 擴為 `name|root|plugin_dir`；`IFS="|" read -r` 需接三欄（#18）。已知消費者 `plugin-update` Step 0.1 與 `plugin-debug` 同步更新。
+- `plugin-update`：Phase 0.3 / 1.5 / 2 / 2.5 / troubleshooting 共 17 處 `plugins/{name}` 硬編路徑改為 Step 0.1 提供的 `$PLUGIN_DIR`；Step 0.1 新增 `PLUGIN_DIR` gate（#18）。
+
+### Added
+- `resolve-marketplace.sh`：`resolve_plugin_dir <root> <plugin>` 從 manifest 的 `plugins[].source` 解析 plugin 目錄（rc 0 / 1 無 entry / 2 entry 在但 source 非相對路徑或目錄不存在）；`_plugin_source_of` 以 `grep -F` 預篩後才 spawn python3，無 python3 退回 legacy 目錄探測（#18）。
+
+### Fixed
+- 單一 plugin marketplace（`"source": "./plugin"`，如 che-keychain / che-apple-mail-mcp / che-ical-mcp）在 `plugin-update` Step 0.1 被判為「不在任何 marketplace」，繞過後 Phase 0.3 / 1.5 / 2.5 的偵測全部對不存在的目錄回答「沒有」（#18）。
+
 ## [2.4.0] - 2026-09-01
 
 ### Changed
