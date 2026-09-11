@@ -73,7 +73,9 @@ source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 # 給 plugin 名，反查它屬於哪個 marketplace。
 # **必須先檢查回傳碼再拆欄位**——見下方 Step 0.1。
 RESOLVED=$(find_plugin_marketplace "$PLUGIN_NAME") || RESOLVED=""
-IFS="|" read -r MP_NAME MP_ROOT <<< "$RESOLVED"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$RESOLVED"
+# 三元組（#18）：第三欄是 manifest `plugins[].source` 解析出的 plugin 目錄。
+# **之後每個 phase 都用 `$PLUGIN_DIR`，不要再組 `$MP_ROOT/plugins/$PLUGIN_NAME`。**
 
 # 或直接解析已知名稱
 MP_ROOT="$(resolve_marketplace_root psychquant-claude-plugins)"
@@ -96,7 +98,7 @@ claude plugin marketplace list 2>&1
 
 | Phase | 用法 | 空值時 |
 |---|---|---|
-| 0.3 | `PLUGIN_DIR="$MP_ROOT/plugins/$PLUGIN_NAME"` | `/plugins/<name>` → 偵測全部落空 → `IS_BINARY_BACKED=false`，binary gate 整個失效 |
+| 0.3 | `$PLUGIN_DIR`（三元組第三欄）| 空 → 偵測全部落空 → `IS_BINARY_BACKED=false`，binary gate 整個失效 |
 | 0.5 | `cd "$MP_ROOT"` | `cd ""` 是 no-op → **git state gate 跑在使用者當下所在的 repo 上** |
 | 2 | 讀寫 `$MP_ROOT/.claude-plugin/marketplace.json` | 讀不到 |
 
@@ -118,9 +120,41 @@ if [ -z "$MP_ROOT" ] || [ ! -d "$MP_ROOT" ]; then
     echo "  若它是 binary-backed（MCP server / CLI），plugin-deploy 的 Step 2.5 會在" >&2
     echo "  release 沒有 binary asset 時 BLOCK，所以更前面要先在 binary 的原始碼 repo 跑：" >&2
     echo "    → /harness-devtools:mcp-deploy   （或 CLI 專案用 /harness-devtools:cli-deploy）" >&2
+    echo "" >&2
+    # 沒命中的兩種樣子要分開講（#18）：manifest 根本沒這個 entry，和 entry 在但
+    # source 指向不存在的目錄 / 不是相對路徑。後者是「manifest 壞了」，不是「沒上架」，
+    # 上面兩個建議對它都是錯的方向。
+    while IFS= read -r mp; do
+        [ -n "$mp" ] || continue
+        root=$(resolve_marketplace_root "$mp" 2>/dev/null) || continue
+        resolve_plugin_dir "$root" "$PLUGIN_NAME" >/dev/null 2>&1
+        if [ $? -eq 2 ]; then
+            echo "  ⚠ marketplace '$mp' 的 manifest 有 '$PLUGIN_NAME' 這個 entry，但 source =" >&2
+            echo "    '$(_plugin_source_of "$root/.claude-plugin/marketplace.json" "$PLUGIN_NAME")'" >&2
+            echo "    不是相對路徑，或指向的目錄不存在。先修 $root/.claude-plugin/marketplace.json。" >&2
+        fi
+    done <<EOF
+$(list_marketplaces)
+EOF
+    exit 1
+fi
+
+if [ -z "$PLUGIN_DIR" ] || [ ! -d "$PLUGIN_DIR" ]; then
+    # find_plugin_marketplace 命中就一定帶第三欄；走到這裡代表 resolver 契約被改了
+    # （例如有人把它退回兩欄），不是 marketplace 的問題。一樣 abort——見下段。
+    echo "✗ Phase 0.1: find_plugin_marketplace 回了 '$RESOLVED'，第三欄不是目錄。" >&2
+    echo "  resolve-marketplace.sh 的契約是 name|root|plugin_dir（#18）；請對它跑" >&2
+    echo "  scripts/test-resolve-marketplace.sh。" >&2
     exit 1
 fi
 ```
+
+**`PLUGIN_DIR` 也 gate，理由和 `MP_ROOT` 一樣（#18）**：在 #18 之前這個 skill 有 17 處自己
+把路徑組成 `$MP_ROOT/plugins/$PLUGIN_NAME`。對 `source: "./plugin"` 的單一 plugin
+marketplace（che-keychain、che-apple-mail-mcp、che-ical-mcp）那個目錄不存在，而後面每一個
+「檔案在不在」的偵測都把不存在讀成「沒有」——`IS_BINARY_BACKED=false`、`binary_version`
+空、README 六信號全跳過——和 `MP_ROOT` 為空時一模一樣，只是這次 `MP_ROOT` 是對的。
+路徑現在只有一個來源：manifest 的 `plugins[].source`，由 `resolve_plugin_dir` 解析。
 
 **這是 abort，不是 warn。** 繼續下去的每一條路徑都是對錯的目標動手，而其中一條會
 主動邀請使用者 push 一個不相干的 repo。
@@ -143,7 +177,7 @@ fi
 ### Step 1: 偵測 binary-backed plugin
 
 ```bash
-PLUGIN_DIR="{marketplace_repo_path}/plugins/{plugin_name}"
+# PLUGIN_DIR 由 Step 0.1 的三元組提供（#18）——不要在這裡重組路徑。
 
 # Signal: .mcp.json 或 bin/*-wrapper.sh with GITHUB_REPO → MCP binary plugin
 IS_BINARY_BACKED=false
@@ -182,7 +216,7 @@ MP_DRIFT=$([ "$MP_VERSION" != "$SHELL_VERSION" ] && echo yes || echo no)
 # (c) Shell 檔案最近 N 個 commits 是否觸到此 plugin？
 cd {marketplace_repo_path}
 SHELL_RECENT_TOUCHES=$(git log --since="30 days ago" --name-only --pretty=format: \
-    -- "plugins/{plugin_name}/" 2>/dev/null \
+    -- "${PLUGIN_DIR#$MP_ROOT/}/" 2>/dev/null \
     | grep -v '^$' | sort -u | head -10)
 
 # (d) BINARY repo: main 是否有 unreleased commits（信號移植自 #66 Phase 1.5 強化）
@@ -515,10 +549,10 @@ Plugin 如果依賴外部 binary（MCP server、CLI 工具），plugin-update �
 
 | 訊號 | 類型 | 判斷方式 |
 |------|------|---------|
-| `.mcp.json` 存在 | **MCP binary** | `ls plugins/{name}/.mcp.json` |
-| `bin/*-wrapper.sh` 有 `GITHUB_REPO` | **MCP binary** | `grep -l GITHUB_REPO plugins/{name}/bin/*.sh` |
-| `hooks/session-start.sh` curl GitHub API | **CLI tool** | `grep 'api.github.com.*releases' plugins/{name}/hooks/` |
-| Skill / hook 引用 `~/bin/$BINARY` | **CLI tool** | `grep -rn '\$HOME/bin/\|~/bin/' plugins/{name}/{skills,hooks}/` |
+| `.mcp.json` 存在 | **MCP binary** | `ls "$PLUGIN_DIR"/.mcp.json` |
+| `bin/*-wrapper.sh` 有 `GITHUB_REPO` | **MCP binary** | `grep -l GITHUB_REPO "$PLUGIN_DIR"/bin/*.sh` |
+| `hooks/session-start.sh` curl GitHub API | **CLI tool** | `grep 'api.github.com.*releases' "$PLUGIN_DIR"/hooks/` |
+| Skill / hook 引用 `~/bin/$BINARY` | **CLI tool** | `grep -rn '\$HOME/bin/\|~/bin/' "$PLUGIN_DIR"/{skills,hooks}/` |
 
 ### Step 2: MCP 情境 — 兩個信號（asset present + repo drift）
 
@@ -530,7 +564,7 @@ Plugin 如果依賴外部 binary（MCP server、CLI 工具），plugin-update �
 兩個信號獨立、各自 warn。
 
 ```bash
-for wrapper in plugins/{name}/bin/*-wrapper.sh; do
+for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh; do
     [ -f "$wrapper" ] || continue
     BINARY_NAME=$(grep '^BINARY_NAME=' "$wrapper" | head -1 | cut -d'"' -f2)
     GITHUB_REPO=$(grep '^GITHUB_REPO=' "$wrapper" | head -1 | cut -d'"' -f2)
@@ -557,7 +591,7 @@ for wrapper in plugins/{name}/bin/*-wrapper.sh; do
     # compare with binary repo's main HEAD to surface accumulated [Unreleased] backlog.
     BINARY_VERSION=$(python3 -c "
 import json
-d = json.load(open('plugins/{name}/.claude-plugin/plugin.json'))
+d = json.load(open('$PLUGIN_DIR/.claude-plugin/plugin.json'))
 print(d.get('binary_version') or d.get('version'))
 " 2>/dev/null)
 
@@ -584,7 +618,7 @@ print(d.get('binary_version') or d.get('version'))
                 echo "   Recent unreleased commits:"
                 git -C "$BINARY_REPO_PATH" log "v$BINARY_VERSION..main" --oneline 2>/dev/null | head -5 | sed 's/^/      /'
                 echo "   → cd $BINARY_REPO_PATH && ./scripts/release.sh v<next>"
-                echo "     then bump plugins/{name}/.claude-plugin/plugin.json binary_version + re-run plugin-update"
+                echo "     then bump $PLUGIN_DIR/.claude-plugin/plugin.json binary_version + re-run plugin-update"
             fi
         else
             # Local tag missing — could mean: never fetched, or release made on remote-only.
@@ -606,8 +640,8 @@ done
 
 ```bash
 # 從 session-start.sh 抓 GitHub repo
-GFH_REPO=$(grep -oE '[A-Za-z0-9_-]+/[A-Za-z0-9_-]+' plugins/{name}/hooks/session-start.sh | head -1)
-BINARY_NAME=$(basename $(grep -oE '\$HOME/bin/[A-Za-z0-9_-]+' plugins/{name}/hooks/session-start.sh | head -1))
+GFH_REPO=$(grep -oE '[A-Za-z0-9_-]+/[A-Za-z0-9_-]+' "$PLUGIN_DIR"/hooks/session-start.sh | head -1)
+BINARY_NAME=$(basename $(grep -oE '\$HOME/bin/[A-Za-z0-9_-]+' "$PLUGIN_DIR"/hooks/session-start.sh | head -1))
 
 LOCAL_VERSION=$("$HOME/bin/$BINARY_NAME" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 LATEST_VERSION=$(curl -sL "https://api.github.com/repos/$GFH_REPO/releases/latest" \
@@ -705,7 +739,7 @@ for p in data['plugins']:
 ### Step 2: 對比 plugin.json 的實際版本
 
 ```bash
-cat plugins/{plugin_name}/.claude-plugin/plugin.json | python3 -c "
+cat "$PLUGIN_DIR"/.claude-plugin/plugin.json | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 print(f\"plugin.json: {d['version']}\")
@@ -728,6 +762,12 @@ print(f\"plugin.json: {d['version']}\")
   "category": "{category}"
 }
 ```
+
+`source` 寫 plugin 目錄相對於 marketplace root 的路徑。上面是 aggregator 佈局
+（`plugins/` 底下一個目錄一個 plugin）；單一 plugin 的 marketplace——repo 本身就是
+plugin，manifest 只有一個 entry——慣例是 `"source": "./plugin"`。**之後所有 phase 都從
+這個欄位解析路徑**（`resolve_plugin_dir`，#18），所以它寫錯，Step 0.1 會 abort 並指名
+這個 entry，不會靜默當成「沒有」。
 
 category 常用值：`development`、`productivity`、`creative`
 
@@ -754,13 +794,13 @@ git push
 
 ### Step 1: Staleness 偵測
 
-掃 `plugins/{plugin_name}/README.md`，**六個訊號任一命中 = 可疑 stale**。
+掃 `$PLUGIN_DIR/README.md`，**六個訊號任一命中 = 可疑 stale**。
 新增的信號 4-6 是 v1.15.0 從跨 28 plugin 大規模 audit 中萃取的盲點 —
 舊三信號漏掉「tool count drift / component inventory drift / multi-version
 catch-up gap」這三類常見 staleness。
 
 ```bash
-PLUGIN_DIR="{marketplace_repo_path}/plugins/{plugin_name}"
+# PLUGIN_DIR 由 Step 0.1 的三元組提供（#18）——不要在這裡重組路徑。
 README="$PLUGIN_DIR/README.md"
 NEW_VERSION=$(python3 -c "import json; print(json.load(open('$PLUGIN_DIR/.claude-plugin/plugin.json'))['version'])")
 
@@ -909,7 +949,7 @@ options:
 
 | 選項 | 行為 |
 |------|------|
-| 更新 README | Read CHANGELOG.md + `git log --oneline -n 10 -- plugins/{name}/` → 提出 README diff → 使用者確認後 Edit + commit + push |
+| 更新 README | Read CHANGELOG.md + `git log --oneline -n 10 -- "${PLUGIN_DIR#$MP_ROOT/}/"` → 提出 README diff → 使用者確認後 Edit + commit + push |
 | 已經沒問題 | 繼續 Phase 3，不記 warning |
 | 先略過 | 繼續 Phase 3，**Phase 5 最終 report 要顯眼標註** README 待補 |
 
@@ -1011,7 +1051,7 @@ Claude Code 有快取機制。需要重啟才能載入新版 skill 內容。
 ### `failed to load` 錯誤？
 通常是 hooks.json 格式問題：
 ```bash
-claude plugin validate {marketplace_repo_path}/plugins/{plugin_name}
+claude plugin validate "$PLUGIN_DIR"
 ```
 
 ### `marketplace update` 沒看到新版本？
