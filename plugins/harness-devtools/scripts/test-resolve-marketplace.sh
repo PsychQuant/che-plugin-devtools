@@ -88,8 +88,10 @@ assert_eq "every listed marketplace resolves" "" "$ORPHANS"
 echo
 echo "find_plugin_marketplace:"
 # harness-devtools lives in this repo — the one certainty regardless of machine state.
-assert_eq "finds harness-devtools in che-plugin-devtools" \
-  "che-plugin-devtools|$HOME/Developer/che-plugin-devtools" \
+# 三元組（#18）：第三欄是 manifest `plugins[].source` 解析出的 plugin 目錄，
+# 不是 `$root/plugins/<name>` 的再約定。消費端用 IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR。
+assert_eq "finds harness-devtools in che-plugin-devtools (name|root|plugin_dir)" \
+  "che-plugin-devtools|$HOME/Developer/che-plugin-devtools|$HOME/Developer/che-plugin-devtools/plugins/harness-devtools" \
   "$(find_plugin_marketplace harness-devtools)"
 
 assert_fails "unknown plugin returns non-zero" \
@@ -223,6 +225,78 @@ assert_eq "plugins/-bearing candidate wins when two declare the same name" \
 MARKETPLACE_SEARCH_ROOT="$SAVED_ROOT"
 rm -rf "$LAYOUT_TMP"
 
+echo
+echo "plugin dir resolution (#18) — source comes from the manifest, not a layout guess:"
+
+# **plugin 在哪裡，manifest 已經寫了。** `plugins[].source` 是 marketplace schema 既有的
+# 欄位；在 #18 之前 find_plugin_marketplace 從不讀它，只探測 `$root/plugins/<name>`
+# 是否存在 —— 於是 `source: "./plugin"` 的單一 plugin marketplace 一律 rc=1，而
+# plugin-update 的 Step 0.1 把它讀成「不在任何 marketplace」。
+#
+# 三個 rc 各有語意，消費端靠它們決定 abort 訊息：
+#   0  entry 在、source 是相對路徑、目錄存在 → 印絕對 dir
+#   1  manifest 沒有這個 entry
+#   2  entry 在，但 source 不是相對路徑（github: / URL / 絕對路徑）或目錄不存在
+PD_TMP=$(mktemp -d)
+mkdir -p "$PD_TMP/solo/.claude-plugin" "$PD_TMP/solo/plugin"
+cat > "$PD_TMP/solo/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-solo", "plugins": [ { "name": "pd-solo", "source": "./plugin" } ] }
+JSON
+mkdir -p "$PD_TMP/agg/.claude-plugin" "$PD_TMP/agg/plugins/x"
+cat > "$PD_TMP/agg/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-agg",
+  "plugins": [
+    { "name": "x",        "source": "./plugins/x" },
+    { "name": "ghost",    "source": "./plugins/ghost" },
+    { "name": "remote",   "source": "github:someone/remote" },
+    { "name": "absolute", "source": "/tmp/absolute" }
+  ] }
+JSON
+
+SAVED_ROOT="$MARKETPLACE_SEARCH_ROOT"
+MARKETPLACE_SEARCH_ROOT="$PD_TMP"
+
+assert_eq "resolve_plugin_dir: ./plugin (single-plugin layout)" \
+    "$PD_TMP/solo/plugin" \
+    "$(resolve_plugin_dir "$PD_TMP/solo" pd-solo)"
+
+assert_eq "resolve_plugin_dir: ./plugins/x (aggregator layout)" \
+    "$PD_TMP/agg/plugins/x" \
+    "$(resolve_plugin_dir "$PD_TMP/agg" x)"
+
+resolve_plugin_dir "$PD_TMP/agg" nope >/dev/null 2>&1; RC_NOENTRY=$?
+assert_eq "resolve_plugin_dir: no entry → rc 1" "1" "$RC_NOENTRY"
+
+resolve_plugin_dir "$PD_TMP/agg" ghost >/dev/null 2>&1; RC_GHOST=$?
+assert_eq "resolve_plugin_dir: entry present but dir missing → rc 2" "2" "$RC_GHOST"
+
+resolve_plugin_dir "$PD_TMP/agg" remote >/dev/null 2>&1; RC_REMOTE=$?
+assert_eq "resolve_plugin_dir: github: source → rc 2" "2" "$RC_REMOTE"
+
+resolve_plugin_dir "$PD_TMP/agg" absolute >/dev/null 2>&1; RC_ABS=$?
+assert_eq "resolve_plugin_dir: absolute source → rc 2" "2" "$RC_ABS"
+
+assert_eq "find_plugin_marketplace: single-plugin layout yields name|root|plugin_dir" \
+    "pd-solo|$PD_TMP/solo|$PD_TMP/solo/plugin" \
+    "$(find_plugin_marketplace pd-solo)"
+
+assert_eq "find_plugin_marketplace: aggregator layout yields name|root|plugin_dir" \
+    "pd-agg|$PD_TMP/agg|$PD_TMP/agg/plugins/x" \
+    "$(find_plugin_marketplace x)"
+
+# entry 在但目錄不在：對 find_plugin_marketplace 是「不命中」（同名 plugin 可能在
+# 另一個 checkout 是完整的），不是「命中一個壞路徑」。
+assert_fails "find_plugin_marketplace: entry whose dir is missing is not a hit" \
+    find_plugin_marketplace ghost
+
+PD_NOISE=$( { resolve_plugin_dir "$PD_TMP/agg" ghost; resolve_plugin_dir "$PD_TMP/agg" nope; \
+              find_plugin_marketplace pd-solo; find_plugin_marketplace ghost; } 2>&1 >/dev/null )
+assert_eq "plugin dir resolution emits no stderr" "" "$PD_NOISE"
+
+MARKETPLACE_SEARCH_ROOT="$SAVED_ROOT"
+rm -rf "$PD_TMP"
+
+echo
 echo "bash 3.2 compatibility:"
 # The whole point: this file must be sourceable by macOS system bash with no
 # stderr noise. `local -n` would emit "invalid option" here.
@@ -241,8 +315,8 @@ echo "zsh compatibility (#16):"
 # 下面兩條在 zsh 那邊會失敗（bash 那邊仍然全綠——那正是重點）。
 if command -v zsh >/dev/null 2>&1; then
   ZSH_HIT=$(zsh -c "source '$SCRIPT_DIR/resolve-marketplace.sh' && find_plugin_marketplace harness-devtools" 2>/dev/null)
-  assert_eq "sourcing under zsh finds harness-devtools" \
-    "che-plugin-devtools|$HOME/Developer/che-plugin-devtools" \
+  assert_eq "sourcing under zsh finds harness-devtools (three fields)" \
+    "che-plugin-devtools|$HOME/Developer/che-plugin-devtools|$HOME/Developer/che-plugin-devtools/plugins/harness-devtools" \
     "$ZSH_HIT"
 
   ZSH_COUNT=$(zsh -c "source '$SCRIPT_DIR/resolve-marketplace.sh' && list_marketplaces | wc -l" 2>/dev/null | tr -d ' ')

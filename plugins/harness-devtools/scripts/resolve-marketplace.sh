@@ -11,7 +11,14 @@
 #   # → one name per line
 #
 #   find_plugin_marketplace akashic-mcp
-#   # → psychquant-claude-plugins|/Users/che/Developer/psychquant-claude-plugins
+#   # → psychquant-claude-plugins|/Users/che/Developer/psychquant-claude-plugins|/Users/che/Developer/psychquant-claude-plugins/plugins/akashic-mcp
+#   #   three fields since #18: name|root|plugin_dir — the third is the manifest's
+#   #   plugins[].source resolved against root, never a `plugins/<name>` guess
+#
+#   resolve_plugin_dir /Users/che/Developer/che-keychain che-keychain
+#   # → /Users/che/Developer/che-keychain/plugin        (rc 0)
+#   # rc 1: the manifest lists no such plugin
+#   # rc 2: listed, but source is not a relative path or the directory is missing
 #
 # WHY THIS EXISTS
 #   Before v1.0.0, five places hardcoded /Users/che/Developer/psychquant-claude-plugins
@@ -215,11 +222,82 @@ list_marketplaces() {
   _marketplace_index | cut -f1 | sort -u
 }
 
+# The `source` field of plugin <$2> in manifest <$1>.
+#   rc 0  printed the source (a string; a non-string source is printed as-is so
+#         the caller can reject it)
+#   rc 1  manifest missing, or it lists no such plugin
+#   rc 3  python3 unavailable — caller decides how to degrade
+#
+# The name is looked up INSIDE the plugins[] array, which sed cannot do reliably
+# (the bounded trick _marketplace_name_of uses only works for a top-level key
+# that precedes "plugins"). So this is python3 — but only after a fixed-string
+# grep shows the manifest mentions the name at all. find_plugin_marketplace
+# walks every manifest on the machine (38 here); without the pre-filter that is
+# 38 interpreter launches per lookup (~0.8s measured), with it, one or two.
+_plugin_source_of() {
+  local manifest="${1:-}" plugin="${2:-}" src
+  [ -f "$manifest" ] && [ -n "$plugin" ] || return 1
+  grep -qF "\"$plugin\"" "$manifest" 2>/dev/null || return 1
+  command -v python3 >/dev/null 2>&1 || return 3
+  src=$(python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+for p in d.get("plugins") or []:
+    if isinstance(p, dict) and p.get("name") == sys.argv[2]:
+        s = p.get("source")
+        print(s if isinstance(s, str) else json.dumps(s))
+        sys.exit(0)
+sys.exit(1)' "$manifest" "$plugin" 2>/dev/null) || return 1
+  [ -n "$src" ] || return 1
+  printf '%s\n' "$src"
+}
+
+# Where plugin <$2> lives inside marketplace root <$1>, read from the manifest.
+#   rc 0  printed the absolute directory
+#   rc 1  the manifest lists no such plugin
+#   rc 2  listed, but the source is not a relative path (absolute, URL,
+#         github:owner/repo, or a non-string) or the directory does not exist
+#
+# WHY THIS EXISTS (#18)
+#   Before it, find_plugin_marketplace decided "this marketplace has the plugin"
+#   by testing `$root/plugins/<name>` — a guess at the aggregator layout that
+#   never consulted plugins[].source. Every single-plugin marketplace
+#   (che-keychain, che-apple-mail-mcp, che-ical-mcp: `"source": "./plugin"`)
+#   therefore returned rc 1, and plugin-update's Step 0.1 read that as "not in
+#   any registered marketplace" — a message pointing at the wrong fix. The
+#   skill's own 17 hardcoded `plugins/{name}` paths then guaranteed that even a
+#   hand-supplied MP_ROOT probed a directory that did not exist, and every
+#   detection built on it answered "no" instead of "cannot tell" (#16's failure
+#   mode, arriving by another door). Two rc values for "listed but unusable"
+#   vs "not listed" exist so the consumer can say which one happened.
+#
+#   No python3 → the legacy `plugins/<name>` probe, so a machine without an
+#   interpreter keeps the pre-#18 behaviour rather than gaining a new failure.
+resolve_plugin_dir() {
+  local root="${1:-}" plugin="${2:-}" src dir rc
+  [ -n "$root" ] && [ -n "$plugin" ] || return 1
+  src=$(_plugin_source_of "$root/.claude-plugin/marketplace.json" "$plugin"); rc=$?
+  if [ "$rc" -eq 3 ]; then
+    [ -d "$root/plugins/$plugin" ] || return 1
+    printf '%s\n' "$root/plugins/$plugin"
+    return 0
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  case "$src" in
+    /*|*:*|\{*|\[*|null) return 2 ;;   # absolute path, URL / github:, non-string
+  esac
+  dir="$root/${src#./}"
+  dir="${dir%/}"
+  [ -d "$dir" ] || return 2
+  printf '%s\n' "$dir"
+}
+
 # Given a plugin name, find which marketplace contains it.
-# Prints "<marketplace-name>|<repo-root>" and returns 0 on hit; returns 1 if the
-# plugin is not found in any known marketplace.
+# Prints "<marketplace-name>|<repo-root>|<plugin-dir>" and returns 0 on hit;
+# returns 1 if the plugin is not found in any known marketplace. The third field
+# is resolve_plugin_dir's answer (#18); consumers read all three:
+#   IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace x)"
 find_plugin_marketplace() {
-  local plugin="${1:-}" name root
+  local plugin="${1:-}" name root dir
   [ -n "$plugin" ] || return 1
 
   # Walks the index directly rather than calling resolve_marketplace_root per
@@ -233,16 +311,21 @@ find_plugin_marketplace() {
   #     happened to walk past.
   #
   # Skipping the tie-break loses nothing here: the tie-break prefers candidates
-  # owning a plugins/ directory, and the test below already requires
-  # plugins/<plugin>, so a tie-break loser can only match when it genuinely hosts
-  # the plugin.
+  # owning a plugins/ directory, and the test below requires the manifest to
+  # declare the plugin AND its source directory to exist, so a tie-break loser
+  # can only match when it genuinely hosts the plugin.
+  #
+  # An entry whose directory is missing (resolve_plugin_dir rc 2) is NOT a hit:
+  # the same plugin may be complete in another checkout further down the index.
+  # Step 0.1 of plugin-update re-asks resolve_plugin_dir per root when the whole
+  # walk misses, so that rc 2 still surfaces in the abort message.
   #
   # here-doc, not a pipe: a pipe opens a subshell, so `return 0` would end only
   # that subshell and the function would fall through to `return 1`.
   while IFS="$(printf '\t')" read -r name root; do
     [ -n "$root" ] || continue
-    if [ -d "$root/plugins/$plugin" ]; then
-      echo "$name|$root"
+    if dir=$(resolve_plugin_dir "$root" "$plugin"); then
+      echo "$name|$root|$dir"
       return 0
     fi
   done <<EOF
