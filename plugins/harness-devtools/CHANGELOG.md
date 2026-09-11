@@ -8,11 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- **Breaking for direct consumers**：`resolve-marketplace.sh` 的 `find_plugin_marketplace` 輸出從 `name|root` 擴為 `name|root|plugin_dir`；`IFS="|" read -r` 需接三欄（#18）。已知消費者 `plugin-update` Step 0.1 與 `plugin-debug` 同步更新。
-- `plugin-update`：Phase 0.3 / 1.5 / 2 / 2.5 / troubleshooting 共 17 處 `plugins/{name}` 硬編路徑改為 Step 0.1 提供的 `$PLUGIN_DIR`；Step 0.1 新增 `PLUGIN_DIR` gate（#18）。
+- **Breaking for direct consumers**：`resolve-marketplace.sh` 的 `find_plugin_marketplace` 輸出從 `name|root` 擴為 `name|root|plugin_dir`；`IFS="|" read -r` 需接三欄（#18）。已知消費者 `plugin-update` Step 0.1 與 `plugin-debug`（僅直接消費回傳值的那一行；其餘 9 處硬編路徑見 #23）同步更新。
+- `plugin-update`：Phase 0.3 / 1.5 / 2 / 2.5 / troubleshooting 共 17 處 `plugins/{name}` 硬編路徑改為 `$PLUGIN_DIR`；**每個 bash block 以同一段 resolve 前導開頭**（shell 變數不跨 Bash 呼叫存活）；Phase 0.5 Step 5 與 Phase 1 Step 1 的 `grep '^plugins/'` 佈局猜測改為 `plugin_names_for_paths`（經 manifest 對映）；git pathspec 一律用絕對 `$PLUGIN_DIR`；Step 0.1 未命中時逐候選 root 以 rc 2 / 4 / 5 指名真正原因（#18）。
+- **Security**：`plugin-update` 內所有 `python3 -c` 改以 `sys.argv` 傳路徑——`$PLUGIN_DIR` 現在來自 manifest（第三方檔案），內嵌進原始碼時路徑含 `'` 即任意程式碼執行；`resolve_plugin_dir` 同時拒絕含引號 / 反斜線 / `$` / 控制字元 / `..` 的 source（#18 verify R1）。
 
 ### Added
-- `resolve-marketplace.sh`：`resolve_plugin_dir <root> <plugin>` 從 manifest 的 `plugins[].source` 解析 plugin 目錄（rc 0 / 1 無 entry / 2 entry 在但 source 非相對路徑或目錄不存在）；`_plugin_source_of` 以 `grep -F` 預篩後才 spawn python3，無 python3 退回 legacy 目錄探測（#18）。
+- `resolve-marketplace.sh`：`resolve_plugin_dir <root> <plugin>` 從 manifest 的 `plugins[].source` 解析 plugin 目錄；manifest 給不出本地路徑時（無 entry、git-subdir 物件、URL、JSON 壞掉、python3 缺席或跑不起來）退回探 `plugins/<name>`，兩者都失敗才回 rc 1 / 2 / 4 / 5（不列 / 不可用 / 讀不動 / 非本地）；`.` 與 `./` 解析為 root（repo 即 plugin）。另新增 `plugin_source_of`、`marketplace_plugin_names`、`plugin_names_for_paths`（#18）。
 
 ### Fixed
 - 單一 plugin marketplace（`"source": "./plugin"`，如 che-keychain / che-apple-mail-mcp / che-ical-mcp）在 `plugin-update` Step 0.1 被判為「不在任何 marketplace」，繞過後 Phase 0.3 / 1.5 / 2.5 的偵測全部對不存在的目錄回答「沒有」（#18）。

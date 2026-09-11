@@ -271,7 +271,7 @@ resolve_plugin_dir "$PD_TMP/agg" ghost >/dev/null 2>&1; RC_GHOST=$?
 assert_eq "resolve_plugin_dir: entry present but dir missing → rc 2" "2" "$RC_GHOST"
 
 resolve_plugin_dir "$PD_TMP/agg" remote >/dev/null 2>&1; RC_REMOTE=$?
-assert_eq "resolve_plugin_dir: github: source → rc 2" "2" "$RC_REMOTE"
+assert_eq "resolve_plugin_dir: github: source with nothing materialized → rc 5 (non-local, not broken)" "5" "$RC_REMOTE"
 
 resolve_plugin_dir "$PD_TMP/agg" absolute >/dev/null 2>&1; RC_ABS=$?
 assert_eq "resolve_plugin_dir: absolute source → rc 2" "2" "$RC_ABS"
@@ -292,6 +292,101 @@ assert_fails "find_plugin_marketplace: entry whose dir is missing is not a hit" 
 PD_NOISE=$( { resolve_plugin_dir "$PD_TMP/agg" ghost; resolve_plugin_dir "$PD_TMP/agg" nope; \
               find_plugin_marketplace pd-solo; find_plugin_marketplace ghost; } 2>&1 >/dev/null )
 assert_eq "plugin dir resolution emits no stderr" "" "$PD_NOISE"
+
+# ── R1 verify of #18 found six ways "cannot tell" or "legal but non-local" still
+# read as "no", plus a code-execution hole through the path itself. Each one
+# below broke before the fix; the comments say what the old code did.
+mkdir -p "$PD_TMP/agg/plugins/akashic" "$PD_TMP/agg/plugins/newbie" "$PD_TMP/agg/true" "$PD_TMP/agg/plugins/q"
+cat > "$PD_TMP/agg/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-agg",
+  "plugins": [
+    { "name": "x",        "source": "./plugins/x" },
+    { "name": "ghost",    "source": "./plugins/ghost" },
+    { "name": "remote",   "source": "github:someone/remote" },
+    { "name": "absolute", "source": "/tmp/absolute" },
+    { "name": "akashic",  "source": { "source": "git-subdir", "url": "https://example.invalid/a.git", "path": "plugin" } },
+    { "name": "orphan",   "source": { "source": "git-subdir", "url": "https://example.invalid/o.git", "path": "plugin" } },
+    { "name": "empty",    "source": "" },
+    { "name": "boolean",  "source": true },
+    { "name": "trav",     "source": "../outside" },
+    { "name": "quoted",   "source": "./plugins/q'+x" },
+    { "name": "newline",  "source": "./plugins/q\nx" }
+  ] }
+JSON
+mkdir -p "$PD_TMP/rootplugin/.claude-plugin"
+cat > "$PD_TMP/rootplugin/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-root", "plugins": [ { "name": "dot", "source": "." }, { "name": "dotslash", "source": "./" } ] }
+JSON
+mkdir -p "$PD_TMP/broken/.claude-plugin" "$PD_TMP/broken/plugins/present"
+printf '{ "name": "pd-broken", "plugins": [ { "name": "present", "source": "./plugins/present" }, ] }\n' \
+  > "$PD_TMP/broken/.claude-plugin/marketplace.json"     # trailing comma: the canonical hand-edit error
+
+# object source (git-subdir) with its subtree materialized under plugins/<name> —
+# akashic-mcp on this machine. Old code: rc 2 → "fix your manifest" for a legal manifest.
+assert_eq "object source + materialized plugins/<name> → the materialized dir" \
+    "$PD_TMP/agg/plugins/akashic" "$(resolve_plugin_dir "$PD_TMP/agg" akashic)"
+resolve_plugin_dir "$PD_TMP/agg" orphan >/dev/null 2>&1; RC_ORPHAN=$?
+assert_eq "object source with nothing materialized → rc 5" "5" "$RC_ORPHAN"
+assert_eq "plugin_source_of prints the object source verbatim (rc 5 to the caller)" \
+    '{"source": "git-subdir", "url": "https://example.invalid/o.git", "path": "plugin"}' \
+    "$(plugin_source_of "$PD_TMP/agg" orphan)"
+
+# entry-less directory: the "new plugin, add its entry" state Phase 2 Step 3 of
+# plugin-update exists for. Old code: rc 1 → Step 0.1 abort, Step 3 unreachable.
+assert_eq "no entry but plugins/<name> exists → still a hit (name|root|plugin_dir)" \
+    "pd-agg|$PD_TMP/agg|$PD_TMP/agg/plugins/newbie" "$(find_plugin_marketplace newbie)"
+
+# unreadable manifest: cannot tell ≠ no. Old code: rc 1 for both of these.
+assert_eq "unparsable manifest + materialized dir → the dir" \
+    "$PD_TMP/broken/plugins/present" "$(resolve_plugin_dir "$PD_TMP/broken" present)"
+# the listed plugin, no materialized dir, manifest unparsable: the trailing-comma
+# case from R1 — old code answered "not on this marketplace" (rc 1)
+mkdir -p "$PD_TMP/broken2/.claude-plugin"
+printf '{ "name": "pd-broken2", "plugins": [ { "name": "present", "source": "./plugin" }, ] }\n' \
+  > "$PD_TMP/broken2/.claude-plugin/marketplace.json"
+resolve_plugin_dir "$PD_TMP/broken2" present >/dev/null 2>&1; RC_BROKEN=$?
+assert_eq "unparsable manifest that names the plugin + nothing materialized → rc 4" "4" "$RC_BROKEN"
+resolve_plugin_dir "$PD_TMP/broken" absent >/dev/null 2>&1; RC_BROKEN_ABSENT=$?
+assert_eq "unparsable manifest that never mentions the name → rc 1 (pre-filter; not listed anywhere)" "1" "$RC_BROKEN_ABSENT"
+
+# repo-root-is-the-plugin: legal layout, resolves to root itself
+assert_eq 'source "." resolves to the marketplace root' "$PD_TMP/rootplugin" "$(resolve_plugin_dir "$PD_TMP/rootplugin" dot)"
+assert_eq 'source "./" resolves to the marketplace root' "$PD_TMP/rootplugin" "$(resolve_plugin_dir "$PD_TMP/rootplugin" dotslash)"
+
+# unusable local-looking sources → rc 2, never a directory (the quoted one was a
+# confirmed arbitrary-code-execution path through `python3 -c "...'$PLUGIN_DIR'..."`)
+for bad in empty boolean trav quoted newline; do
+  resolve_plugin_dir "$PD_TMP/agg" "$bad" >/dev/null 2>&1; RC_BAD=$?
+  assert_eq "unusable source ($bad) → rc 2" "2" "$RC_BAD"
+done
+resolve_plugin_dir "$PD_TMP/agg" "../x" >/dev/null 2>&1; RC_BADNAME=$?
+assert_eq "plugin NAME with a path segment → rc 2" "2" "$RC_BADNAME"
+
+# the manifest is the source of truth for names; paths map through it
+assert_eq "marketplace_plugin_names lists declared names" \
+    "x ghost remote absolute akashic orphan empty boolean trav quoted newline" \
+    "$(marketplace_plugin_names "$PD_TMP/agg" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "plugin_names_for_paths maps ./plugin layout paths (not plugins/<x>/)" \
+    "pd-solo" "$(printf 'plugin/skills/a/SKILL.md\nREADME.md\n' | plugin_names_for_paths "$PD_TMP/solo")"
+assert_eq "plugin_names_for_paths: root-is-plugin owns every path" \
+    "dot dotslash" "$(printf 'anything.md\n' | plugin_names_for_paths "$PD_TMP/rootplugin" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "plugin_names_for_paths: unrelated paths map to nothing" \
+    "" "$(printf 'docs/x.md\n' | plugin_names_for_paths "$PD_TMP/agg")"
+
+# python3 present but not runnable (macOS CLT stub) → legacy probe, not "not found"
+FAKEBIN=$(mktemp -d); printf '#!/bin/sh\necho "xcode-select: note: No developer tools were found." >&2\nexit 1\n' > "$FAKEBIN/python3"; chmod +x "$FAKEBIN/python3"
+assert_eq "broken python3 interpreter → legacy plugins/<name> probe still hits" \
+    "$PD_TMP/agg/plugins/x" "$(PATH="$FAKEBIN:$PATH" resolve_plugin_dir "$PD_TMP/agg" x)"
+PATH="$FAKEBIN:$PATH" resolve_plugin_dir "$PD_TMP/solo" pd-solo >/dev/null 2>&1; RC_FAKE=$?
+assert_eq "broken python3 + ./plugin layout (nothing under plugins/) → rc 1, not a crash" "1" "$RC_FAKE"
+rm -rf "$FAKEBIN"
+# no python3 at all (command -v fails) → same legacy probe
+NOPY=$(bash -c 'command() { [ "$2" = python3 ] && return 1; builtin command "$@"; }; source "'"$SCRIPT_DIR"'/resolve-marketplace.sh"; resolve_plugin_dir "'"$PD_TMP"'/agg" x')
+assert_eq "no python3 → legacy plugins/<name> probe" "$PD_TMP/agg/plugins/x" "$NOPY"
+
+PD_NOISE2=$( { resolve_plugin_dir "$PD_TMP/agg" orphan; resolve_plugin_dir "$PD_TMP/broken" absent; resolve_plugin_dir "$PD_TMP/agg" quoted; \
+               marketplace_plugin_names "$PD_TMP/broken"; printf 'x\n' | plugin_names_for_paths "$PD_TMP/agg"; } 2>&1 >/dev/null )
+assert_eq "new rc branches and helpers emit no stderr" "" "$PD_NOISE2"
 
 MARKETPLACE_SEARCH_ROOT="$SAVED_ROOT"
 rm -rf "$PD_TMP"

@@ -20,11 +20,19 @@ source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-marketplace.sh"
 MARKETPLACE_ROOT=$(resolve_marketplace_root che-plugin-devtools)
 
 # 或反查：給 plugin 名，找它在哪個 marketplace——三欄（#18），第三欄是 manifest
-# plugins[].source 解析出的 plugin 目錄；之後用 $PLUGIN_DIR，不要組 $MP_ROOT/plugins/<name>
-IFS='|' read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace akashic-mcp)"
+# plugins[].source 解析出的 plugin 目錄；之後用 $PLUGIN_DIR，不要組 $MP_ROOT/plugins/<name>。
+# **先查 rc 再拆欄位**，而且每個 bash block 都要重做一次（shell 變數不跨 Bash 呼叫存活）。
+IFS='|' read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace harness-devtools)"
+[ -d "${PLUGIN_DIR:-}" ] || exit 1
 
-# 只要 plugin 目錄：rc 1 = manifest 沒這個 entry；rc 2 = entry 在但 source 不是相對路徑或目錄不存在
-resolve_plugin_dir "$MP_ROOT" akashic-mcp
+# 只要 plugin 目錄。rc：0 印目錄 / 1 沒 entry 也沒 plugins/<name> / 2 entry 在但 source 不可用
+# （空、非字串、絕對路徑、..、引號、目錄不存在）/ 4 manifest 讀不動 / 5 非本地 source（git-subdir 物件、URL）
+# 且未物化。entry-less 的 plugins/<name>、物化的 git-subdir、壞掉的 manifest 都先探 plugins/<name>——
+# 「不知道」不能變成「沒有」。
+resolve_plugin_dir "$MP_ROOT" harness-devtools
+plugin_source_of "$MP_ROOT" harness-devtools          # 原始 source 值（第三方檔案內容，印之前去控制字元）
+marketplace_plugin_names "$MP_ROOT"                   # manifest 宣告的所有名稱
+git diff --name-only HEAD~3 | plugin_names_for_paths "$MP_ROOT"   # 這些路徑屬於哪些 plugin
 
 # 同名多候選時看得到 shadowing（一行一個 root，precedence 序）
 marketplace_candidates che-local-plugins

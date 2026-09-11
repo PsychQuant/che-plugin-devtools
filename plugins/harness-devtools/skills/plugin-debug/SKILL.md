@@ -58,6 +58,9 @@ source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 
 # 自動找出這個 plugin 屬於哪個 marketplace（不要假設是 psychquant）
 IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+# 找不到就停：空的 SRC 會讓下面的 diff -r 印「No skills to diff」——把「讀不到源碼」講成「沒差異」，
+# 對一個 debug 工具是最壞的假陰性（#18 R1）。其餘硬編路徑見 #23。
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ plugin '$PLUGIN_NAME' 不在任何已註冊的 marketplace（find_plugin_marketplace 無命中）" >&2; exit 1; }
 SRC="$PLUGIN_DIR"   # manifest plugins[].source 解析結果（#18）；別再組 plugins/<name>
 
 # cache 路徑（可能有多個版本）

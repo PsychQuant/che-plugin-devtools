@@ -117,12 +117,16 @@ source scripts/resolve-marketplace.sh
 resolve_marketplace_root che-plugin-devtools
 # → ~/Developer/che-plugin-devtools
 
-find_plugin_marketplace akashic-mcp
-# → psychquant-claude-plugins|~/Developer/psychquant-claude-plugins|~/Developer/psychquant-claude-plugins/plugins/akashic-mcp
+find_plugin_marketplace harness-devtools
+# → che-plugin-devtools|~/Developer/che-plugin-devtools|~/Developer/che-plugin-devtools/plugins/harness-devtools
 #   三欄（#18）：第三欄是 manifest plugins[].source 解析出的 plugin 目錄
 
 resolve_plugin_dir ~/Developer/che-keychain che-keychain
-# → ~/Developer/che-keychain/plugin   （rc 1 = 沒這個 entry；rc 2 = entry 在但 source 非相對路徑或目錄不存在）
+# → ~/Developer/che-keychain/plugin
+#   rc 0 目錄 / 1 沒 entry 也沒 plugins/<name> / 2 entry 在但 source 不可用 / 4 manifest 讀不動 / 5 非本地 source 且未物化
+plugin_source_of <root> <plugin>           # 原始 source（同 rc 表）
+marketplace_plugin_names <root>            # manifest 宣告的名稱
+git diff --name-only HEAD~3 | plugin_names_for_paths <root>   # 路徑 → plugin 名（不猜 plugins/<x>/ 佈局）
 
 marketplace_candidates che-local-plugins   # 一行一個 root，precedence 序
 list_marketplaces                          # 所有已發現的名稱
@@ -132,7 +136,7 @@ list_marketplaces                          # 所有已發現的名稱
 
 **解析方式是掃描而非列舉**（#20）：掃搜尋根底下的 `*/.claude-plugin/marketplace.json`，讀各檔自報的 `name`。新增 marketplace 不必改程式碼。同名多候選時，擁有 `plugins/` 目錄的優先——那只是 **tie-break**，不是准入條件（單一 plugin 的 marketplace 沒有 `plugins/`，它的 repo 本身就是那個 plugin）。
 
-**plugin 目錄從 manifest 讀，不猜佈局**（#18）：`find_plugin_marketplace` 與 `resolve_plugin_dir` 解析 `plugins[].source`；`./plugin`（單一 plugin）與 `./plugins/<name>`（aggregator）都能命中。entry 在但目錄不存在算「找不到」，`plugin-update` Step 0.1 會 abort 並指名該 entry，不會當成「沒有」。
+**plugin 目錄從 manifest 讀，不猜佈局**（#18）：`find_plugin_marketplace` 與 `resolve_plugin_dir` 解析 `plugins[].source`；`./plugin`（單一 plugin）、`./plugins/<name>`（aggregator）、`.`（repo 即 plugin）都能命中。manifest 給不出本地路徑時（沒 entry、git-subdir 物件、URL、JSON 壞掉、python3 跑不起來）才退回探 `plugins/<name>`——「不知道」不能變成「沒有」。兩者都失敗時 rc 分四類（1 / 2 / 4 / 5），`plugin-update` Step 0.1 據此指名真正的原因，不會一律講成「沒上架」。source 裡的引號 / `..` / 控制字元一律拒絕：路徑會進 git pathspec 與 python argv，不能讓第三方檔案內容變成程式碼。
 
 ## 參考資源
 

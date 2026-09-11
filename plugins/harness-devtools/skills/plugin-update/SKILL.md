@@ -77,8 +77,9 @@ IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$RESOLVED"
 # 三元組（#18）：第三欄是 manifest `plugins[].source` 解析出的 plugin 目錄。
 # **之後每個 phase 都用 `$PLUGIN_DIR`，不要再組 `$MP_ROOT/plugins/$PLUGIN_NAME`。**
 
-# 或直接解析已知名稱
+# 或直接解析已知名稱——這條路也必須產出 PLUGIN_DIR，否則後面每個 phase 都是空值
 MP_ROOT="$(resolve_marketplace_root psychquant-claude-plugins)"
+PLUGIN_DIR="$(resolve_plugin_dir "$MP_ROOT" "$PLUGIN_NAME")" || { echo "✗ resolve_plugin_dir rc=$? for '$PLUGIN_NAME' in $MP_ROOT" >&2; exit 1; }
 
 # 列出所有已註冊 marketplace（含未被 registry 收錄的）
 list_marketplaces
@@ -98,7 +99,7 @@ claude plugin marketplace list 2>&1
 
 | Phase | 用法 | 空值時 |
 |---|---|---|
-| 0.3 | `$PLUGIN_DIR`（三元組第三欄）| 空 → 偵測全部落空 → `IS_BINARY_BACKED=false`，binary gate 整個失效 |
+| 0.3 | `$PLUGIN_DIR`（三元組第三欄，每個 block 重新解析）| 空 → 偵測全部落空 → `IS_BINARY_BACKED=false`，binary gate 整個失效 |
 | 0.5 | `cd "$MP_ROOT"` | `cd ""` 是 no-op → **git state gate 跑在使用者當下所在的 repo 上** |
 | 2 | 讀寫 `$MP_ROOT/.claude-plugin/marketplace.json` | 讀不到 |
 
@@ -121,18 +122,32 @@ if [ -z "$MP_ROOT" ] || [ ! -d "$MP_ROOT" ]; then
     echo "  release 沒有 binary asset 時 BLOCK，所以更前面要先在 binary 的原始碼 repo 跑：" >&2
     echo "    → /harness-devtools:mcp-deploy   （或 CLI 專案用 /harness-devtools:cli-deploy）" >&2
     echo "" >&2
-    # 沒命中的兩種樣子要分開講（#18）：manifest 根本沒這個 entry，和 entry 在但
-    # source 指向不存在的目錄 / 不是相對路徑。後者是「manifest 壞了」，不是「沒上架」，
-    # 上面兩個建議對它都是錯的方向。
+    # 沒命中的四種樣子要分開講（#18）：manifest 根本沒這個 entry（上面的建議才對）、
+    # entry 在但 source 不可用（rc 2：修 manifest）、manifest 讀不動（rc 4：修 JSON）、
+    # source 是合法但非本地的寫法（rc 5：git-subdir 物件 / URL——manifest 沒壞，
+    # plugin-update 只處理本地佈局）。三者都不是「沒上架」，上面兩個建議對它們都是
+    # 錯的方向。逐 marketplace 名稱走**全部**候選 root（與 find_plugin_marketplace
+    # 的遍歷範圍一致；被 shadow 的 checkout 也看得到），source 值是第三方檔案內容：
+    # 去控制字元、截斷、標明 untrusted 再印。
     while IFS= read -r mp; do
         [ -n "$mp" ] || continue
-        root=$(resolve_marketplace_root "$mp" 2>/dev/null) || continue
-        resolve_plugin_dir "$root" "$PLUGIN_NAME" >/dev/null 2>&1
-        if [ $? -eq 2 ]; then
-            echo "  ⚠ marketplace '$mp' 的 manifest 有 '$PLUGIN_NAME' 這個 entry，但 source =" >&2
-            echo "    '$(_plugin_source_of "$root/.claude-plugin/marketplace.json" "$PLUGIN_NAME")'" >&2
-            echo "    不是相對路徑，或指向的目錄不存在。先修 $root/.claude-plugin/marketplace.json。" >&2
-        fi
+        while IFS= read -r root; do
+            [ -n "$root" ] || continue
+            resolve_plugin_dir "$root" "$PLUGIN_NAME" >/dev/null 2>&1; rc=$?
+            [ "$rc" -eq 1 ] && continue
+            src=$(plugin_source_of "$root" "$PLUGIN_NAME" 2>/dev/null | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-200)
+            case "$rc" in
+                2) echo "  ⚠ '$mp' ($root) 的 manifest 列了 '$PLUGIN_NAME'，但 source（untrusted，已截斷）= '$src'" >&2
+                   echo "    不是可用的相對路徑，或指向的目錄不存在。先修該 manifest。" >&2 ;;
+                4) echo "  ⚠ '$mp' ($root) 的 marketplace.json 讀不動（JSON 解析失敗 / 權限），且 plugins/$PLUGIN_NAME 未物化。" >&2
+                   echo "    這不是「沒上架」——先修 JSON（常見：多餘逗號）。" >&2 ;;
+                5) echo "  ℹ '$mp' ($root) 列了 '$PLUGIN_NAME'，source（untrusted，已截斷）= '$src'" >&2
+                   echo "    是合法但非本地的寫法（git-subdir 物件 / URL），且 plugins/$PLUGIN_NAME 未物化。" >&2
+                   echo "    manifest 沒壞；plugin-update 只處理本地佈局。要更新它，先把 subtree 物化到 plugins/$PLUGIN_NAME。" >&2 ;;
+            esac
+        done <<CANDS
+$(marketplace_candidates "$mp" 2>/dev/null)
+CANDS
     done <<EOF
 $(list_marketplaces)
 EOF
@@ -159,6 +174,21 @@ marketplace（che-keychain、che-apple-mail-mcp、che-ical-mcp）那個目錄不
 **這是 abort，不是 warn。** 繼續下去的每一條路徑都是對錯的目標動手，而其中一條會
 主動邀請使用者 push 一個不相干的 repo。
 
+**每個 bash block 自己重新解析（#18 R1）**：agent 是分次呼叫 Bash 工具執行這份 SKILL.md
+的，shell 變數不跨呼叫存活。Step 0.1 設好的 `MP_ROOT` / `PLUGIN_DIR` 到 Phase 0.3 那個
+shell 已經不存在——空的 `$PLUGIN_DIR/.mcp.json` 測的是 `/.mcp.json`，答案是「沒有」，而
+「沒有」正是本 issue 要消滅的那種靜默失敗。所以之後**每一個**用到 `$MP_ROOT` /
+`$PLUGIN_DIR` 的 block 都以同一段前導開頭（重新 `source` + `find_plugin_marketplace` +
+gate）。這不是「重組路徑」：路徑仍然只從 manifest 來，只是每個 shell 各拿一次。
+
+```bash
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+```
+
 > **為什麼 Phase 2 Step 3「新 Plugin 需加入 entry」不涵蓋這個情形**：那一步處理的是
 > 「plugin 檔案**已經在** marketplace repo 的 `plugins/` 底下，但 `marketplace.json`
 > 還沒有它的 entry」。首次上架缺的是**把 plugin 放進 marketplace repo** 這一步，而
@@ -177,7 +207,11 @@ marketplace（che-keychain、che-apple-mail-mcp、che-ical-mcp）那個目錄不
 ### Step 1: 偵測 binary-backed plugin
 
 ```bash
-# PLUGIN_DIR 由 Step 0.1 的三元組提供（#18）——不要在這裡重組路徑。
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
 
 # Signal: .mcp.json 或 bin/*-wrapper.sh with GITHUB_REPO → MCP binary plugin
 IS_BINARY_BACKED=false
@@ -198,25 +232,35 @@ fi
 ### Step 2: 收集 sync 候選變更（binary-backed only）
 
 ```bash
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+
+# 路徑一律走 sys.argv，不內嵌進 python 原始碼：$PLUGIN_DIR 來自 manifest（第三方檔案），
+# 內嵌成 open('$PLUGIN_DIR/...') 時路徑裡一個 ' 就是任意程式碼執行（#18 R1 security）。
 # (a) 從 plugin.json 取 binary_version + shell version
-SHELL_VERSION=$(python3 -c "import json; print(json.load(open('$PLUGIN_DIR/.claude-plugin/plugin.json'))['version'])")
-BINARY_VERSION=$(python3 -c "import json; print(json.load(open('$PLUGIN_DIR/.claude-plugin/plugin.json')).get('binary_version', ''))")
+SHELL_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_DIR/.claude-plugin/plugin.json")
+BINARY_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binary_version", ""))' "$PLUGIN_DIR/.claude-plugin/plugin.json")
 
 # (b) 比對 marketplace.json — 落後嗎？
-MP_VERSION=$(python3 -c "
-import json
-d = json.load(open('{marketplace_repo_path}/.claude-plugin/marketplace.json'))
-for p in d['plugins']:
-    if p['name'] == '{plugin_name}':
-        print(p.get('version', ''))
+MP_VERSION=$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+for p in d["plugins"]:
+    if p["name"] == sys.argv[2]:
+        print(p.get("version", ""))
         break
-")
+' "$MP_ROOT/.claude-plugin/marketplace.json" "$PLUGIN_NAME")
 MP_DRIFT=$([ "$MP_VERSION" != "$SHELL_VERSION" ] && echo yes || echo no)
 
 # (c) Shell 檔案最近 N 個 commits 是否觸到此 plugin？
-cd {marketplace_repo_path}
+# pathspec 用絕對 $PLUGIN_DIR（git 接受 worktree 內的絕對路徑；同檔 Phase 2.5 亦然）。
+# 不要相對化：${PLUGIN_DIR#$MP_ROOT/} 把 MP_ROOT 當 glob、對 repo 即 plugin 的佈局會變空字串。
+cd "$MP_ROOT"
 SHELL_RECENT_TOUCHES=$(git log --since="30 days ago" --name-only --pretty=format: \
-    -- "${PLUGIN_DIR#$MP_ROOT/}/" 2>/dev/null \
+    -- "$PLUGIN_DIR/" 2>/dev/null \
     | grep -v '^$' | sort -u | head -10)
 
 # (d) BINARY repo: main 是否有 unreleased commits（信號移植自 #66 Phase 1.5 強化）
@@ -310,7 +354,12 @@ echo "→ Phase 0.3: sync intent confirmed"
 ### Step 1: Read-only Preview Block
 
 ```bash
-cd {marketplace_repo_path}
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+cd "$MP_ROOT"
 
 # Resolve upstream once + abort on missing/unusual configs (v1.16.0 fix #60-verify P1)
 # - No upstream tracking → abort with structured error (don't silently proxy to origin/main)
@@ -481,19 +530,21 @@ if [ -z "${TARGET_PLUGIN:-}" ]; then
     return 0
 fi
 
-# 收集 unpushed commits touch 到的 plugin 名(去重)
+# 收集 unpushed commits touch 到的 plugin 名(去重)——經 manifest 對映，不猜 plugins/<x>/ 佈局
+# （單一 plugin marketplace 的檔案在 plugin/ 底下；repo 即 plugin 的佈局擁有全部路徑。#18 R1）
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 TOUCHED=$(git log --name-only --pretty=format: "$UPSTREAM"..HEAD \
-  | grep '^plugins/' | cut -d/ -f2 | sort -u)
+  | plugin_names_for_paths "$MP_ROOT")
 TOUCHED_COUNT=$(echo -n "$TOUCHED" | grep -c . || true)
 
 # Three cases:
-#   (a) TOUCHED_COUNT = 0 — 無 plugin 被 touch (commits 只改 root files / 完全沒碰 plugins/) — 危險!
+#   (a) TOUCHED_COUNT = 0 — 無 plugin 被 touch (commits 只改 root files / 沒碰任何 manifest 宣告的 plugin 目錄) — 危險!
 #   (b) TOUCHED_COUNT = 1 AND 該 plugin = $TARGET_PLUGIN — happy path,silent
 #   (c) TOUCHED_COUNT ≥ 1 但 (a) (b) 都不成立 — 跨 plugin 或不對 target,warn
 
 if [ "$TOUCHED_COUNT" = "0" ]; then
     # Empty-set case (v1.16.0 fix #60-verify P2 #5): commits 沒碰任何 plugin
-    echo "⚠ Heads-up: unpushed commits touch NO plugin under plugins/."
+    echo "⚠ Heads-up: unpushed commits touch NO plugin declared in marketplace.json."
     echo "   Commits in question:"
     git log --oneline "$UPSTREAM"..HEAD | sed 's/^/     /'
     echo "   Pushing will publish marketplace.json / docs / root-only changes."
@@ -524,11 +575,12 @@ fi
 如果用戶指定了 plugin 名稱，直接使用。否則從 git 推斷：
 
 ```bash
-cd {marketplace_repo_path}
-git diff --name-only HEAD~3 | grep '^plugins/' | cut -d/ -f2 | sort -u
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+MP_ROOT="$(resolve_marketplace_root "$MP_NAME")"   # 使用者指定的 marketplace；沒指定就對每個 list_marketplaces 跑一次
+git -C "$MP_ROOT" diff --name-only HEAD~3 | plugin_names_for_paths "$MP_ROOT"
 ```
 
-列出最近變更的 plugin，請用戶確認要更新哪些。
+列出最近變更的 plugin（經 manifest 對映，`./plugin` 與 repo-即-plugin 佈局都算得到），請用戶確認要更新哪些。
 
 ### Step 2: 檢查 Git 狀態
 
@@ -564,6 +616,11 @@ Plugin 如果依賴外部 binary（MCP server、CLI 工具），plugin-update �
 兩個信號獨立、各自 warn。
 
 ```bash
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
 for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh; do
     [ -f "$wrapper" ] || continue
     BINARY_NAME=$(grep '^BINARY_NAME=' "$wrapper" | head -1 | cut -d'"' -f2)
@@ -589,11 +646,11 @@ for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh; do
     # === Signal 2: binary repo main has unreleased commits? (v1.17.0+) ===
     # plugin.json declares binary_version (#77 schema, post-staleness-detection);
     # compare with binary repo's main HEAD to surface accumulated [Unreleased] backlog.
-    BINARY_VERSION=$(python3 -c "
-import json
-d = json.load(open('$PLUGIN_DIR/.claude-plugin/plugin.json'))
-print(d.get('binary_version') or d.get('version'))
-" 2>/dev/null)
+    BINARY_VERSION=$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d.get("binary_version") or d.get("version"))
+' "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null)
 
     # detect_binary_repo: try common local-clone paths derived from GITHUB_REPO
     REPO_BASENAME=$(basename "$GITHUB_REPO")
@@ -639,6 +696,11 @@ done
 ### Step 3: CLI 情境 — 比對本機 binary 和 latest release 版本
 
 ```bash
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
 # 從 session-start.sh 抓 GitHub repo
 GFH_REPO=$(grep -oE '[A-Za-z0-9_-]+/[A-Za-z0-9_-]+' "$PLUGIN_DIR"/hooks/session-start.sh | head -1)
 BINARY_NAME=$(basename $(grep -oE '\$HOME/bin/[A-Za-z0-9_-]+' "$PLUGIN_DIR"/hooks/session-start.sh | head -1))
@@ -721,13 +783,18 @@ fi
 
 ## Phase 2: 更新 marketplace.json（關鍵！）
 
-`marketplace.json` 位於 `{marketplace_repo_path}/.claude-plugin/marketplace.json`，是 marketplace 的 plugin index。
+`marketplace.json` 位於 `$MP_ROOT/.claude-plugin/marketplace.json`，是 marketplace 的 plugin index。
 **如果這個檔案沒更新，`claude plugin marketplace update` 不會看到新版本。**
 
 ### Step 1: 列出 marketplace 中所有 plugin 版本
 
 ```bash
-cd {marketplace_repo_path}
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+cd "$MP_ROOT"
 cat .claude-plugin/marketplace.json | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -739,6 +806,11 @@ for p in data['plugins']:
 ### Step 2: 對比 plugin.json 的實際版本
 
 ```bash
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
 cat "$PLUGIN_DIR"/.claude-plugin/plugin.json | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -776,7 +848,12 @@ category 常用值：`development`、`productivity`、`creative`
 marketplace.json 的變更也需要 commit + push，才能被 `marketplace update` 抓到。
 
 ```bash
-cd {marketplace_repo_path}
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+cd "$MP_ROOT"
 git add .claude-plugin/marketplace.json
 git commit -m "chore: update marketplace.json for {plugin_name} v{version}"
 git push
@@ -800,9 +877,13 @@ git push
 catch-up gap」這三類常見 staleness。
 
 ```bash
-# PLUGIN_DIR 由 Step 0.1 的三元組提供（#18）——不要在這裡重組路徑。
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
 README="$PLUGIN_DIR/README.md"
-NEW_VERSION=$(python3 -c "import json; print(json.load(open('$PLUGIN_DIR/.claude-plugin/plugin.json'))['version'])")
+NEW_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_DIR/.claude-plugin/plugin.json")
 
 # README 是否有任何版本追蹤標記（給 Suppression A 用）
 HAS_VERSION_SECTION=false
@@ -889,7 +970,7 @@ fi
 # README 多半會在標題寫「(N tools)」「N MCP Tools」「Tool 數量: N」。
 # 把這個 N 抓出來跟 plugin.json description 中宣稱的 tool 數比對。
 # README 落後最容易在這露餡（che-ical-mcp v0.8.2 → v1.7.2 README 寫 20 tools 實際 28）。
-DESC=$(python3 -c "import json; print(json.load(open('$PLUGIN_DIR/.claude-plugin/plugin.json')).get('description', ''))")
+DESC=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("description", ""))' "$PLUGIN_DIR/.claude-plugin/plugin.json")
 DESC_TOOLS=$(echo "$DESC" | grep -oE '[0-9]+ ?(?:個 )?(?:MCP )?(?:tools|工具)' | head -1 | grep -oE '^[0-9]+')
 README_TOOLS=$(grep -oE 'Available Tools \([0-9]+\)|\([0-9]+ (?:MCP )?tools\)|\*\*[0-9]+ MCP Tools\*\*|[0-9]+ 個工具' "$README" 2>/dev/null | grep -oE '[0-9]+' | head -1)
 if [ -n "$DESC_TOOLS" ] && [ -n "$README_TOOLS" ] && [ "$DESC_TOOLS" != "$README_TOOLS" ]; then
@@ -949,7 +1030,7 @@ options:
 
 | 選項 | 行為 |
 |------|------|
-| 更新 README | Read CHANGELOG.md + `git log --oneline -n 10 -- "${PLUGIN_DIR#$MP_ROOT/}/"` → 提出 README diff → 使用者確認後 Edit + commit + push |
+| 更新 README | Read CHANGELOG.md + `git log --oneline -n 10 -- "$PLUGIN_DIR/"` → 提出 README diff → 使用者確認後 Edit + commit + push |
 | 已經沒問題 | 繼續 Phase 3，不記 warning |
 | 先略過 | 繼續 Phase 3，**Phase 5 最終 report 要顯眼標註** README 待補 |
 
@@ -1051,6 +1132,11 @@ Claude Code 有快取機制。需要重啟才能載入新版 skill 內容。
 ### `failed to load` 錯誤？
 通常是 hooks.json 格式問題：
 ```bash
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
 claude plugin validate "$PLUGIN_DIR"
 ```
 
@@ -1058,7 +1144,12 @@ claude plugin validate "$PLUGIN_DIR"
 1. 確認 `marketplace.json` 的版本號已更新
 2. 確認已 push 到 remote：
 ```bash
-cd {marketplace_repo_path}
+# ── resolve（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活，#18 R1）──
+# $PLUGIN_NAME 是本次 invocation 的引數，照字面代入。
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
+[ -n "${PLUGIN_DIR:-}" ] && [ -d "$PLUGIN_DIR" ] || { echo "✗ PLUGIN_DIR unresolved for '$PLUGIN_NAME' — Step 0.1 must pass first" >&2; exit 1; }
+cd "$MP_ROOT"
 git log origin/main..HEAD --oneline
 ```
 
