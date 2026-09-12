@@ -22,9 +22,12 @@
 #   # (bad string, missing dir); rc 4 manifest unreadable; rc 5 non-local source
 #   # (git-subdir object / URL) with nothing materialized — full table at the function
 #
-#   plugin_source_of <root> <plugin>          # the raw plugins[].source, same rc table
-#   marketplace_plugin_names <root>           # one declared name per line
+#   plugin_source_of <root> <plugin>          # plugins[].source, sanitized, same rc table
+#   marketplace_plugin_names <root>           # declared ∪ plugins/ dirs, one per line
 #   git diff --name-only HEAD~3 | plugin_names_for_paths <root>   # which plugins those paths belong to
+#   marketplace_index                         # name<TAB>root, every marketplace once
+#   write_plugin_ctx <file> <mp> <root> <dir> <plugin> / load_plugin_ctx <file> <plugin>
+#                                             # Step 0.1 → later fences hand-off (see below)
 #
 # WHY THIS EXISTS
 #   Before v1.0.0, five places hardcoded /Users/che/Developer/psychquant-claude-plugins
@@ -307,7 +310,7 @@ plugin_source_of() {
   local root="${1:-}" plugin="${2:-}" out rc
   [ -n "$root" ] && [ -n "$plugin" ] || return 1
   out=$(_plugin_source_of "$root/.claude-plugin/marketplace.json" "$plugin"); rc=$?
-  [ -n "$out" ] && printf '%s\n' "$out" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-200
+  [ -n "$out" ] && printf '%s\n' "$out" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-200
   return "$rc"
 }
 
@@ -360,12 +363,53 @@ plugin_source_of() {
 _normalize_rel() {   # collapse //, /./, leading ./, trailing /. and /
   printf '%s' "${1:-}" | sed -E 's#/+#/#g; s#(^|/)(\./)+#\1#g; s#/\.$##; s#^\./##; s#/$##; s#^\.$##'
 }
+
+# A plugin / marketplace NAME is a single path segment of [A-Za-z0-9._-]. Explicit
+# ranges under LC_ALL=C — [[:alnum:]] is locale-dependent and admitted more than the
+# comment claimed (#18 verify R3).
+_valid_name() {
+  local LC_ALL=C n="${1:-}"
+  case "$n" in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  return 0
+}
+
+# True when <$2> is PHYSICALLY inside <$1> (both resolved with pwd -P, so a symlink
+# that points outside the root fails even though its logical path looks contained).
+_contained_in() {
+  local rootp dirp
+  rootp=$(cd "${1:-}" 2>/dev/null && pwd -P) || return 1
+  dirp=$(cd "${2:-}" 2>/dev/null && pwd -P) || return 1
+  case "$dirp" in "$rootp"|"$rootp"/*) return 0 ;; esac
+  return 1
+}
+
+# Possession for a MANIFEST-sourced directory: it must be a plugin
+# (.claude-plugin/plugin.json present) and, when that file names itself, the name
+# must be the one asked for. "A directory exists there" is not possession — a
+# root that is SOME plugin could otherwise claim ANY name with `source: "."`,
+# and a typo'd source pointing at docs/ would read as a plugin with nothing in
+# it (#18 verify R3). The legacy plugins/<name> probe uses the directory name
+# as its possession claim instead (materialized git-subdir subtrees may carry
+# no plugin.json), so this check applies only to manifest-derived directories.
+_is_plugin_named() {
+  local dir="${1:-}" plugin="${2:-}" pj name
+  pj="$dir/.claude-plugin/plugin.json"
+  [ -f "$pj" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 0          # cannot read the name: accept presence
+  name=$(python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+n = d.get("name") if isinstance(d, dict) else None
+print(n if isinstance(n, str) else "")' "$pj" 2>/dev/null) || return 0
+  [ -z "$name" ] || [ "$name" = "$plugin" ]
+}
+
 resolve_plugin_dir() {
-  local root="${1:-}" plugin="${2:-}" src dir rc legacy rel rootp dirp
+  local root="${1:-}" plugin="${2:-}" src dir rc legacy rel
   [ -n "$root" ] && [ -n "$plugin" ] || return 1
-  case "$plugin" in
-    *[![:alnum:]._-]*|.|..) return 6 ;;
-  esac
+  _valid_name "$plugin" || return 6
   legacy="$root/plugins/$plugin"
   src=$(_plugin_source_of "$root/.claude-plugin/marketplace.json" "$plugin"); rc=$?
   if [ "$rc" -eq 0 ]; then
@@ -382,29 +426,17 @@ resolve_plugin_dir() {
     esac
   fi
   if [ "$rc" -eq 0 ]; then
-    if [ -z "$rel" ]; then
-      dir="$root"
-      [ -f "$root/.claude-plugin/plugin.json" ] || rc=2
-    else
-      dir="$root/$rel"
-      [ -d "$dir" ] || rc=2
-    fi
-  fi
-  if [ "$rc" -eq 0 ]; then
-    rootp=$(cd "$root" 2>/dev/null && pwd -P) || rc=2
-    dirp=$(cd "$dir" 2>/dev/null && pwd -P) || rc=2
-    if [ "$rc" -eq 0 ]; then
-      case "$dirp" in
-        "$rootp"|"$rootp"/*) : ;;
-        *) rc=2 ;;
-      esac
-    fi
+    if [ -z "$rel" ]; then dir="$root"; else dir="$root/$rel"; fi
+    [ -d "$dir" ] && _contained_in "$root" "$dir" && _is_plugin_named "$dir" "$plugin" || rc=2
   fi
   if [ "$rc" -eq 0 ]; then
     printf '%s\n' "$dir"
     return 0
   fi
-  if [ -d "$legacy" ]; then
+  # legacy probe: the directory NAME is the possession claim; containment is not
+  # optional here either — a symlink at plugins/<name> pointing outside used to
+  # pass while the same target via the manifest was refused (#18 verify R3).
+  if [ -d "$legacy" ] && _contained_in "$root" "$legacy"; then
     printf '%s\n' "$legacy"
     return 0
   fi
@@ -429,7 +461,12 @@ for p in (d.get("plugins") if isinstance(d, dict) else None) or []:
   fi
   dirs=""
   [ -d "$root/plugins" ] && dirs=$(find "$root/plugins" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sed 's#.*/##')
-  printf '%s\n%s\n' "$declared" "$dirs" | grep . | sort -u
+  # only names that can ever resolve (rc 6 otherwise) — a public helper must not
+  # hand callers raw third-party strings (#18 verify R3)
+  printf '%s\n%s\n' "$declared" "$dirs" | grep . | sort -u | while IFS= read -r n; do
+    _valid_name "$n" && printf '%s\n' "$n"
+  done
+  return 0
 }
 
 # Map repo-relative paths (stdin, one per line — `git log --name-only` /
@@ -441,23 +478,75 @@ for p in (d.get("plugins") if isinstance(d, dict) else None) or []:
 # resolve_plugin_dir); a caller that wants "commits touched nothing" semantics
 # gets none for that layout.
 plugin_names_for_paths() {
-  local root="${1:-}" paths name dir rel
+  local root="${1:-}" paths name dir rel prefix
   [ -n "$root" ] || return 1
   paths=$(cat)
   [ -n "$paths" ] || return 0
+  # git prints paths relative to the repo TOPLEVEL; the marketplace root may be a
+  # subdirectory of it (che-local-plugins inside che-claude-config). Align by
+  # prepending the root's own prefix inside the repo; not a git repo → no prefix.
+  prefix=$(git -C "$root" rev-parse --show-prefix 2>/dev/null) || prefix=""
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     dir=$(resolve_plugin_dir "$root" "$name" 2>/dev/null) || continue
     if [ "$dir" = "$root" ]; then
-      printf '%s\n' "$name"
+      rel="$prefix"
+    else
+      rel="$prefix${dir#"$root"/}/"
+    fi
+    if [ -z "$rel" ]; then
+      printf '%s\n' "$name"                 # root-is-plugin at the toplevel: owns every path
       continue
     fi
-    rel="${dir#"$root"/}"
-    printf '%s\n' "$paths" | awk -v p="$rel/" 'index($0, p) == 1 { f = 1; exit } END { exit !f }' \
+    printf '%s\n' "$paths" | awk -v p="$rel" 'index($0, p) == 1 { f = 1; exit } END { exit !f }' \
       && printf '%s\n' "$name"
   done <<EOF
 $(marketplace_plugin_names "$root")
 EOF
+  return 0
+}
+
+# ── Step 0.1 context hand-off for plugin-update (#18 verify R3) ──
+# Each bash fence of a skill is its own Bash tool call; nothing survives between
+# them except what the agent pastes. Pasting a value read from a third-party
+# manifest (the marketplace name) into shell text is an injection surface, and
+# pasting only the NAME cannot pin the CHECKOUT Step 0.1 gated (two same-named
+# checkouts, two different tie-break rules). So Step 0.1 WRITES the validated
+# triple to a file and every later fence LOADS and re-verifies it. The agent
+# pastes exactly one thing: the plugin name it was invoked with.
+#
+#   write_plugin_ctx <file> <mp_name> <root> <plugin_dir> <plugin>
+#     rc 0 written; rc 6 a name is invalid; rc 2 a path is unusable (control
+#     characters, quotes, `|`, not a directory)
+#   load_plugin_ctx <file> <plugin>
+#     sources the file, then re-verifies: names valid, MP_ROOT is one of that
+#     marketplace's candidates, resolve_plugin_dir(MP_ROOT, plugin) still gives
+#     PLUGIN_DIR. Sets MP_NAME MP_ROOT PLUGIN_DIR in the caller's shell.
+#     rc 1 missing/unreadable file; rc 2 verification failed (message on stderr)
+write_plugin_ctx() {
+  local file="${1:-}" mp="${2:-}" root="${3:-}" dir="${4:-}" plugin="${5:-}" v
+  [ -n "$file" ] || return 2
+  _valid_name "$mp" && _valid_name "$plugin" || return 6
+  for v in "$root" "$dir"; do
+    case "$v" in ''|*[[:cntrl:]]*|*\'*|*\"*|*\\*|*\$*|*\`*|*\|*) return 2 ;; esac
+    [ -d "$v" ] || return 2
+  done
+  printf "MP_NAME='%s'\nMP_ROOT='%s'\nPLUGIN_DIR='%s'\nPLUGIN_NAME='%s'\n" "$mp" "$root" "$dir" "$plugin" > "$file" || return 2
+}
+
+load_plugin_ctx() {
+  local file="${1:-}" plugin="${2:-}" got
+  _valid_name "$plugin" || { echo "✗ plugin name '$(printf '%s' "$plugin" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-80)' is not [A-Za-z0-9._-]" >&2; return 6; }
+  [ -r "$file" ] || { echo "✗ no Step 0.1 context at $file — run Step 0.1 first" >&2; return 1; }
+  MP_NAME=""; MP_ROOT=""; PLUGIN_DIR=""; PLUGIN_NAME=""
+  # shellcheck disable=SC1090
+  . "$file" || return 1
+  [ "$PLUGIN_NAME" = "$plugin" ] || { echo "✗ context at $file is for '$PLUGIN_NAME', not '$plugin'" >&2; return 2; }
+  _valid_name "$MP_NAME" || { echo "✗ context marketplace name is not [A-Za-z0-9._-]" >&2; return 2; }
+  marketplace_candidates "$MP_NAME" 2>/dev/null | grep -qxF "$MP_ROOT" \
+    || { echo "✗ $MP_ROOT is no longer a checkout of marketplace '$MP_NAME'" >&2; return 2; }
+  got=$(resolve_plugin_dir "$MP_ROOT" "$plugin") && [ "$got" = "$PLUGIN_DIR" ] \
+    || { echo "✗ '$plugin' no longer resolves to $PLUGIN_DIR in $MP_ROOT (now: '${got:-}' rc $?)" >&2; return 2; }
   return 0
 }
 
@@ -506,9 +595,7 @@ find_plugin_marketplace() {
   #
   # here-doc, not a pipe: a pipe opens a subshell, so `return 0` would end only
   # that subshell and the function would fall through to `return 1`.
-  case "$plugin" in
-    *[![:alnum:]._-]*|.|..) return 1 ;;
-  esac
+  _valid_name "$plugin" || return 1
   while IFS="$(printf '\t')" read -r name root; do
     [ -n "$root" ] || continue
     case "$root$name" in *\|*) continue ;; esac

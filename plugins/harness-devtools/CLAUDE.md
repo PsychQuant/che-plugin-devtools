@@ -35,8 +35,11 @@ marketplace_plugin_names "$MP_ROOT"                   # manifest 宣告 ∪ plug
 git diff --name-only HEAD~3 | plugin_names_for_paths "$MP_ROOT"   # 這些路徑屬於哪些 plugin（不猜佈局）
 marketplace_index                                     # name<TAB>root，一次走完所有 marketplace
 
-# skill 裡的每個 bash block 都是獨立的 Bash 呼叫：名稱以單引號常值代入（代入前核對
-# [A-Za-z0-9._-]），再重新 source + 解析。見 plugin-update 的「前導」。
+# skill 裡的每個 bash block 都是獨立的 Bash 呼叫：Step 0.1 用 write_plugin_ctx 把驗證過的
+# name|root|plugin_dir 寫進 context 檔，之後每個 block 只代入 plugin 名（核對 [A-Za-z0-9._-]）、
+# load_plugin_ctx 載回並重驗、cd "$MP_ROOT"。第三方 manifest 的值不經 agent 的手。
+# manifest 來源的目錄要有 .claude-plugin/plugin.json 且 name（若有）相符才算持有；
+# plugins/<name> 的 legacy 探測以目錄名為持有判準，兩者都做實體（pwd -P）包含檢查。
 
 # 同名多候選時看得到 shadowing（一行一個 root，precedence 序）
 marketplace_candidates che-local-plugins

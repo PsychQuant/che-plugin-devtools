@@ -238,10 +238,11 @@ echo "plugin dir resolution (#18) — source comes from the manifest, not a layo
 #   1  manifest 沒有這個 entry
 #   2  entry 在，但 source 不是相對路徑（github: / URL / 絕對路徑）或目錄不存在
 PD_TMP=$(mktemp -d)
-mkdir -p "$PD_TMP/solo/.claude-plugin" "$PD_TMP/solo/plugin"
+mkdir -p "$PD_TMP/solo/.claude-plugin" "$PD_TMP/solo/plugin/.claude-plugin"
 cat > "$PD_TMP/solo/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "pd-solo", "plugins": [ { "name": "pd-solo", "source": "./plugin" } ] }
 JSON
+printf '{ "name": "pd-solo", "version": "0.0.1" }\n' > "$PD_TMP/solo/plugin/.claude-plugin/plugin.json"
 mkdir -p "$PD_TMP/agg/.claude-plugin" "$PD_TMP/agg/plugins/x"
 cat > "$PD_TMP/agg/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "pd-agg",
@@ -356,7 +357,8 @@ assert_eq "unparsable manifest that never mentions the name → rc 1 (pre-filter
 
 # repo-root-is-the-plugin: legal layout, resolves to root itself
 assert_eq 'source "." resolves to the marketplace root' "$PD_TMP/rootplugin" "$(resolve_plugin_dir "$PD_TMP/rootplugin" dot)"
-assert_eq 'source "./" resolves to the marketplace root' "$PD_TMP/rootplugin" "$(resolve_plugin_dir "$PD_TMP/rootplugin" dotslash)"
+resolve_plugin_dir "$PD_TMP/rootplugin" dotslash >/dev/null 2>&1; RC_DOTSLASH=$?
+assert_eq 'source "./" for a name the root plugin.json does not carry -> rc 2 (possession = the plugin.json name)' "2" "$RC_DOTSLASH"
 
 # unusable local-looking sources → rc 2, never a directory (the quoted one was a
 # confirmed arbitrary-code-execution path through `python3 -c "...'$PLUGIN_DIR'..."`)
@@ -384,7 +386,7 @@ assert_eq "marketplace_index yields name<TAB>root for the fixtures" \
 assert_eq "plugin_names_for_paths maps ./plugin layout paths (not plugins/<x>/)" \
     "pd-solo" "$(printf 'plugin/skills/a/SKILL.md\nREADME.md\n' | plugin_names_for_paths "$PD_TMP/solo")"
 assert_eq "plugin_names_for_paths: root-is-plugin owns every path (by design; see resolve_plugin_dir)" \
-    "dot dotslash" "$(printf 'anything.md\n' | plugin_names_for_paths "$PD_TMP/rootplugin" | tr '\n' ' ' | sed 's/ $//')"
+    "dot" "$(printf 'anything.md\n' | plugin_names_for_paths "$PD_TMP/rootplugin" | tr '\n' ' ' | sed 's/ $//')"
 resolve_plugin_dir "$PD_TMP/claimant" x >/dev/null 2>&1; RC_CLAIM=$?
 assert_eq 'source "." without plugin.json at the root -> rc 2 (declaration is not possession)' "2" "$RC_CLAIM"
 assert_eq "plugin_names_for_paths: unrelated paths map to nothing" \
@@ -412,10 +414,11 @@ resolve_plugin_dir "$PD_TMP/link" esc >/dev/null 2>&1; RC_ESC=$?
 assert_eq "source dir that is a symlink to outside the root -> rc 2 (physical containment)" "2" "$RC_ESC"
 resolve_plugin_dir "$PD_TMP/link" pipe >/dev/null 2>&1; RC_PIPE=$?
 assert_eq "source containing the | field separator -> rc 2" "2" "$RC_PIPE"
-mkdir -p "$PD_TMP/norm/.claude-plugin" "$PD_TMP/norm/plugin/skills"
+mkdir -p "$PD_TMP/norm/.claude-plugin" "$PD_TMP/norm/plugin/skills" "$PD_TMP/norm/plugin/.claude-plugin"
 cat > "$PD_TMP/norm/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "pd-norm", "plugins": [ { "name": "dotted", "source": "./plugin/." }, { "name": "doubled", "source": ".//plugin//" } ] }
 JSON
+printf '{ "version": "0.0.1" }\n' > "$PD_TMP/norm/plugin/.claude-plugin/plugin.json"   # no name: presence alone is accepted
 assert_eq 'source "./plugin/." normalizes to the plugin dir' "$PD_TMP/norm/plugin" "$(resolve_plugin_dir "$PD_TMP/norm" dotted)"
 assert_eq 'source ".//plugin//" normalizes to the plugin dir' "$PD_TMP/norm/plugin" "$(resolve_plugin_dir "$PD_TMP/norm" doubled)"
 assert_eq "normalized sources still map paths" "dotted doubled" \
@@ -424,6 +427,64 @@ assert_eq "plugin_source_of strips control characters from third-party content (
     "./pluginx" "$(plugin_source_of "$PD_TMP/link" ctrl; :)"
 assert_eq "plugin_source_of shows a non-string source as JSON (rc 2 to the caller)" \
     "true" "$(plugin_source_of "$PD_TMP/agg" boolean; :)"
+
+# R3 verify: possession, legacy symlink, nested marketplace, ctx hand-off, name filtering
+mkdir -p "$PD_TMP/poss/.claude-plugin" "$PD_TMP/poss/docs" "$PD_TMP/poss/other/.claude-plugin" "$PD_TMP/poss/plugins"
+cat > "$PD_TMP/poss/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-poss", "plugins": [ { "name": "typo", "source": "./docs" }, { "name": "wrongname", "source": "./other" }, { "name": "che-keychain", "source": "." } ] }
+JSON
+printf '{ "name": "somebody-else" }\n' > "$PD_TMP/poss/other/.claude-plugin/plugin.json"
+printf '{ "name": "evil-thing" }\n' > "$PD_TMP/poss/.claude-plugin/plugin.json"
+resolve_plugin_dir "$PD_TMP/poss" typo >/dev/null 2>&1; RC_TYPO=$?
+assert_eq "manifest source pointing at a directory that is not a plugin (no plugin.json) -> rc 2" "2" "$RC_TYPO"
+resolve_plugin_dir "$PD_TMP/poss" wrongname >/dev/null 2>&1; RC_WRONG=$?
+assert_eq "manifest source pointing at a plugin whose plugin.json names something else -> rc 2" "2" "$RC_WRONG"
+resolve_plugin_dir "$PD_TMP/poss" che-keychain >/dev/null 2>&1; RC_CLAIM2=$?
+assert_eq 'root that IS some plugin cannot claim a foreign name with "." -> rc 2' "2" "$RC_CLAIM2"
+ln -s "$PD_TMP/outside" "$PD_TMP/poss/plugins/escape"
+assert_fails "legacy plugins/<name> that is a symlink to outside the root is refused (same containment as the manifest path)" \
+    resolve_plugin_dir "$PD_TMP/poss" escape
+assert_fails "…and find_plugin_marketplace does not return it as a hit" find_plugin_marketplace escape
+
+# nested marketplace: the marketplace root is a SUBDIRECTORY of the git toplevel, and
+# git prints paths relative to the toplevel (che-local-plugins inside che-claude-config)
+if command -v git >/dev/null 2>&1; then
+  mkdir -p "$PD_TMP/repo/sub/.claude-plugin" "$PD_TMP/repo/sub/plugins/nest/.claude-plugin"
+  cat > "$PD_TMP/repo/sub/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-nested", "plugins": [ { "name": "nest", "source": "./plugins/nest" } ] }
+JSON
+  printf '{ "name": "nest" }\n' > "$PD_TMP/repo/sub/plugins/nest/.claude-plugin/plugin.json"
+  git -C "$PD_TMP/repo" init -q 2>/dev/null
+  assert_eq "plugin_names_for_paths aligns git-toplevel-relative paths to a nested marketplace root" \
+      "nest" "$(printf 'sub/plugins/nest/skills/a.md\n' | plugin_names_for_paths "$PD_TMP/repo/sub")"
+  assert_eq "plugin_names_for_paths: toplevel-relative path outside the nested root maps to nothing" \
+      "" "$(printf 'plugins/nest/skills/a.md\n' | plugin_names_for_paths "$PD_TMP/repo/sub")"
+fi
+
+# Step 0.1 → later fences hand-off
+CTX="$PD_TMP/ctx"
+write_plugin_ctx "$CTX" pd-agg "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x; RC_W=$?
+assert_eq "write_plugin_ctx writes a valid triple" "0" "$RC_W"
+CTX_LOADED=$(load_plugin_ctx "$CTX" x >/dev/null 2>&1 && printf '%s|%s|%s' "$MP_NAME" "$MP_ROOT" "$PLUGIN_DIR")
+assert_eq "load_plugin_ctx restores and re-verifies the triple" "pd-agg|$PD_TMP/agg|$PD_TMP/agg/plugins/x" "$CTX_LOADED"
+load_plugin_ctx "$CTX" ghost >/dev/null 2>&1; RC_L1=$?
+assert_eq "load_plugin_ctx refuses a context written for another plugin -> rc 2" "2" "$RC_L1"
+write_plugin_ctx "$CTX" "ok'; touch pwned; #" "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x >/dev/null 2>&1; RC_W2=$?
+assert_eq "write_plugin_ctx refuses a marketplace name outside [A-Za-z0-9._-] -> rc 6" "6" "$RC_W2"
+printf "MP_NAME='pd-agg'\nMP_ROOT='%s'\nPLUGIN_DIR='%s'\nPLUGIN_NAME='x'\n" "$PD_TMP/solo" "$PD_TMP/agg/plugins/x" > "$CTX"
+load_plugin_ctx "$CTX" x >/dev/null 2>&1; RC_L2=$?
+assert_eq "load_plugin_ctx refuses a root that is not a checkout of that marketplace (tampered file) -> rc 2" "2" "$RC_L2"
+load_plugin_ctx "$PD_TMP/nope.ctx" x >/dev/null 2>&1; RC_L3=$?
+assert_eq "load_plugin_ctx without a context file -> rc 1" "1" "$RC_L3"
+load_plugin_ctx "$CTX" 'x"; echo pwned' >/dev/null 2>&1; RC_L4=$?
+assert_eq "load_plugin_ctx with an invalid plugin name -> rc 6" "6" "$RC_L4"
+
+# public name listing never hands back an unresolvable third-party string
+mkdir -p "$PD_TMP/badnames/.claude-plugin" "$PD_TMP/badnames/plugins/fine"
+cat > "$PD_TMP/badnames/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-badnames", "plugins": [ { "name": "fine", "source": "./plugins/fine" }, { "name": "bad name; rm -rf x", "source": "./plugins/fine" } ] }
+JSON
+assert_eq "marketplace_plugin_names drops names outside [A-Za-z0-9._-]" "fine" "$(marketplace_plugin_names "$PD_TMP/badnames" | tr '\n' ' ' | sed 's/ $//')"
 
 PD_NOISE2=$( { resolve_plugin_dir "$PD_TMP/agg" orphan; resolve_plugin_dir "$PD_TMP/broken" absent; resolve_plugin_dir "$PD_TMP/agg" quoted; \
                marketplace_plugin_names "$PD_TMP/broken"; printf 'x\n' | plugin_names_for_paths "$PD_TMP/agg"; } 2>&1 >/dev/null )

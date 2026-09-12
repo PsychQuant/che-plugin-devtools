@@ -56,7 +56,7 @@ TaskCreate(name="propose_fix", description="Phase 6: 列出修復步驟，建議
 # cache 端的診斷對「已安裝但本機沒有 checkout」的 plugin 仍然有用（#18 R2）。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-case "$PLUGIN_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+case "$PLUGIN_NAME" in *[!A-Za-z0-9._-]*|''|.|..) echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
 IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
 [ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
 # SRC = manifest plugins[].source 解析結果（#18）；別再組 plugins/<name>。其餘硬編路徑見 #23。
@@ -81,7 +81,7 @@ ls "$SRC_LOCAL" 2>/dev/null
 # cache 端的診斷對「已安裝但本機沒有 checkout」的 plugin 仍然有用（#18 R2）。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-case "$PLUGIN_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+case "$PLUGIN_NAME" in *[!A-Za-z0-9._-]*|''|.|..) echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
 IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
 [ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
 # 源碼版本
@@ -104,23 +104,30 @@ claude plugin list 2>&1 | grep -A3 "$PLUGIN_NAME"
 # cache 端的診斷對「已安裝但本機沒有 checkout」的 plugin 仍然有用（#18 R2）。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-case "$PLUGIN_NAME" in *[![:alnum:]._-]*|'') echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+case "$PLUGIN_NAME" in *[!A-Za-z0-9._-]*|''|.|..) echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
 IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
 [ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
 # 找到 cache 裡最新版本的路徑
 CACHE_VER=$(ls ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/ | sort -V | tail -1)
 CACHE="$HOME/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/$CACHE_VER"
 
-# 「讀不到源碼」與「沒差異」必須分開講（#18）：SRC 空時一律 UNKNOWN，不印 No ... to diff
+# 「讀不到」與「沒差異」必須分開講（#18）：源碼或 cache 任一側讀不到 → UNKNOWN；
+# diff 的 rc 三分：0 相同 / 1 有差異 / ≥2 錯誤（cache 目錄不存在、權限）→ UNKNOWN，不是 DIFFERS。
 if [ -z "$SRC" ]; then
   echo "UNKNOWN：源碼未解析，無法 diff（見 Phase 1 Step 2）"
+elif [ -z "$CACHE_VER" ] || [ ! -d "$CACHE" ]; then
+  echo "UNKNOWN：cache 目錄不存在（$CACHE）——尚未安裝，或 cache 路徑的 marketplace 名不對（#23）"
 else
   for part in hooks skills commands; do
-    if [ -e "$SRC/$part" ]; then
-      diff -r "$SRC/$part" "$CACHE/$part" && echo "$part: no diff" || echo "$part: DIFFERS（上方為差異）"
-    else
-      echo "$part: 源碼無此目錄"
+    if [ ! -e "$SRC/$part" ]; then
+      echo "$part: 源碼無此目錄"; continue
     fi
+    diff -r "$SRC/$part" "$CACHE/$part"; rc=$?
+    case $rc in
+      0) echo "$part: no diff" ;;
+      1) echo "$part: DIFFERS（上方為差異）" ;;
+      *) echo "$part: UNKNOWN（diff rc $rc：cache 缺此目錄或讀不動）" ;;
+    esac
   done
 fi
 ```
