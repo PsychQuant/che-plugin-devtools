@@ -566,7 +566,7 @@ plugin_names_for_paths() {
       printf '%s\n' "$name"                 # root-is-plugin at the toplevel: owns every path
       continue
     fi
-    printf '%s\n' "$paths" | awk -v p="$rel" 'index($0, p) == 1 { f = 1; exit } END { exit !f }' \
+    printf '%s\n' "$paths" | PNP_PREFIX="$rel" awk 'BEGIN { p = ENVIRON["PNP_PREFIX"] } index($0, p) == 1 { f = 1; exit } END { exit !f }' \
       && printf '%s\n' "$name"
   done <<EOF
 $(marketplace_plugin_names "$root")

@@ -525,8 +525,9 @@ CTXDIR="$PD_TMP/state"
 CTX2="$CTXDIR/plugin-update-ctx-x"
 write_plugin_ctx "$CTX2" pd-agg "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x; RC_W3=$?
 assert_eq "write_plugin_ctx creates the private dir and the file" "0" "$RC_W3"
-assert_eq "context dir is mode 700" "700" "$(stat -f %Lp "$CTXDIR" 2>/dev/null || stat -c %a "$CTXDIR")"
-assert_eq "context file is mode 600" "600" "$(stat -f %Lp "$CTX2" 2>/dev/null || stat -c %a "$CTX2")"
+pymode() { python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode))[2:])' "$1"; }   # portable: not the bsd||gnu form under test
+assert_eq "context dir is mode 700" "700" "$(pymode "$CTXDIR")"
+assert_eq "context file is mode 600" "600" "$(pymode "$CTX2")"
 printf 'MP_NAME=pd-agg\nMP_ROOT=%s\nPLUGIN_DIR=%s\nPLUGIN_NAME=x\nWRITTEN_EPOCH=%s\ntouch "%s/EXECUTED"\n' "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" "$(date +%s)" "$PD_TMP" > "$CTX2"
 load_plugin_ctx "$CTX2" x >/dev/null 2>&1; RC_L5=$?
 assert_eq "a command line inside the context file is never executed (load parses, does not source)" "0:absent" "$RC_L5:$([ -e "$PD_TMP/EXECUTED" ] && echo EXECUTED || echo absent)"
@@ -582,6 +583,9 @@ assert_eq "new rc branches and helpers emit no stderr" "" "$PD_NOISE2"
 # the one deliberate stderr: a name that cannot be resolved is REPORTED, not silently uncounted
 PNP_WARN=$(printf 'plugins/ghost/a.md\n' | plugin_names_for_paths "$PD_TMP/agg" 2>&1 >/dev/null | grep -c "'ghost' did not resolve (rc 2)")
 assert_eq "plugin_names_for_paths reports an unresolvable name on stderr with its rc" "1" "$PNP_WARN"
+mkdir -p "$PD_TMP/agg/plugins/x/sub\\n" 2>/dev/null   # a directory literally named sub\n
+PNP_BS=$(printf 'plugins/x/sub\\n/a.md\n' | plugin_names_for_paths "$PD_TMP/agg" 2>/dev/null)
+assert_eq "plugin_names_for_paths does not expand backslash escapes in the prefix (awk ENVIRON, not -v)" "x" "$PNP_BS"
 
 # R6 verify: manifest path helper, holders dedup by physical dir, load assigns only on success,
 # TTL hardening, GNU-stat fallback, marketplace names allowlisted at the index
@@ -633,7 +637,7 @@ cat > "$PD_TMP/gnubin/stat" <<'SH'
 #!/bin/sh
 case "$1" in
   -f) echo "stat: cannot stat '%Lp': No such file or directory" >&2; echo "  File: \"$2\""; echo "    ID: 100000  Namelen: 255  Type: apfs"; exit 1 ;;
-  -c) exec /usr/bin/stat -f %Lp "$3" ;;
+  -c) exec python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode))[2:])' "$3" ;;   # portable "GNU %a": works whether the real stat is BSD or GNU
 esac
 exit 1
 SH
