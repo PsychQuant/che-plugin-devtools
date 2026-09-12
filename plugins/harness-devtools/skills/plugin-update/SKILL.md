@@ -100,7 +100,7 @@ PLUGIN_NAME='<plugin-name>'
 # 這個值是使用者自己的引數（或使用者剛在 Phase 1 選定的），同樣先肉眼核對 [A-Za-z0-9._-]。
 MP_NAME='<marketplace-name-or-empty>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-200; }
+clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]\\' | LC_ALL=C cut -c1-200; }   # 也去反斜線：zsh 的 echo 會展開 \n \t
 case "$MP_NAME" in '<marketplace-name-or-empty>') MP_NAME="" ;; esac   # 未代入的佔位視同空
 case "$PLUGIN_NAME" in
     ''|'<plugin-name>')
@@ -127,21 +127,31 @@ case "$(printf '%s\n' "$HOLDERS" | grep -c .)" in
     0) ;;
     1) RESOLVED="$HOLDERS" ;;
     *)
-        HERE=$(pwd -P)
+        HERE=$(pwd -P); BEST=""
         while IFS='|' read -r hmp hroot hdir; do
             [ -n "$hroot" ] || continue
             rp=$(cd "$hroot" 2>/dev/null && pwd -P) || continue
-            case "$HERE" in "$rp"|"$rp"/*) RESOLVED="$hmp|$hroot|$hdir"; break ;; esac
+            # 取**最內層**（最長）的包含 root，同 Phase 1 Step 1：巢狀 checkout 時外層也包含 cwd，
+            # 索引順序是 find 的目錄順序，不能靠「第一個命中」（#18 R7）
+            case "$HERE" in "$rp"|"$rp"/*) [ ${#rp} -gt ${#BEST} ] && { BEST="$rp"; RESOLVED="$hmp|$hroot|$hdir"; } ;; esac
         done <<EOF
 $HOLDERS
 EOF
         if [ -n "$RESOLVED" ]; then
             SEL_ROOT=${RESOLVED#*|}; SEL_ROOT=${SEL_ROOT%%|*}
-            echo "ℹ Phase 0.1: '$PLUGIN_NAME' 有多份實體不同的 checkout 持有；用包含目前目錄的那份：$(clean "$SEL_ROOT")"
+            echo "ℹ Phase 0.1: '$PLUGIN_NAME' 有多份實體不同的 checkout 持有；用包含目前目錄的那份（最內層）：$(clean "$SEL_ROOT")"
         else
             echo "✗ Phase 0.1: '$PLUGIN_NAME' 在多份實體不同的 checkout 裡都解析得到，而目前目錄不在其中任何一份：" >&2
             printf '%s\n' "$HOLDERS" | while IFS='|' read -r hmp hroot hdir; do echo "    $(clean "$hmp")  $(clean "$hroot")" >&2; done
-            echo "  cd 進要更新的那份 checkout 再跑 Step 0.1（本 fence 以 cwd 消歧），或清掉過時的副本。" >&2
+            # 兩種分佈、兩種處方（本機 7 例中 6 例是跨 marketplace 各自上架，不是副本，#18 R7）：
+            if [ "$(printf '%s\n' "$HOLDERS" | cut -d'|' -f1 | sort -u | grep -c .)" -gt 1 ]; then
+                echo "  這些是**不同 marketplace** 各自上架的同名 plugin（都是現役，不是副本，別刪）。" >&2
+                echo "  把要更新的那個 marketplace 名代入本 fence 的 MP_NAME 重跑（只在該 marketplace 裡解析）；" >&2
+                echo "  或 cd 進要更新的那份 checkout 再跑 Step 0.1（本 fence 以 cwd 消歧）。" >&2
+            else
+                echo "  這是**同一個 marketplace 的多份 clone**。cd 進要更新的那份 checkout 再跑 Step 0.1（本 fence 以 cwd 消歧）；" >&2
+                echo "  確定是過時副本的才清掉。" >&2
+            fi
             exit 1
         fi ;;
 esac
@@ -204,9 +214,9 @@ EOF
 fi
 
 if [ -z "$PLUGIN_DIR" ] || [ ! -d "$PLUGIN_DIR" ]; then
-    # find_plugin_marketplace 命中就一定帶第三欄；走到這裡代表 resolver 契約被改了
+    # plugin_holders 命中就一定帶第三欄；走到這裡代表 resolver 契約被改了
     # （例如有人把它退回兩欄），不是 marketplace 的問題。一樣 abort——見下段。
-    echo "✗ Phase 0.1: find_plugin_marketplace 回了 '$(printf '%s' "$RESOLVED" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-200)'，第三欄不是目錄。" >&2
+    echo "✗ Phase 0.1: plugin_holders 回了 '$(printf '%s' "$RESOLVED" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-200)'，第三欄不是目錄。" >&2
     echo "  resolve-marketplace.sh 的契約是 name|root|plugin_dir（#18）；請對它跑" >&2
     echo "  scripts/test-resolve-marketplace.sh。" >&2
     exit 1
@@ -254,7 +264,8 @@ checkout 時 Step 0.1 gate 過的那份 root 才是後面 `git push` 的那份�
 tie-break；(b) root / plugin 目錄不經 agent 代入；唯一會被 agent 貼回的第三方值是 marketplace
 名——它在 resolver 的**索引層**就過了 `[A-Za-z0-9._-]`（不合法的 marketplace 整個不列入，
 `list_marketplaces` / `marketplace_index` / `plugin_holders` 印不出它），Phase 1 印出、代入
-Step 0.1 時再以 shell `case` 二次守門；(c) 每個 fence 的 git 都在 marketplace repo 內跑。這不是「重組路徑」：路徑
+Step 0.1 時再以 shell `case` 二次守門；(c) 每個含 git 的 fence 都在 marketplace repo 內跑——Phase 0.5 Step 3 的 commit / push
+也有專用 fence，agent 不在對話裡現組 git 指令。這不是「重組路徑」：路徑
 仍然只從 manifest 來，只是每個 shell 各驗一次。**表格儲存格與散文裡的 `<PLUGIN_DIR>` 是
 敘述，不是可執行的指令；可執行的形式只在帶前導的 fence 裡。**
 
@@ -304,9 +315,11 @@ cd "$MP_ROOT" || exit 1
 IS_BINARY_BACKED=false
 if [ -f "$PLUGIN_DIR/.mcp.json" ]; then
     IS_BINARY_BACKED=true
-elif grep -lq GITHUB_REPO "$PLUGIN_DIR"/bin/*-wrapper.sh 2>/dev/null; then
+elif [ -n "$(find "$PLUGIN_DIR/bin" -maxdepth 1 -name '*-wrapper.sh' -exec grep -l GITHUB_REPO {} \; 2>/dev/null)" ]; then
     # 不要寫成 `ls … | xargs grep -l … | head -1 > /dev/null`：pipeline 的退出碼是 head 的，恆為 0，
-    # 每個沒有 .mcp.json 的 plugin 都會被判成 binary-backed（#18 R5）
+    # 每個沒有 .mcp.json 的 plugin 都會被判成 binary-backed（#18 R5）。
+    # 也不要寫 glob（`"$PLUGIN_DIR"/bin/*-wrapper.sh`）：Bash 工具跑在 zsh、nomatch 開著，glob 對不到
+    # （沒有 bin/、或 bin/ 裡沒有 wrapper：gifthub、che-keychain）整個 fence 當場中止，決定行印不出來（#18 R7）
     IS_BINARY_BACKED=true
 fi
 
@@ -350,7 +363,8 @@ SHELL_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[
 BINARY_VERSION=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("binary_version") or d.get("binaryVersion") or "")' "$PLUGIN_MANIFEST" 2>/dev/null)
 # Step 1 的判定不跨 fence：在這裡用同一組結構信號重算（值不靠上一個 shell）
 IS_BINARY_BACKED=false
-{ [ -f "$PLUGIN_DIR/.mcp.json" ] || grep -lq GITHUB_REPO "$PLUGIN_DIR"/bin/*-wrapper.sh 2>/dev/null \
+# 不用 glob（zsh nomatch 會讓對不到的 glob 中止整個 fence，#18 R7）
+{ [ -f "$PLUGIN_DIR/.mcp.json" ] || [ -n "$(find "$PLUGIN_DIR/bin" -maxdepth 1 -name '*-wrapper.sh' -exec grep -l GITHUB_REPO {} \; 2>/dev/null)" ] \
   || grep -q 'api.github.com.*releases' "$PLUGIN_DIR/hooks/session-start.sh" 2>/dev/null; } && IS_BINARY_BACKED=true
 
 # (b) 比對 marketplace.json — 落後嗎？（entry 缺 version → 空 = 缺，由 Phase 2 補上；manifest 形狀不對 → 空，並印一行）
@@ -372,6 +386,10 @@ MP_DRIFT=$([ "$MP_VERSION" != "$SHELL_VERSION" ] && echo yes || echo no)
 # --literal-pathspecs（目錄名含 * ? [ 時不得當 glob）。不要相對化：${PLUGIN_DIR#$MP_ROOT/} 把
 # MP_ROOT 當 glob、對 repo 即 plugin 的佈局會變空字串。root-sourced plugin（source "."）的
 # pathspec 是整個 repo：對它這個信號等於「repo 30 天內有沒有 commit」，是佈局語意，不是誤報。
+# git 答不出來（不是 work tree、HEAD 未生、git 缺席）不能變成「30 天內沒改」再變成 Case A 的「事實」：
+# 先探一次，探不到就 abort（Phase 0.3 在 0.5 之前，這裡是第一個碰 git 的地方）
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git rev-parse -q --verify HEAD >/dev/null 2>&1 \
+  || { echo "✗ Phase 0.3: $MP_ROOT 不是可用的 git work tree（或沒有任何 commit）— 無法判定 sync intent" >&2; exit 1; }
 SHELL_RECENT_TOUCHES=$(git --literal-pathspecs log --since="30 days ago" --name-only --pretty=format: \
     -- "$PLUGIN_DIR/" 2>/dev/null \
     | grep -v '^$' | sort -u | head -10)
@@ -381,7 +399,7 @@ SHELL_RECENT_TOUCHES=$(git --literal-pathspecs log --since="30 days ago" --name-
 # GITHUB_REPO= / REPO= 取 owner/repo，在三個常見路徑找 local clone；找不到 → 空（best-effort）。
 detect_binary_repo() {
     local dir="$1" repo base c
-    repo=$(grep -hoE '^(GITHUB_REPO|REPO)="?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"?' "$dir"/bin/* 2>/dev/null | head -1 | sed -E 's/^[A-Z_]+="?//; s/"$//')
+    repo=$(find "$dir/bin" -maxdepth 1 -type f -exec grep -hoE '^(GITHUB_REPO|REPO)="?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"?' {} + 2>/dev/null | head -1 | sed -E 's/^[A-Z_]+="?//; s/"$//')
     [ -n "$repo" ] || return 1
     base=${repo##*/}
     case "$base" in .|..|.*|-*) return 1 ;; esac            # 檔案內容組出的路徑段，不接受 . / .. / 隱藏 / 選項形
@@ -432,7 +450,8 @@ case "$SYNC_CASE" in
     echo "→ Phase 0.3: sync intent confirmed"
     [ "$MP_DRIFT" = "yes" ] && echo "  - marketplace.json drift: ${MP_VERSION:-<missing>} → $SHELL_VERSION"
     [ -n "$SHELL_RECENT_TOUCHES" ] && echo "  - recent shell changes: $(printf '%s\n' "$SHELL_RECENT_TOUCHES" | grep -c .) files"
-    [ "$BINARY_UNRELEASED" = unknown ] && echo "  - binary v$BINARY_VERSION: unreleased-commit check could not run（no local clone / tag / main）— see Phase 1.5"
+    if [ "$BINARY_UNKNOWN_WHY" = no-pin ]; then echo "  - binary-backed but no binary_version / binaryVersion pinned in $PLUGIN_MANIFEST — release status not checked（#22 會補 pin）"
+    elif [ "$BINARY_UNRELEASED" = unknown ]; then echo "  - binary v$BINARY_VERSION: unreleased-commit check could not run（no local clone / tag / main）— see Phase 1.5"; fi
     [ "${BINARY_UNRELEASED:-0}" -gt 0 ] 2>/dev/null && echo "  - binary main has $BINARY_UNRELEASED unreleased commits (see Phase 1.5 for warn detail)"
     exit 0 ;;
   B)
@@ -626,14 +645,47 @@ echo "(left = origin behind us; right = we ahead of origin; '0 0' = synced; '0 N
 
 依 detected state 跑對應的 AskUserQuestion。**Default option = `abort` for any state with multiple sensible actions**;`push as-is` 只在 unambiguous clean+unpushed case 是 default。
 
-#### Case A: Clean + 0 unpushed
-
-不需要 dispatch,直接 abort:
+**選項裡的 commit / push 動作一律用下面兩個 fence 執行，不在對話裡現組 `git push`**：Step 1 的
+`cd "$MP_ROOT"` 到這個 Bash 呼叫已經失效，現組的 git 會跑在 session 的 cwd——那正是 Step 0.1
+存在理由裡的那個災害（推了不相干的 repo）。兩個 fence 都帶前導，git 因此在 marketplace repo 內跑；
+push 用 `git push`（Step 1 已確認 upstream 存在），不代入 branch 名。
 
 ```bash
+# Case C「stage all + commit + push」/ Case D「amend」「commit dirty as new commit」的 commit 半段。
+# COMMIT_MSG 是使用者在 AskUserQuestion 後給的訊息（自己的引數）；AMEND=yes 走 --amend --no-edit。
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
+cd "$MP_ROOT" || exit 1
+COMMIT_MSG='<commit-message-or-empty>'; AMEND='<yes-or-empty>'
+case "$COMMIT_MSG" in '<commit-message-or-empty>') COMMIT_MSG="" ;; esac
+case "$AMEND" in yes) : ;; *) AMEND="" ;; esac
+git add -A
+if [ -n "$AMEND" ]; then git commit --amend --no-edit
+else [ -n "$COMMIT_MSG" ] || { echo "✗ 需要 commit message" >&2; exit 1; }; git commit -m "$COMMIT_MSG"; fi
+```
+
+```bash
+# 任一「push」選項的 push 半段（Case B「push N as-is」、Case C/D 的 push、Case E rebase/merge 之後）。
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
+cd "$MP_ROOT" || exit 1
+git push && echo "→ Phase 0.5: pushed $(git rev-parse --abbrev-ref HEAD) in $MP_ROOT"
+```
+
+#### Case A: Clean + 0 unpushed
+
+不需要 dispatch,直接 abort（abort 就清 context，同本 Step 開頭的規定）:
+
+```bash
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+case "$PLUGIN_NAME" in ''|'<plugin-name>'|.*|-*|*[!A-Za-z0-9._-]*) echo "✗ PLUGIN_NAME 未代入或不合法" >&2; exit 1 ;; esac
 echo "✗ Nothing to push — working tree is clean and 0 unpushed commits."
 echo "  If you intended to update the marketplace anyway (e.g. just trigger 'claude plugin marketplace update' on origin),"
 echo "  bypass plugin-update and run that command directly."
+remove_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")"
 exit 0
 ```
 
@@ -739,7 +791,7 @@ UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) \
 # 收集 unpushed commits touch 到的 plugin 名(去重)——經 manifest 對映，不猜 plugins/<x>/ 佈局
 # （單一 plugin marketplace 的檔案在 plugin/ 底下；repo 即 plugin 的佈局擁有全部路徑，
 # 所以 root-sourced plugin 對任何 commit 都算被 touch——那是佈局語意，case (a) 對它不成立。#18）
-TOUCHED=$(git -c core.quotePath=false log --name-only --pretty=format: "$UPSTREAM"..HEAD \
+TOUCHED=$(git -c core.quotePath=false -c diff.relative=false log --name-only --pretty=format: "$UPSTREAM"..HEAD \
   | plugin_names_for_paths "$MP_ROOT")
 TOUCHED_COUNT=$(echo -n "$TOUCHED" | grep -c . || true)
 
@@ -785,7 +837,7 @@ fi
 # marketplace checkout 裡就用它；否則列出 list_marketplaces 請使用者先選，不掃全機（35 個 root
 # 各跑 git + 逐名解析要十幾秒，且輸出混雜，#18 R4）。marketplace 名是第三方值，印之前去控制字元。
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-200; }
+clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]\\' | LC_ALL=C cut -c1-200; }   # 也去反斜線：zsh 的 echo 會展開 \n \t
 # 可選：使用者選定的 marketplace 名（空 → 由 cwd 推斷）。代入前核對 [A-Za-z0-9._-]。
 MP_NAME='<marketplace-name-or-empty>'
 case "$MP_NAME" in '<marketplace-name-or-empty>') MP_NAME="" ;; esac
@@ -814,7 +866,7 @@ if [ -z "$ROOT" ]; then
     exit 0
 fi
 echo "→ marketplace: $(clean "$MPN") ($ROOT)"
-git -c core.quotePath=false -C "$ROOT" diff --name-only HEAD~3 2>/dev/null | plugin_names_for_paths "$ROOT"
+git -c core.quotePath=false -c diff.relative=false -C "$ROOT" diff --name-only HEAD~3 2>/dev/null | plugin_names_for_paths "$ROOT"   # plugin_names_for_paths 以 toplevel 相對路徑對齊，diff.relative 不得改變輸出形狀
 ```
 
 列出這個 marketplace 最近變更的 plugin（經 manifest 對映，`./plugin`、entry-less `plugins/<name>` 與 repo-即-plugin 佈局都算得到；巢狀 marketplace 的路徑以 `git rev-parse --show-prefix` 對齊；`core.quotePath=false` 讓非 ASCII 檔名不被引號化），請用戶確認要更新哪一個；確認後以該 plugin 名**與上面印出的 marketplace 名**（代入 Step 0.1 的 `MP_NAME`；這個名稱在 resolver 索引層已過 `[A-Za-z0-9._-]`，代入時再核對一次）跑 Step 0.1——Step 0.1 只在那個 marketplace 的 checkout 裡解析、同名多份 checkout 以 cwd 消歧、並以 context 檔綁定，不會全域重選到另一份。
@@ -865,7 +917,12 @@ PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh; do
+[ -n "$PLUGIN_MANIFEST" ] || { echo "✗ Phase 1.5: $PLUGIN_DIR 沒有 plugin manifest（Step 0.1 應已擋下）" >&2; exit 1; }
+# 不用 `for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh`：zsh nomatch 會讓對不到的 glob 中止整個 fence，
+# 下面的 `[ -f ] || continue` 守衛根本到不了（#18 R7）。列表用 find，空列表明說。
+WRAPPERS=$(find "$PLUGIN_DIR/bin" -maxdepth 1 -name '*-wrapper.sh' 2>/dev/null | sort)
+[ -n "$WRAPPERS" ] || echo "ℹ Phase 1.5 Step 2: $PLUGIN_DIR 沒有 bin/*-wrapper.sh — Signal 1/2 沒有可驗證的對象（不是「檢查過沒問題」）"
+while IFS= read -r wrapper; do
     [ -f "$wrapper" ] || continue
     BINARY_NAME=$(grep '^BINARY_NAME=' "$wrapper" | head -1 | cut -d'"' -f2)
     GITHUB_REPO=$(grep '^GITHUB_REPO=' "$wrapper" | head -1 | cut -d'"' -f2)
@@ -885,7 +942,7 @@ for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh; do
 
     # === Signal 1: asset present in latest release? ===
     HAS_BINARY=$(curl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" \
-        | grep '"browser_download_url"' | grep -c "/$BINARY_NAME\"" || true)
+        | grep '"browser_download_url"' | grep -cF "/$BINARY_NAME\"" || true)   # -F：BINARY_NAME 是路徑段不是 regex（. 與 - 都合法）
 
     if [ "$HAS_BINARY" = "0" ]; then
         echo "⚠️  $BINARY_NAME not in $GITHUB_REPO latest release"
@@ -933,7 +990,10 @@ print(d.get("binary_version") or d.get("binaryVersion") or d.get("version"))
             echo "ℹ️  $REPO_BASENAME local repo found but tag v$BINARY_VERSION missing — run 'git fetch --tags' to enable Signal 2"
         fi
     fi
-done
+done <<EOF
+$WRAPPERS
+EOF
+echo "→ Phase 1.5 Step 2: wrappers checked: $(printf '%s' "$WRAPPERS" | grep -c .)"
 ```
 
 **何時 Signal 2 沉默**：
@@ -1027,7 +1087,7 @@ cd "$MP_ROOT" || exit 1
 BINARY_NAME='<binary-name-from-step-2>'
 case "$BINARY_NAME" in ''|'<binary-name-from-step-2>'|.*|-*|*[!A-Za-z0-9._-]*) echo "✗ BINARY_NAME 未代入或不合法 — 先看 Step 2 的輸出" >&2; exit 1 ;; esac
 # 找到 MCP source repo（通常在 ~/Developer/ 下）
-MCP_SOURCE=$(find ~/Developer -maxdepth 3 -name "Package.swift" -exec grep -l -- "$BINARY_NAME" {} \; | head -1 | xargs dirname 2>/dev/null)
+MCP_SOURCE=$(find ~/Developer -maxdepth 3 -name "Package.swift" -exec grep -lF -- "$BINARY_NAME" {} \; | head -1 | xargs dirname 2>/dev/null)   # -F：不把 . 當萬用字元
 
 if [ -n "$MCP_SOURCE" ]; then
     cd "$MCP_SOURCE"
@@ -1174,6 +1234,10 @@ source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 README="$PLUGIN_DIR/README.md"
+# README 不存在是一個獨立的狀態（狀況表：跳過，plugin-deploy 才強制補），要明說；不能讓六個信號各自
+# 對不存在的檔案給出「沒提到」或「沒問題」（#18 R7）
+[ -f "$README" ] || { echo "ℹ Phase 2.5: $PLUGIN_DIR 沒有 README.md — 六信號跳過（這是「沒有 README」，不是「README 沒問題」）"; exit 0; }
+STALE_README=false
 # 讀不到 version 就 abort：空的 NEW_VERSION 會讓下面信號 1 的 pattern 變成 `v\|`（空 alternation
 # 匹配每一行）→ README 永遠「沒有 stale」——這正是 #18 要消滅的「偵測落空被讀成沒有」。
 [ -n "$PLUGIN_MANIFEST" ] || { echo "✗ Phase 2.5: $PLUGIN_DIR 沒有 plugin manifest — README 六信號無法判定" >&2; exit 1; }
@@ -1223,7 +1287,7 @@ fi
 CHANGELOG="$PLUGIN_DIR/CHANGELOG.md"
 if [ -f "$CHANGELOG" ]; then
     LATEST_CL_VERSION=$(grep -oE '^## \[?[0-9]+\.[0-9]+\.[0-9]+\]?' "$CHANGELOG" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-    if [ -n "$LATEST_CL_VERSION" ] && ! grep -q "$LATEST_CL_VERSION" "$README"; then
+    if [ -n "$LATEST_CL_VERSION" ] && ! grep -q "$LATEST_CL_VERSION" "$README" 2>/dev/null; then
         echo "⚠️  signal-3: CHANGELOG latest v$LATEST_CL_VERSION not in README"
         STALE_README=true
     fi
@@ -1298,6 +1362,9 @@ if grep -q '## Version History\|### Changelog' "$README" 2>/dev/null; then
         STALE_README=true
     fi
 fi
+# 結論要印出來：沒有任何 ⚠️ 與「fence 中途死掉」在 stdout 上一模一樣（#18 R7）
+if [ "$STALE_README" = true ]; then echo "→ Phase 2.5: README stale（見上方 signal-N）— Step 2 詢問是否更新"
+else echo "✅ Phase 2.5: README fresh（六信號全過）— 繼續 Phase 3"; fi
 ```
 
 **設計理由速覽**：
