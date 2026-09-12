@@ -168,6 +168,12 @@ _marketplace_index() {
     dir="${manifest%/*}"; dir="${dir%/*}"   # two dirnames, no subprocess
     _is_git_worktree "$dir" && continue
     name=$(_marketplace_name_of "$manifest") || continue
+    # A marketplace NAME is third-party manifest content that plugin-update prints
+    # and the agent later pastes back (Phase 1 Step 1 -> Step 0.1's MP_NAME literal).
+    # Filter at the index, so nothing downstream — list_marketplaces, marketplace_index,
+    # find_plugin_marketplace, plugin_holders — ever hands a caller a name outside
+    # [A-Za-z0-9._-]; a manifest with such a name is not a marketplace here (#18 R6).
+    _valid_name "$name" || continue
     printf '%s\t%s\n' "$name" "$dir"
   done <<EOF
 $(_marketplace_manifests)
@@ -353,9 +359,13 @@ plugin_source_of() {
 #   classification: manifest first; when it yields no USABLE local directory,
 #   probe plugins/<name>; only when both fail does the rc say why.
 #
-# `.` and `./` mean "the repo root is the plugin" and resolve to <root> itself —
-# accepted only when <root>/.claude-plugin/plugin.json exists, otherwise any
-# manifest on the search path could claim any plugin name by declaring `.`.
+# `.` and `./` mean "the repo root is the plugin" and resolve to <root> itself,
+# subject to the SAME possession rule as every other directory (_is_plugin_named):
+# a manifest at <root>/.claude-plugin/plugin.json or <root>/plugin.json must parse
+# and name the plugin; with no manifest the root's basename must equal the plugin
+# name and the root must look like a plugin. So a manifest cannot claim an
+# arbitrary name by declaring `.` — only a repo actually named after the plugin
+# can, and that is the deliberate cost of admitting manifest-less subtrees (#18 R6).
 # Callers must use the absolute directory as a git pathspec; relativising
 # against <root> gives an empty string for this layout. A root-sourced plugin
 # owns every path in its repo, so path-to-plugin mapping treats every path as
@@ -586,10 +596,13 @@ EOF
 #   load_plugin_ctx <file> <plugin>
 #     parses the file, then re-verifies: names valid, MP_ROOT is one of that
 #     marketplace's candidates, resolve_plugin_dir(MP_ROOT, plugin) still gives
-#     PLUGIN_DIR. Sets MP_NAME MP_ROOT PLUGIN_DIR CTX_ID in the caller's shell.
+#     PLUGIN_DIR. Sets MP_NAME MP_ROOT PLUGIN_DIR PLUGIN_NAME CTX_ID and
+#     PLUGIN_MANIFEST (plugin_manifest_path of PLUGIN_DIR, may be empty) in the
+#     caller's shell — ONLY on rc 0; a failed load assigns nothing.
 #     rc 1 missing; rc 2 verification failed (incl. older than
-#     PLUGIN_CTX_TTL_SECONDS, default 6 h); rc 3 refused (symlink / not owned /
-#     not a regular file); rc 6 invalid plugin name (message on stderr)
+#     PLUGIN_CTX_TTL_SECONDS, default 6 h, or timestamped in the future); rc 3
+#     refused (symlink / not owned / not a regular file); rc 6 invalid plugin
+#     name (message on stderr)
 #   remove_plugin_ctx <file>   — Phase 5 cleanup; a stale context must not let a
 #     later run skip Step 0.1's gate
 plugin_ctx_dir() {
@@ -604,8 +617,23 @@ _ctx_value_ok() {   # a path we will later cd into and quote: no shell-significa
   case "$v" in ''|*[[:cntrl:]]*|*\'*|*\"*|*\\*|*\$*|*\`*|*\|*) return 1 ;; esac
   return 0
 }
-_dir_mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null; }
+# Octal permission bits of <dir>. BSD stat first, GNU stat second — but the BSD
+# spelling is NOT a no-op on GNU coreutils: there `-f` means "file-system status",
+# `%Lp` becomes an operand that fails on stderr while <dir>'s file-system report
+# still lands on STDOUT, and the exit status is non-zero, so `bsd || gnu` printed
+# both. Capture, validate, and only then print (#18 R6 codex).
+_dir_mode() {
+  local m
+  m=$(stat -f %Lp "$1" 2>/dev/null) || m=""
+  case "$m" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s\n' "$m"; return 0 ;; esac
+  m=$(stat -c %a "$1" 2>/dev/null) || return 1
+  case "$m" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s\n' "$m"; return 0 ;; esac
+  return 1
+}
 PLUGIN_CTX_TTL_SECONDS="${PLUGIN_CTX_TTL_SECONDS:-21600}"   # 6 h: a context from an aborted run must not pin the next one
+_ctx_ttl() {   # the env value is untrusted too: non-numeric would disable the expiry check with a bare test(1) error
+  case "${PLUGIN_CTX_TTL_SECONDS:-}" in ''|*[!0-9]*) printf '21600\n' ;; *) printf '%s\n' "$PLUGIN_CTX_TTL_SECONDS" ;; esac
+}
 write_plugin_ctx() {
   local file="${1:-}" mp="${2:-}" root="${3:-}" dir="${4:-}" plugin="${5:-}" v d tmp
   [ -n "$file" ] || return 2
@@ -628,30 +656,45 @@ _ctx_field() {   # value of KEY= line in <file>; exactly one line, nothing else 
   sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1
 }
 load_plugin_ctx() {
-  local file="${1:-}" plugin="${2:-}" got rc epoch
+  # Everything is parsed into LOCALS and verified; the caller's MP_NAME / MP_ROOT /
+  # PLUGIN_DIR / PLUGIN_NAME / CTX_ID / PLUGIN_MANIFEST are assigned only on the
+  # success path — a non-zero return must not leave unverified file content in the
+  # caller's shell (#18 R6).
+  local file="${1:-}" plugin="${2:-}" got rc epoch now ttl mp root dir pn id
   _valid_name "$plugin" || { echo "✗ plugin name '$(printf '%s' "$plugin" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-80)' is not a single [A-Za-z0-9._-] segment" >&2; return 6; }
   [ -e "$file" ] || { echo "✗ no Step 0.1 context at $file — run Step 0.1 first" >&2; return 1; }
   [ ! -L "$file" ] && [ -f "$file" ] && [ -O "$file" ] \
     || { echo "✗ refusing $file: must be a regular file owned by you (not a symlink)" >&2; return 3; }
-  MP_NAME=$(_ctx_field "$file" MP_NAME); MP_ROOT=$(_ctx_field "$file" MP_ROOT)
-  PLUGIN_DIR=$(_ctx_field "$file" PLUGIN_DIR); PLUGIN_NAME=$(_ctx_field "$file" PLUGIN_NAME)
-  CTX_ID=$(_ctx_field "$file" CTX_ID)
-  [ "$PLUGIN_NAME" = "$plugin" ] || { echo "✗ context at $file is for '$(printf '%s' "$PLUGIN_NAME" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-80)', not '$plugin'" >&2; return 2; }
-  _valid_name "$MP_NAME" || { echo "✗ context marketplace name is not [A-Za-z0-9._-]" >&2; return 2; }
-  _ctx_value_ok "$MP_ROOT" && _ctx_value_ok "$PLUGIN_DIR" || { echo "✗ context paths contain shell-significant bytes" >&2; return 2; }
+  mp=$(_ctx_field "$file" MP_NAME); root=$(_ctx_field "$file" MP_ROOT)
+  dir=$(_ctx_field "$file" PLUGIN_DIR); pn=$(_ctx_field "$file" PLUGIN_NAME)
+  id=$(_ctx_field "$file" CTX_ID)
+  [ "$pn" = "$plugin" ] || { echo "✗ context at $file is for '$(printf '%s' "$pn" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-80)', not '$plugin'" >&2; return 2; }
+  _valid_name "$mp" || { echo "✗ context marketplace name is not [A-Za-z0-9._-]" >&2; return 2; }
+  _ctx_value_ok "$root" && _ctx_value_ok "$dir" || { echo "✗ context paths contain shell-significant bytes" >&2; return 2; }
   epoch=$(_ctx_field "$file" WRITTEN_EPOCH)
   case "$epoch" in ''|*[!0-9]*) echo "✗ context has no valid timestamp — run Step 0.1 again" >&2; return 2 ;; esac
-  if [ $(( $(date +%s) - epoch )) -gt "$PLUGIN_CTX_TTL_SECONDS" ]; then
-    echo "✗ context at $file is older than ${PLUGIN_CTX_TTL_SECONDS}s (left by an earlier run) — run Step 0.1 again" >&2; return 2
+  now=$(date +%s); ttl=$(_ctx_ttl)
+  # a timestamp in the future (clock skew, hand-edited file) would make the age
+  # negative and the context immortal — refuse it like a stale one
+  if [ "$epoch" -gt $(( now + 60 )) ]; then
+    echo "✗ context at $file is timestamped in the future — run Step 0.1 again" >&2; return 2
+  fi
+  if [ $(( now - epoch )) -gt "$ttl" ]; then
+    echo "✗ context at $file is older than ${ttl}s (left by an earlier run) — run Step 0.1 again" >&2; return 2
   fi
   # same source of truth as find_plugin_marketplace: the raw index (name<TAB>root),
   # NOT marketplace_candidates — that one applies the plugins/ tie-break and drops a
   # nested same-name parent that Step 0.1 legitimately resolved through (#18 R5)
-  marketplace_index 2>/dev/null | awk -F'\t' -v n="$MP_NAME" -v r="$MP_ROOT" '$1 == n && $2 == r { f = 1 } END { exit !f }' \
-    || { echo "✗ $MP_ROOT is not an indexed checkout of marketplace '$MP_NAME' any more" >&2; return 2; }
-  got=$(resolve_plugin_dir "$MP_ROOT" "$plugin"); rc=$?
-  [ "$rc" -eq 0 ] && [ "$got" = "$PLUGIN_DIR" ] \
-    || { echo "✗ '$plugin' no longer resolves to $PLUGIN_DIR in $MP_ROOT (resolve_plugin_dir rc $rc, got '${got:-}')" >&2; return 2; }
+  marketplace_index 2>/dev/null | awk -F'\t' -v n="$mp" -v r="$root" '$1 == n && $2 == r { f = 1 } END { exit !f }' \
+    || { echo "✗ $root is not an indexed checkout of marketplace '$mp' any more" >&2; return 2; }
+  got=$(resolve_plugin_dir "$root" "$plugin"); rc=$?
+  [ "$rc" -eq 0 ] && [ "$got" = "$dir" ] \
+    || { echo "✗ '$plugin' no longer resolves to $dir in $root (resolve_plugin_dir rc $rc, got '${got:-}')" >&2; return 2; }
+  MP_NAME="$mp"; MP_ROOT="$root"; PLUGIN_DIR="$dir"; PLUGIN_NAME="$pn"; CTX_ID="$id"
+  # The plugin's manifest, by the same lookup possession used (.claude-plugin/plugin.json
+  # or <dir>/plugin.json); empty for a manifest-less directory. Consumers read version /
+  # description / binary_version from THIS path — never from a hardcoded one (#18 R6).
+  PLUGIN_MANIFEST=$(plugin_manifest_path "$dir") || PLUGIN_MANIFEST=""
   return 0
 }
 remove_plugin_ctx() {
@@ -689,10 +732,10 @@ find_plugin_marketplace() {
   #
   # Skipping the tie-break loses nothing here: the tie-break prefers candidates
   # owning a plugins/ directory, and a hit below requires a USABLE local
-  # directory — the manifest's source resolved inside the root (a `.` layout
-  # additionally needs plugin.json at the root), or a materialized
-  # plugins/<name> — so a tie-break loser can only match when it genuinely
-  # hosts the plugin's files. Declaration alone is not possession.
+  # directory — the manifest's source resolved inside the root, or a
+  # materialized plugins/<name>, both under the one possession rule
+  # (_is_plugin_named) — so a tie-break loser can only match when it
+  # genuinely hosts the plugin's files. Declaration alone is not possession.
   #
   # A non-zero resolve_plugin_dir (rc 2 / 3 / 4 / 5) is NOT a hit: the same
   # plugin may be complete in another checkout further down the index. Step 0.1
@@ -717,5 +760,50 @@ find_plugin_marketplace() {
 $(_marketplace_index)
 EOF
   return 1
+}
+
+# The plugin manifest of a plugin directory: <dir>/.claude-plugin/plugin.json, else
+# <dir>/plugin.json (safari-browser, che-apple-dev, anything-downloader keep it at
+# the root). rc 1 and nothing printed when the directory has no manifest — a
+# materialized git-subdir subtree (akashic-mcp) is possessed by name + shape and
+# has no version to read. This is the SAME lookup _is_plugin_named uses, exposed
+# so that every consumer reading version / description / binary_version follows
+# the directory the resolver admitted instead of re-guessing the layout (#18 R6:
+# the resolver admitted root-level plugin.json while every reader still opened
+# .claude-plugin/plugin.json — one abort, one silent false-negative).
+plugin_manifest_path() {
+  local d="${1:-}"
+  [ -n "$d" ] && [ -d "$d" ] || return 1
+  _plugin_manifest_of "$d"
+}
+
+# Every checkout that HOLDS <plugin> — "<marketplace-name>|<root>|<plugin-dir>", one
+# per line, in index order — optionally restricted to marketplace <$2>. Two index
+# rows whose plugin directories are the same PHYSICAL directory are one holder
+# (the first row is kept): che-local-plugins is declared by the parent
+# che-claude-config, whose source points into the nested checkout, and by the
+# nested checkout itself, and both resolve educator to the very same directory.
+# That is not an ambiguity anyone can resolve by deleting a copy, so it must not
+# be reported as one (#18 R6). Distinct physical directories ARE distinct holders
+# (two clones of che-apple-mail-mcp); the caller decides — plugin-update Step 0.1
+# breaks the tie by cwd and otherwise aborts naming every root.
+#   rc 0 at least one holder printed; rc 1 none (or invalid names)
+plugin_holders() {
+  local plugin="${1:-}" want="${2:-}" name root dir phys seen="" found=1
+  _valid_name "$plugin" || return 1
+  if [ -n "$want" ]; then _valid_name "$want" || return 1; fi
+  while IFS="$(printf '\t')" read -r name root; do
+    [ -n "$root" ] || continue
+    if [ -n "$want" ]; then [ "$name" = "$want" ] || continue; fi
+    case "$root$name" in *\|*) continue ;; esac
+    dir=$(resolve_plugin_dir "$root" "$plugin") || continue
+    phys=$(cd "$dir" 2>/dev/null && pwd -P) || continue
+    case "$seen" in *"|$phys|"*) continue ;; esac
+    seen="$seen|$phys|"
+    echo "$name|$root|$dir"; found=0
+  done <<EOF
+$(_marketplace_index)
+EOF
+  return $found
 }
 

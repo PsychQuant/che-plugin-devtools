@@ -583,6 +583,66 @@ assert_eq "new rc branches and helpers emit no stderr" "" "$PD_NOISE2"
 PNP_WARN=$(printf 'plugins/ghost/a.md\n' | plugin_names_for_paths "$PD_TMP/agg" 2>&1 >/dev/null | grep -c "'ghost' did not resolve (rc 2)")
 assert_eq "plugin_names_for_paths reports an unresolvable name on stderr with its rc" "1" "$PNP_WARN"
 
+# R6 verify: manifest path helper, holders dedup by physical dir, load assigns only on success,
+# TTL hardening, GNU-stat fallback, marketplace names allowlisted at the index
+assert_eq "plugin_manifest_path finds .claude-plugin/plugin.json" \
+    "$PD_TMP/agg/plugins/x/.claude-plugin/plugin.json" "$(plugin_manifest_path "$PD_TMP/agg/plugins/x")"
+assert_eq "plugin_manifest_path finds a root-level plugin.json (safari-browser layout)" \
+    "$PD_TMP/rootpj/plugins/bare/plugin.json" "$(plugin_manifest_path "$PD_TMP/rootpj/plugins/bare")"
+mkdir -p "$PD_TMP/agg/plugins/nomani/skills"
+plugin_manifest_path "$PD_TMP/agg/plugins/nomani" >/dev/null 2>&1; RC_PM=$?
+assert_eq "plugin_manifest_path on a manifest-less plugin dir -> rc 1, nothing printed" "1:" "$RC_PM:$(plugin_manifest_path "$PD_TMP/agg/plugins/nomani" 2>/dev/null)"
+assert_fails "plugin_manifest_path refuses a missing dir" plugin_manifest_path "$PD_TMP/agg/plugins/absent"
+# load_plugin_ctx exports PLUGIN_MANIFEST alongside the triple
+write_plugin_ctx "$PD_TMP/state/plugin-update-ctx-bare" pd-rootpj "$PD_TMP/rootpj" "$PD_TMP/rootpj/plugins/bare" bare
+PLUGIN_MANIFEST=""; load_plugin_ctx "$PD_TMP/state/plugin-update-ctx-bare" bare >/dev/null 2>&1
+assert_eq "load_plugin_ctx sets PLUGIN_MANIFEST from the same lookup possession used" "$PD_TMP/rootpj/plugins/bare/plugin.json" "$PLUGIN_MANIFEST"
+# a FAILED load leaves the caller's variables untouched
+MP_ROOT=sentinel; PLUGIN_DIR=sentinel
+load_plugin_ctx "$PD_TMP/state/plugin-update-ctx-bare" ghost >/dev/null 2>&1
+assert_eq "a failed load_plugin_ctx assigns nothing (rc 2 path)" "sentinel|sentinel" "$MP_ROOT|$PLUGIN_DIR"
+# TTL: non-numeric env falls back to the default instead of disabling the check; future timestamp refused
+PLUGIN_CTX_TTL_SECONDS=abc load_plugin_ctx "$PD_TMP/state/plugin-update-ctx-bare" bare >/dev/null 2>&1; RC_TTL1=$?
+assert_eq "non-numeric PLUGIN_CTX_TTL_SECONDS falls back to the default (fresh context still loads)" "0" "$RC_TTL1"
+sed -i.bak "s/^WRITTEN_EPOCH=.*/WRITTEN_EPOCH=$(( $(date +%s) + 86400 ))/" "$PD_TMP/state/plugin-update-ctx-bare"; rm -f "$PD_TMP/state/plugin-update-ctx-bare.bak"
+load_plugin_ctx "$PD_TMP/state/plugin-update-ctx-bare" bare >/dev/null 2>&1; RC_TTL2=$?
+assert_eq "a context timestamped in the future is refused -> rc 2" "2" "$RC_TTL2"
+# plugin_holders: nested same-name marketplaces resolving to ONE physical dir = one holder
+HOLD_NP=$(plugin_holders np | grep -c .)
+assert_eq "plugin_holders collapses two index rows that resolve to the same physical dir (che-local-plugins shape)" "1" "$HOLD_NP"
+assert_eq "plugin_holders keeps the first index row for a collapsed holder (same first-wins as find_plugin_marketplace)" "$(find_plugin_marketplace np)" "$(plugin_holders np)"
+# two genuinely distinct checkouts of one marketplace = two holders; scoping by name works
+mkdir -p "$PD_TMP/twin-a/.claude-plugin" "$PD_TMP/twin-a/plugin/.claude-plugin" "$PD_TMP/twin-b/.claude-plugin" "$PD_TMP/twin-b/plugin/.claude-plugin"
+for t in twin-a twin-b; do
+  printf '{ "name": "pd-twin", "plugins": [ { "name": "tw", "source": "./plugin" } ] }\n' > "$PD_TMP/$t/.claude-plugin/marketplace.json"
+  printf '{ "name": "tw" }\n' > "$PD_TMP/$t/plugin/.claude-plugin/plugin.json"
+done
+assert_eq "plugin_holders lists two distinct checkouts as two holders" "2" "$(plugin_holders tw | grep -c .)"
+assert_eq "plugin_holders scoped to a marketplace name only walks that name's rows" "0" "$(plugin_holders tw pd-nest 2>/dev/null | grep -c .)"
+assert_fails "plugin_holders with no holder -> rc 1" plugin_holders nobody-here
+assert_fails "plugin_holders refuses an invalid plugin name" plugin_holders 'a;b'
+# a marketplace whose NAME is outside the allowlist never enters the index
+mkdir -p "$PD_TMP/evilname/.claude-plugin" "$PD_TMP/evilname/plugins/victim/.claude-plugin"
+printf '{ "name": "ok'"'"'; touch pwned; #", "plugins": [ { "name": "victim", "source": "./plugins/victim" } ] }\n' > "$PD_TMP/evilname/.claude-plugin/marketplace.json"
+printf '{ "name": "victim" }\n' > "$PD_TMP/evilname/plugins/victim/.claude-plugin/plugin.json"
+assert_eq "a marketplace name outside [A-Za-z0-9._-] is dropped at the index (list_marketplaces)" "0" "$(list_marketplaces | grep -c pwned)"
+assert_fails "…and find_plugin_marketplace cannot return its plugins" find_plugin_marketplace victim
+# _dir_mode under a GNU-shaped stat: `stat -f %Lp` prints file-system junk to stdout and exits 1
+mkdir -p "$PD_TMP/gnubin"
+cat > "$PD_TMP/gnubin/stat" <<'SH'
+#!/bin/sh
+case "$1" in
+  -f) echo "stat: cannot stat '%Lp': No such file or directory" >&2; echo "  File: \"$2\""; echo "    ID: 100000  Namelen: 255  Type: apfs"; exit 1 ;;
+  -c) exec /usr/bin/stat -f %Lp "$3" ;;
+esac
+exit 1
+SH
+chmod +x "$PD_TMP/gnubin/stat"
+GNU_MODE=$(PATH="$PD_TMP/gnubin:$PATH" _dir_mode "$PD_TMP/state")
+assert_eq "_dir_mode under a GNU-shaped stat yields just the octal mode" "700" "$GNU_MODE"
+PATH="$PD_TMP/gnubin:$PATH" write_plugin_ctx "$PD_TMP/state/plugin-update-ctx-gnu" pd-agg "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x; RC_GNU=$?
+assert_eq "write_plugin_ctx succeeds when stat is GNU-shaped" "0" "$RC_GNU"
+
 MARKETPLACE_SEARCH_ROOT="$SAVED_ROOT"
 rm -rf "$PD_TMP"
 

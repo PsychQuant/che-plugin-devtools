@@ -26,22 +26,26 @@ IFS='|' read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace harnes
 [ -d "${PLUGIN_DIR:-}" ] || exit 1
 
 # 只要 plugin 目錄。rc：0 印目錄 / 1 未列且沒 plugins/<name> / 2 source 不可用（空、非字串、
-# 絕對、..、引號、|、控制字元、目錄不存在、symlink 逃出 root、"." 佈局缺 plugin.json）/
+# 絕對、..、引號、|、控制字元、目錄不存在、symlink 逃出 root、目錄不被判定為該 plugin）/
 # 3 無可用 python3 / 4 manifest 讀不動 / 5 非本地 source（git-subdir 物件、URL）/ 6 名稱不合法。
 # 1–5 都先探 plugins/<name>，物化即命中——「不知道」不能變成「沒有」。
 resolve_plugin_dir "$MP_ROOT" harness-devtools
 plugin_source_of "$MP_ROOT" harness-devtools          # source 值（已去控制字元、截斷 200；同 rc 表）
 marketplace_plugin_names "$MP_ROOT"                   # manifest 宣告 ∪ plugins/ 子目錄，去重
 git diff --name-only HEAD~3 | plugin_names_for_paths "$MP_ROOT"   # 這些路徑屬於哪些 plugin（不猜佈局）
-marketplace_index                                     # name<TAB>root，一次走完所有 marketplace
+marketplace_index                                     # name<TAB>root，一次走完所有 marketplace（名稱已過 [A-Za-z0-9._-]）
+plugin_manifest_path "$PLUGIN_DIR"                    # .claude-plugin/plugin.json 或根目錄 plugin.json；沒有 → rc 1（讀 version 一律用它）
+plugin_holders harness-devtools [marketplace]         # 每個持有該 plugin 的 checkout（name|root|dir），同實體目錄只算一個
 
 # skill 裡的每個 bash block 都是獨立的 Bash 呼叫：Step 0.1 用 write_plugin_ctx 把驗證過的
 # name|root|plugin_dir 寫進 context 檔（plugin_ctx_path：私有 state 目錄、mktemp+mv、純資料），
 # 之後每個 block 只代入 plugin 名（核對 [A-Za-z0-9._-]，不以 . 或 - 開頭）、load_plugin_ctx
-# 逐行 parse（不 source）、拒絕 symlink / 非本人檔案、重驗後 cd "$MP_ROOT"；Phase 5 結束
-# remove_plugin_ctx。第三方 manifest 的值不經 agent 的手。
-# 持有判準一套：目錄帶 manifest（.claude-plugin/plugin.json 或根目錄 plugin.json）就必須解析得動且
-# name 等於請求名（JSON 壞掉 / 無 name 一律不算）；沒有 manifest 時目錄名要等於請求名且有 plugin 形狀。
+# 逐行 parse（不 source）、拒絕 symlink / 非本人檔案、重驗後 cd "$MP_ROOT"（失敗不設任何變數；
+# 成功另給 PLUGIN_MANIFEST）；Phase 5 結束 remove_plugin_ctx。root / plugin 目錄不經 agent 的手；
+# 唯一會被貼回的第三方值是 marketplace 名，它在索引層就只保留 [A-Za-z0-9._-]。
+# 持有判準一套（含 "." 佈局）：目錄帶 manifest（.claude-plugin/plugin.json 或根目錄 plugin.json）就必須
+# 解析得動且 name 等於請求名（JSON 壞掉 / 無 name 一律不算）；沒有 manifest 時目錄名要等於請求名且有
+# plugin 形狀——所以 manifest 宣告 "." 不能冒認任意名稱，只有真的以該名為名的 repo 才會被承認。
 # 有 entry 但 source 不可用是確定的錯誤（rc 2），不退回 plugins/<name>；legacy 探測只救 rc 1/3/4/5；
 # 兩者都做實體包含檢查。load_plugin_ctx 以 marketplace_index（不套 tie-break，與 find_plugin_marketplace
 # 同一份）重驗 root，並拒絕超過 6 小時的 context。

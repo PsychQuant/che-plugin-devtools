@@ -112,35 +112,47 @@ case "$PLUGIN_NAME" in
         echo "  名稱會進路徑與 argv，只接受 [A-Za-z0-9._-] 且不以 . 或 - 開頭。這不是 marketplace 的問題。" >&2
         exit 1 ;;
 esac
-case "$MP_NAME" in ''|[!.-]*) : ;; *) echo "✗ Phase 0.1: marketplace 名稱不合法" >&2; exit 1 ;; esac
-case "$MP_NAME" in *[!A-Za-z0-9._-]*) echo "✗ Phase 0.1: marketplace 名稱含非法字元" >&2; exit 1 ;; esac
+# marketplace 名與 plugin 名同一條規則（_valid_name）：[A-Za-z0-9._-]，不以 . 或 - 開頭
+case "$MP_NAME" in .*|-*|*[!A-Za-z0-9._-]*) echo "✗ Phase 0.1: marketplace 名稱不合法（只接受 [A-Za-z0-9._-]，不以 . 或 - 開頭）" >&2; exit 1 ;; esac
+WANT_MP="$MP_NAME"   # 指定的範圍另存：下面的 read 會覆寫 MP_NAME，abort 訊息要知道本次有沒有指定
 
-# 三元組（#18）：第三欄是 manifest plugins[].source 解析出的 plugin 目錄。
-# **必須先檢查回傳碼再拆欄位**。
-if [ -n "$MP_NAME" ]; then
-    # 指定 marketplace：走該名稱在索引裡的每個 checkout（與 find_plugin_marketplace 同一份索引、同樣不套 tie-break）
-    RESOLVED=""
-    while IFS="$(printf '\t')" read -r mp root; do
-        [ "$mp" = "$MP_NAME" ] && [ -n "$root" ] || continue
-        case "$root" in *\|*) continue ;; esac
-        if dir=$(resolve_plugin_dir "$root" "$PLUGIN_NAME"); then
-            if [ -n "$RESOLVED" ]; then
-                echo "✗ Phase 0.1: marketplace '$MP_NAME' 有多份 checkout 都含 '$PLUGIN_NAME'：" >&2
-                echo "    ${RESOLVED#*|}" | cut -d'|' -f1 | sed 's/^/    /' >&2; echo "    $root" >&2
-                echo "  請清掉過時的副本，或 cd 進要用的那份再跑 Phase 1 Step 1。" >&2; exit 1
-            fi
-            RESOLVED="$mp|$root|$dir"
-        fi
-    done <<EOF
-$(marketplace_index)
+# 持有者列舉（#18）：plugin_holders 走索引（有 WANT_MP 就只走該名稱的列），每列 resolve_plugin_dir，
+# 解析到**同一個實體目錄**的列只算一個持有者——巢狀同名 marketplace（父 manifest 的 source 指進子
+# checkout、子 checkout 自己也宣告）父子兩列指向同一個目錄，那不是歧義、沒有「副本」可清。
+# 真正不同的目錄才是不同持有者（同一 marketplace 的兩份 clone）：以 cwd 消歧；cwd 不在其中任何
+# 一份就 abort 並列出全部，不 first-wins 靜默選一份——有指定 MP_NAME 才嚴、沒指定就放行是反的。
+HOLDERS=$(plugin_holders "$PLUGIN_NAME" "$WANT_MP") || HOLDERS=""
+RESOLVED=""
+case "$(printf '%s\n' "$HOLDERS" | grep -c .)" in
+    0) ;;
+    1) RESOLVED="$HOLDERS" ;;
+    *)
+        HERE=$(pwd -P)
+        while IFS='|' read -r hmp hroot hdir; do
+            [ -n "$hroot" ] || continue
+            rp=$(cd "$hroot" 2>/dev/null && pwd -P) || continue
+            case "$HERE" in "$rp"|"$rp"/*) RESOLVED="$hmp|$hroot|$hdir"; break ;; esac
+        done <<EOF
+$HOLDERS
 EOF
-else
-    RESOLVED=$(find_plugin_marketplace "$PLUGIN_NAME") || RESOLVED=""
-fi
+        if [ -n "$RESOLVED" ]; then
+            SEL_ROOT=${RESOLVED#*|}; SEL_ROOT=${SEL_ROOT%%|*}
+            echo "ℹ Phase 0.1: '$PLUGIN_NAME' 有多份實體不同的 checkout 持有；用包含目前目錄的那份：$(clean "$SEL_ROOT")"
+        else
+            echo "✗ Phase 0.1: '$PLUGIN_NAME' 在多份實體不同的 checkout 裡都解析得到，而目前目錄不在其中任何一份：" >&2
+            printf '%s\n' "$HOLDERS" | while IFS='|' read -r hmp hroot hdir; do echo "    $(clean "$hmp")  $(clean "$hroot")" >&2; done
+            echo "  cd 進要更新的那份 checkout 再跑 Step 0.1（本 fence 以 cwd 消歧），或清掉過時的副本。" >&2
+            exit 1
+        fi ;;
+esac
 IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$RESOLVED"
 
 if [ -z "$MP_ROOT" ] || [ ! -d "$MP_ROOT" ]; then
-    echo "✗ Phase 0.1: plugin '$PLUGIN_NAME' 不在任何已註冊的 marketplace 裡。" >&2
+    if [ -n "$WANT_MP" ]; then
+        echo "✗ Phase 0.1: plugin '$PLUGIN_NAME' 不在 marketplace '$WANT_MP' 的任何 checkout 裡（本次限定在該 marketplace 解析）。" >&2
+    else
+        echo "✗ Phase 0.1: plugin '$PLUGIN_NAME' 不在任何已註冊的 marketplace 裡。" >&2
+    fi
     echo "  已搜尋：$(list_marketplaces | while IFS= read -r m; do printf '%s ' "$(clean "$m")"; done)" >&2
     echo "" >&2
     echo "  plugin-update 只同步**已上架**的 plugin。你要的可能是：" >&2
@@ -168,15 +180,19 @@ if [ -z "$MP_ROOT" ] || [ ! -d "$MP_ROOT" ]; then
         src=$(plugin_source_of "$root" "$PLUGIN_NAME" 2>/dev/null)
         mp=$(clean "$mp"); root=$(clean "$root")
         case "$rc" in
-            0) echo "  ℹ '$mp' ($root) 其實解析得到，但 find_plugin_marketplace 沒回它——root 路徑含 | 分隔符（被跳過），或索引在兩次走訪之間變了；直接檢查該 root。" >&2 ;;
-            2) echo "  ⚠ '$mp' ($root) 的 manifest 列了 '$PLUGIN_NAME'，但 source（untrusted，已截斷）= '$src'" >&2
+            0) if [ -n "$WANT_MP" ] && [ "$mp" != "$WANT_MP" ]; then
+                   echo "  ℹ '$mp' ($root) 解析得到——它屬於 marketplace '$mp'，不是你指定的 '$WANT_MP'。指定錯了就改 MP_NAME；要用這份就代入 '$mp'。" >&2
+               else
+                   echo "  ℹ '$mp' ($root) 其實解析得到，但持有者列舉沒回它——root 路徑含 | 分隔符（被跳過），或索引在兩次走訪之間變了；直接檢查該 root。" >&2
+               fi ;;
+            2) echo "  ⚠ '$mp' ($root) 的 manifest 列了 '$PLUGIN_NAME'，但 source（untrusted，已截斷）= [$src]" >&2
                echo "    不可用：source 本身有問題（空、非字串、絕對、..、引號、|、控制字元、目錄不存在、symlink 逃出 root）→ 修該 manifest；" >&2
-               echo "    或目標目錄不是這個 plugin（沒有 .claude-plugin/plugin.json、JSON 壞掉、或其 name 不等於 '$PLUGIN_NAME'）→ 修那個目錄的 plugin.json。" >&2
+               echo "    或目標目錄不是這個 plugin（沒有 plugin manifest（.claude-plugin/plugin.json 或 plugin.json）、JSON 壞掉、或其 name 不等於 '$PLUGIN_NAME'）→ 修那個目錄的 plugin.json。" >&2
                echo "    這是確定的錯誤，不會退回探 plugins/$PLUGIN_NAME。" >&2 ;;
             3) echo "  ⚠ '$mp' ($root)：此機器沒有可用的 python3，讀不了 manifest；只有 plugins/$PLUGIN_NAME 這種佈局偵測得到，而它不存在。" >&2 ;;
             4) echo "  ⚠ '$mp' ($root) 的 marketplace.json 讀不動（權限 / JSON 解析失敗 / 形狀不對），且 plugins/$PLUGIN_NAME 未物化。" >&2
                echo "    這不是「沒上架」——先修 JSON（常見：多餘逗號）。" >&2 ;;
-            5) echo "  ℹ '$mp' ($root) 列了 '$PLUGIN_NAME'，source（untrusted，已截斷）= '$src'" >&2
+            5) echo "  ℹ '$mp' ($root) 列了 '$PLUGIN_NAME'，source（untrusted，已截斷）= [$src]" >&2
                echo "    是合法但非本地的寫法（git-subdir 物件 / URL），且 plugins/$PLUGIN_NAME 未物化。" >&2
                echo "    manifest 沒壞；plugin-update 只處理本地佈局。要更新它，先把 subtree 物化到 plugins/$PLUGIN_NAME。" >&2 ;;
             *) echo "  ⚠ '$mp' ($root)：resolve_plugin_dir 回了未預期的 rc $rc。" >&2 ;;
@@ -196,6 +212,16 @@ if [ -z "$PLUGIN_DIR" ] || [ ! -d "$PLUGIN_DIR" ]; then
     exit 1
 fi
 
+# plugin-update 同步的就是 plugin.json 的 version：目錄沒有 manifest（materialized git-subdir
+# subtree，如 akashic-mcp——靠目錄名 + plugin 形狀被承認）就沒有版本可讀、可比、可 bump。
+# 在這裡擋，不要等 Phase 2 讀到空字串（讀不到 ≠ 已同步，#18）。manifest 位置由 resolver 的
+# 同一套查法給（.claude-plugin/plugin.json 或 plugin.json），後面每個 fence 用 $PLUGIN_MANIFEST。
+PLUGIN_MANIFEST=$(plugin_manifest_path "$PLUGIN_DIR") || {
+    echo "✗ Phase 0.1: $(clean "$PLUGIN_DIR") 沒有 plugin manifest（.claude-plugin/plugin.json 或 plugin.json）。" >&2
+    echo "  它靠目錄名與 plugin 形狀被承認（materialized subtree），沒有 version 可同步——plugin-update 對它無事可做；" >&2
+    echo "  要讓它可更新，先在該目錄補 .claude-plugin/plugin.json（name + version）。" >&2
+    exit 1
+}
 # 把驗證過的三元組寫進 context 檔（私有 state 目錄、mktemp+mv、純資料）：之後每個 block 只載回
 # 並重驗，agent 不代入任何第三方值。marketplace 名稱含非法字元（來自第三方 manifest）在這裡就擋掉。
 CTX=$(plugin_ctx_path "$PLUGIN_NAME")
@@ -204,7 +230,7 @@ write_plugin_ctx "$CTX" "$MP_NAME" "$MP_ROOT" "$PLUGIN_DIR" "$PLUGIN_NAME" || {
     echo "✗ Phase 0.1: 無法寫 context（rc $rc）：marketplace 名稱 '$(clean "$MP_NAME")' 不在 [A-Za-z0-9._-]（untrusted manifest，不採用）、root / plugin 目錄含引號、控制字元、|，或 state 目錄不可寫。" >&2
     exit 1
 }
-echo "→ Step 0.1 OK: marketplace=$(clean "$MP_NAME") root=$(clean "$MP_ROOT") plugin_dir=$(clean "$PLUGIN_DIR") context=$CTX"
+echo "→ Step 0.1 OK: marketplace=$(clean "$MP_NAME") root=$(clean "$MP_ROOT") plugin_dir=$(clean "$PLUGIN_DIR") manifest=$(clean "$PLUGIN_MANIFEST") context=$CTX"
 ```
 
 **`PLUGIN_DIR` 也 gate，理由和 `MP_ROOT` 一樣（#18）**：在 #18 之前這個 skill 有 17 處自己
@@ -225,8 +251,10 @@ shell 已經不存在——空的 `$PLUGIN_DIR/.mcp.json` 測的是 `/.mcp.json`
 前導開頭：`load_plugin_ctx` 載回並**重驗**（名稱合法、`MP_ROOT` 仍是該 marketplace 的
 候選、`resolve_plugin_dir` 仍給同一個目錄），然後 `cd "$MP_ROOT"`。這樣 (a) 同名多
 checkout 時 Step 0.1 gate 過的那份 root 才是後面 `git push` 的那份——靠名稱重選會走另一套
-tie-break；(b) 第三方 manifest 的值（marketplace 名）不經 agent 代入，注入面只剩使用者
-自己的引數；(c) 每個 fence 的 git 都在 marketplace repo 內跑。這不是「重組路徑」：路徑
+tie-break；(b) root / plugin 目錄不經 agent 代入；唯一會被 agent 貼回的第三方值是 marketplace
+名——它在 resolver 的**索引層**就過了 `[A-Za-z0-9._-]`（不合法的 marketplace 整個不列入，
+`list_marketplaces` / `marketplace_index` / `plugin_holders` 印不出它），Phase 1 印出、代入
+Step 0.1 時再以 shell `case` 二次守門；(c) 每個 fence 的 git 都在 marketplace repo 內跑。這不是「重組路徑」：路徑
 仍然只從 manifest 來，只是每個 shell 各驗一次。**表格儲存格與散文裡的 `<PLUGIN_DIR>` 是
 敘述，不是可執行的指令；可執行的形式只在帶前導的 fence 裡。**
 
@@ -311,11 +339,15 @@ cd "$MP_ROOT" || exit 1
 # 路徑一律走 sys.argv，不內嵌進 python 原始碼：$PLUGIN_DIR 來自 manifest（第三方檔案），
 # 內嵌成 open('$PLUGIN_DIR/...') 時路徑裡一個 ' 就是任意程式碼執行（#18 R1 security）。
 # (a) 從 plugin.json 取 binary_version + shell version
-SHELL_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null)
-# 讀不到 ≠ 已同步：legacy 探測命中的目錄可能沒有 plugin.json；空版本號不能拿去比對
-[ -n "$SHELL_VERSION" ] || { echo "✗ Phase 0.3: 讀不到 $PLUGIN_DIR/.claude-plugin/plugin.json 的 version — 無法判定 sync intent" >&2; exit 1; }
+# manifest 路徑來自 load_plugin_ctx 的 $PLUGIN_MANIFEST（.claude-plugin/plugin.json 或根目錄 plugin.json，
+# 與 resolver 承認目錄時用的同一套查法）——不要自己組 .claude-plugin/plugin.json（#18 R6：safari-browser
+# 等根目錄佈局 resolver 認、消費端讀不到）。
+[ -n "$PLUGIN_MANIFEST" ] || { echo "✗ Phase 0.3: $PLUGIN_DIR 沒有 plugin manifest — 沒有 version 可同步（Step 0.1 應已擋下）" >&2; exit 1; }
+SHELL_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
+# 讀不到 ≠ 已同步：空版本號不能拿去比對
+[ -n "$SHELL_VERSION" ] || { echo "✗ Phase 0.3: 讀不到 $PLUGIN_MANIFEST 的 version — 無法判定 sync intent" >&2; exit 1; }
 # binary_version（#77 schema）與 binaryVersion（che-keychain / che-transport-mcp 的 wrapper 讀的）都認；欄位名 canonical 化在 #22
-BINARY_VERSION=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("binary_version") or d.get("binaryVersion") or "")' "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null)
+BINARY_VERSION=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("binary_version") or d.get("binaryVersion") or "")' "$PLUGIN_MANIFEST" 2>/dev/null)
 # Step 1 的判定不跨 fence：在這裡用同一組結構信號重算（值不靠上一個 shell）
 IS_BINARY_BACKED=false
 { [ -f "$PLUGIN_DIR/.mcp.json" ] || grep -lq GITHUB_REPO "$PLUGIN_DIR"/bin/*-wrapper.sh 2>/dev/null \
@@ -360,17 +392,20 @@ detect_binary_repo() {
 }
 # 四態：數字 = 比對過；unknown = 沒 clone / 沒 tag / 沒 main、**或 binary-backed 但 plugin.json 沒宣告版本**
 # （查不到不是 0，#18 R4/R5）；空 = 非 binary-backed
-BINARY_UNRELEASED=""
+# unknown 分兩個子態，Step 4 Case B 的問句與建議不同：no-pin（plugin.json 沒宣告版本，該做的是補 pin，
+# 不是 release）/ no-clone（有 pin 但本機沒有 clone / tag / main 可核對）。
+BINARY_UNRELEASED=""; BINARY_UNKNOWN_WHY=""; BINARY_REPO_PATH=""
 if [ "$IS_BINARY_BACKED" = true ] && [ -z "$BINARY_VERSION" ]; then
-    BINARY_UNRELEASED=unknown
+    BINARY_UNRELEASED=unknown; BINARY_UNKNOWN_WHY=no-pin
     echo "⚠ plugin 是 binary-backed（結構信號）但 plugin.json 沒有 binary_version / binaryVersion — binary 的 release 狀態無法核對（#22 會補 pin）"
 fi
 if [ -n "$BINARY_VERSION" ]; then
-    BINARY_UNRELEASED=unknown
+    BINARY_UNRELEASED=unknown; BINARY_UNKNOWN_WHY=no-clone
     BINARY_REPO_PATH=$(detect_binary_repo "$PLUGIN_DIR") || BINARY_REPO_PATH=""
     if [ -d "$BINARY_REPO_PATH" ] && git -C "$BINARY_REPO_PATH" rev-parse -q --verify "refs/tags/v$BINARY_VERSION" >/dev/null 2>&1 \
        && git -C "$BINARY_REPO_PATH" rev-parse -q --verify main >/dev/null 2>&1; then
         BINARY_UNRELEASED=$(git -C "$BINARY_REPO_PATH" log "v$BINARY_VERSION..main" --oneline 2>/dev/null | wc -l | tr -d ' ')
+        BINARY_UNKNOWN_WHY=""
     fi
 fi
 
@@ -380,7 +415,7 @@ if [ "$MP_DRIFT" = "yes" ] || [ -n "$SHELL_RECENT_TOUCHES" ]; then SYNC_CASE=C
 elif [ "$BINARY_UNRELEASED" = unknown ]; then SYNC_CASE=B          # 查不到 → 交給使用者，不當 0
 elif [ "${BINARY_UNRELEASED:-0}" -gt 0 ] 2>/dev/null; then SYNC_CASE=B
 else SYNC_CASE=A; fi
-echo "→ Phase 0.3 sync intent: Case $SYNC_CASE — marketplace=${MP_VERSION:-<missing>} plugin.json=$SHELL_VERSION drift=$MP_DRIFT recent_touches=$(printf '%s' "$SHELL_RECENT_TOUCHES" | grep -c .) binary=${BINARY_VERSION:-none} unreleased=${BINARY_UNRELEASED:-n/a}"
+echo "→ Phase 0.3 sync intent: Case $SYNC_CASE — marketplace=${MP_VERSION:-<missing>} plugin.json=$SHELL_VERSION drift=$MP_DRIFT recent_touches=$(printf '%s' "$SHELL_RECENT_TOUCHES" | grep -c .) binary=${BINARY_VERSION:-none} unreleased=${BINARY_UNRELEASED:-n/a}${BINARY_UNKNOWN_WHY:+ why=$BINARY_UNKNOWN_WHY} binary_repo=${BINARY_REPO_PATH:-none}"
 case "$SYNC_CASE" in
   A)
     echo "✗ Phase 0.3: Nothing to sync."
@@ -401,8 +436,10 @@ case "$SYNC_CASE" in
     [ "${BINARY_UNRELEASED:-0}" -gt 0 ] 2>/dev/null && echo "  - binary main has $BINARY_UNRELEASED unreleased commits (see Phase 1.5 for warn detail)"
     exit 0 ;;
   B)
-    if [ "$BINARY_UNRELEASED" = unknown ]; then
-      echo "→ Phase 0.3: binary ${BINARY_VERSION:+v$BINARY_VERSION }could not be checked (no local clone / tag / main, or no version pinned in plugin.json); shell unchanged, marketplace in sync — Step 4 Case B asks"
+    if [ "$BINARY_UNKNOWN_WHY" = no-pin ]; then
+      echo "→ Phase 0.3: binary-backed but $PLUGIN_MANIFEST pins no binary_version / binaryVersion — release status cannot be checked; shell unchanged, marketplace in sync — Step 4 Case B (unknown / no-pin) asks"
+    elif [ "$BINARY_UNRELEASED" = unknown ]; then
+      echo "→ Phase 0.3: binary v$BINARY_VERSION could not be checked (no local clone / tag / main${BINARY_REPO_PATH:+; clone found at $BINARY_REPO_PATH}); shell unchanged, marketplace in sync — Step 4 Case B (unknown / no-clone) asks"
     else
       echo "→ Phase 0.3: binary main has $BINARY_UNRELEASED unreleased commits since v$BINARY_VERSION; shell unchanged, marketplace in sync — Step 4 Case B asks"
     fi
@@ -432,22 +469,51 @@ esac
 訊息與 `exit 0` 由 Step 2 的 fence 在同一個 shell 印出（值不跨 fence）；agent 看到
 `Case A` 那行就停止。
 
-#### Case B: Binary unreleased commits 是唯一信號 → AskUserQuestion
+#### Case B: Binary 狀態是唯一信號 → AskUserQuestion
 
-當 (a) `MP_DRIFT=no` AND (b) `SHELL_RECENT_TOUCHES` 為空 AND (c) `BINARY_UNRELEASED >= 1`：
+當 (a) `MP_DRIFT=no` AND (b) `SHELL_RECENT_TOUCHES` 為空 AND (c) `BINARY_UNRELEASED` 是 `>= 1` **或 `unknown`**（查不到不是 0，#18）。
+Step 2 那行 `unreleased=… why=…` 決定用哪個問句模板——三個子態的正確處置不同，套錯模板就是給錯處方：
+
+**B-count**（`unreleased=<N>`，N ≥ 1）：
 
 ```
 question: "Binary repo `main` 累積 <Step 2 印出的 unreleased> 個未 release 的 commits (last release: v<Step 2 印出的 binary>)。Shell 沒改、marketplace.json 已同步。怎麼處理？"
 options:
   - "abort, release binary first (default, recommended)"
-    description: "exit; cd <binary-repo>; ./scripts/release.sh v<next>; 完成後 bump plugin.json binary_version + 重跑 plugin-update"
+    description: "exit; cd <Step 2 印出的 binary_repo>; ./scripts/release.sh v<next>; 完成後 bump plugin.json binary_version + 重跑 plugin-update"
   - "proceed anyway (force shell sync only)"
     description: "略過 binary release 提醒，繼續走 Phase 0.5+ 同步 shell（binary 仍是舊版）— 只適合純 documentation / shell-side bug fix 的情境"
   - "abort"
     description: "exit; 不動 anything"
 ```
 
-選 `abort, release binary first` / `abort` → exit 0。
+**B-unknown / no-pin**（`unreleased=unknown why=no-pin`：plugin 是 binary-backed，但 plugin.json 沒宣告 `binary_version` / `binaryVersion`。沒有東西可 release、`detect_binary_repo` 根本沒跑，該做的是補 pin——#22 會把這件事系統化）：
+
+```
+question: "<plugin> 是 binary-backed，但 plugin.json 沒有 binary_version / binaryVersion，無法核對 binary 是否已 release。Shell 沒改、marketplace.json 已同步。怎麼處理？"
+options:
+  - "proceed anyway (shell sync only)"
+    description: "繼續 Phase 0.5+ 同步 shell；binary 狀態未核對（不是「已核對沒問題」）"
+  - "abort, pin binary_version first (recommended)"
+    description: "exit; 在 plugin.json 補 binary_version（wrapper 實際下載的那個 release tag），再重跑 plugin-update；#22 之後由 plugin-binary-meta 統一處理"
+  - "abort"
+    description: "exit; 不動 anything"
+```
+
+**B-unknown / no-clone**（`unreleased=unknown why=no-clone`：有 pin，但本機沒有 clone / tag / `main` 可比對）：
+
+```
+question: "plugin.json pin 了 binary v<Step 2 印出的 binary>，但本機找不到可核對的 clone / tag / main（binary_repo=<Step 2 印出的 binary_repo>），無法確認 main 是否有未 release 的 commits。Shell 沒改、marketplace.json 已同步。怎麼處理？"
+options:
+  - "proceed anyway (shell sync only)"
+    description: "繼續 Phase 0.5+ 同步 shell；binary 狀態未核對"
+  - "abort, fetch tags / clone first (recommended)"
+    description: "exit; 在 binary repo 跑 git fetch --tags（或先 clone 到 ~/Developer/<repo>），再重跑 plugin-update"
+  - "abort"
+    description: "exit; 不動 anything"
+```
+
+三個模板的任何 abort 選項 → exit 0，並先 `remove_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")"`（帶前導的一行 fence，同 Phase 0.5 Step 3）——留著的 context 會讓下一次執行從中途接上。只有 `proceed` 保留 context（Phase 0.5 之後每個 fence 都要載它）。
 選 `proceed anyway` → 繼續 Phase 0.5。
 
 #### Case C: Sync intent confirmed → 通過 0.3，直接進 0.5
@@ -461,7 +527,7 @@ options:
 
 當 plugin-update 在 `idd-all` orchestrator 下 invoke：
 - Nothing to sync (Case A) → 同樣 abort（idd-all 在最終 report 標 "plugin-update skipped: no sync intent"）
-- Binary unreleased only (Case B) → auto-abort（unattended 不該 force shell sync）+ structured error
+- Binary 狀態是唯一信號 (Case B，含 unknown 兩個子態) → auto-abort（unattended 不該 force shell sync，也不該把「未核對」當「沒問題」）+ structured error，並 `remove_plugin_ctx`
 - Sync intent confirmed (Case C) → 繼續 Phase 0.5（0.5 自己有 unattended handler）
 
 設計同 Phase 0.5 Step 4：user-attendance-required gates 在 unattended mode 統一走 abort + audit trail。
@@ -723,19 +789,21 @@ clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-200; 
 # 可選：使用者選定的 marketplace 名（空 → 由 cwd 推斷）。代入前核對 [A-Za-z0-9._-]。
 MP_NAME='<marketplace-name-or-empty>'
 case "$MP_NAME" in '<marketplace-name-or-empty>') MP_NAME="" ;; esac
-case "$MP_NAME" in ''|[A-Za-z0-9]*) : ;; *) echo "✗ marketplace 名稱不合法" >&2; exit 1 ;; esac
-case "$MP_NAME" in *[!A-Za-z0-9._-]*) echo "✗ marketplace 名稱含非法字元" >&2; exit 1 ;; esac
+# 同一條規則（_valid_name / Step 0.1）：[A-Za-z0-9._-]，不以 . 或 - 開頭
+case "$MP_NAME" in .*|-*|*[!A-Za-z0-9._-]*) echo "✗ marketplace 名稱不合法（只接受 [A-Za-z0-9._-]，不以 . 或 - 開頭）" >&2; exit 1 ;; esac
 HERE=$(pwd -P)
-ROOT=""; MPN=""
+ROOT=""; MPN=""; BEST=""
 while IFS="$(printf '\t')" read -r mp root; do
     [ -n "$root" ] || continue
     if [ -n "$MP_NAME" ]; then
         [ "$mp" = "$MP_NAME" ] || continue
-        [ -n "$ROOT" ] && { echo "ℹ marketplace '$MP_NAME' 有多份 checkout，用索引裡的第一份：$ROOT（另有 $root）"; continue; }
+        [ -n "$ROOT" ] && { echo "ℹ marketplace '$MP_NAME' 有多份 checkout（$ROOT、$root）；這一步只推斷名稱，Step 0.1 會以 cwd 消歧、不在任何一份裡時要求你 cd。"; continue; }
         ROOT="$root"; MPN="$mp"; continue
     fi
     rp=$(cd "$root" 2>/dev/null && pwd -P) || continue
-    case "$HERE" in "$rp"|"$rp"/*) ROOT="$root"; MPN="$mp"; break ;; esac
+    # cwd 在哪份 checkout 裡：取**最內層**（最長）的包含 root——巢狀 marketplace 時外層也包含 cwd，
+    # 取第一個命中會把站在內層的使用者判到外層（#18 R6）
+    case "$HERE" in "$rp"|"$rp"/*) [ ${#rp} -gt ${#BEST} ] && { BEST="$rp"; ROOT="$root"; MPN="$mp"; } ;; esac
 done <<EOF
 $(marketplace_index)
 EOF
@@ -749,7 +817,7 @@ echo "→ marketplace: $(clean "$MPN") ($ROOT)"
 git -c core.quotePath=false -C "$ROOT" diff --name-only HEAD~3 2>/dev/null | plugin_names_for_paths "$ROOT"
 ```
 
-列出這個 marketplace 最近變更的 plugin（經 manifest 對映，`./plugin`、entry-less `plugins/<name>` 與 repo-即-plugin 佈局都算得到；巢狀 marketplace 的路徑以 `git rev-parse --show-prefix` 對齊；`core.quotePath=false` 讓非 ASCII 檔名不被引號化），請用戶確認要更新哪一個；確認後以該 plugin 名**與上面印出的 marketplace 名**（代入 Step 0.1 的 `MP_NAME`）跑 Step 0.1——Step 0.1 只在那個 marketplace 的 checkout 裡解析並以 context 檔綁定，不會全域重選到另一份同名 checkout。
+列出這個 marketplace 最近變更的 plugin（經 manifest 對映，`./plugin`、entry-less `plugins/<name>` 與 repo-即-plugin 佈局都算得到；巢狀 marketplace 的路徑以 `git rev-parse --show-prefix` 對齊；`core.quotePath=false` 讓非 ASCII 檔名不被引號化），請用戶確認要更新哪一個；確認後以該 plugin 名**與上面印出的 marketplace 名**（代入 Step 0.1 的 `MP_NAME`；這個名稱在 resolver 索引層已過 `[A-Za-z0-9._-]`，代入時再核對一次）跑 Step 0.1——Step 0.1 只在那個 marketplace 的 checkout 裡解析、同名多份 checkout 以 cwd 消歧、並以 context 檔綁定，不會全域重選到另一份。
 
 ### Step 2: 檢查 Git 狀態
 
@@ -804,10 +872,16 @@ for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh; do
     # **抽不到就報出來，不是靜默 continue**（#17）。實測 12 個 wrapper 只有 3 個
     # 抽得到，也就是這個信號對四分之三的 plugin 從沒跑過。這裡是 warn 不是
     # BLOCK（plugin-update 的定位是協助），但**沉默與「檢查過沒問題」不可區分**。
+    # 兩個值都是檔案內容，會進 URL 與路徑：抽出當下就過 allowlist，不合就同樣報出來（#18 R6）。
     if [ -z "$BINARY_NAME" ]; then
         echo "❓ $wrapper 判定不出 BINARY_NAME — Signal 1 對它沒驗證任何東西"
         continue
     fi
+    case "$BINARY_NAME" in .*|-*|*[!A-Za-z0-9._-]*) echo "❓ $wrapper 的 BINARY_NAME 不在 [A-Za-z0-9._-]（已略過，不進 URL）"; continue ;; esac
+    case "$GITHUB_REPO" in
+        [A-Za-z0-9]*/[A-Za-z0-9]*) case "$GITHUB_REPO" in *[!A-Za-z0-9._/-]*|*/*/*) echo "❓ $wrapper 的 GITHUB_REPO 不是 owner/repo（已略過）"; continue ;; esac ;;
+        *) echo "❓ $wrapper 判定不出 GITHUB_REPO（owner/repo）— Signal 1/2 對它沒驗證任何東西"; continue ;;
+    esac
 
     # === Signal 1: asset present in latest release? ===
     HAS_BINARY=$(curl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" \
@@ -825,8 +899,8 @@ for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh; do
     BINARY_VERSION=$(python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
-print(d.get("binary_version") or d.get("version"))
-' "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null)
+print(d.get("binary_version") or d.get("binaryVersion") or d.get("version"))
+' "$PLUGIN_MANIFEST" 2>/dev/null)
 
     # detect_binary_repo: try common local-clone paths derived from GITHUB_REPO
     REPO_BASENAME=$(basename "$GITHUB_REPO")
@@ -851,7 +925,7 @@ print(d.get("binary_version") or d.get("version"))
                 echo "   Recent unreleased commits:"
                 git -C "$BINARY_REPO_PATH" log "v$BINARY_VERSION..main" --oneline 2>/dev/null | head -5 | sed 's/^/      /'
                 echo "   → cd $BINARY_REPO_PATH && ./scripts/release.sh v<next>"
-                echo "     then bump $PLUGIN_DIR/.claude-plugin/plugin.json binary_version + re-run plugin-update"
+                echo "     then bump $PLUGIN_MANIFEST binary_version + re-run plugin-update"
             fi
         else
             # Local tag missing — could mean: never fetched, or release made on remote-only.
@@ -1017,11 +1091,10 @@ PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-cat "$PLUGIN_DIR"/.claude-plugin/plugin.json | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-print(f\"plugin.json: {d['version']}\")
-"
+[ -n "$PLUGIN_MANIFEST" ] || { echo "✗ $PLUGIN_DIR 沒有 plugin manifest — 沒有 version 可同步" >&2; exit 1; }
+V=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
+[ -n "$V" ] || { echo "✗ 讀不到 $PLUGIN_MANIFEST 的 version" >&2; exit 1; }
+echo "plugin.json ($PLUGIN_MANIFEST): $V"
 ```
 
 如果 marketplace.json 的版本落後 plugin.json，用 Edit 工具更新 marketplace.json。
@@ -1064,8 +1137,9 @@ PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-NEW_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null)
-[ -n "$NEW_VERSION" ] || { echo "✗ 讀不到 plugin.json 的 version" >&2; exit 1; }
+[ -n "$PLUGIN_MANIFEST" ] || { echo "✗ $PLUGIN_DIR 沒有 plugin manifest — 沒有 version 可同步" >&2; exit 1; }
+NEW_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
+[ -n "$NEW_VERSION" ] || { echo "✗ 讀不到 $PLUGIN_MANIFEST 的 version" >&2; exit 1; }
 git add .claude-plugin/marketplace.json
 git commit -m "chore: update marketplace.json for $PLUGIN_NAME v$NEW_VERSION"
 git push
@@ -1100,7 +1174,11 @@ source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 README="$PLUGIN_DIR/README.md"
-NEW_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_DIR/.claude-plugin/plugin.json")
+# 讀不到 version 就 abort：空的 NEW_VERSION 會讓下面信號 1 的 pattern 變成 `v\|`（空 alternation
+# 匹配每一行）→ README 永遠「沒有 stale」——這正是 #18 要消滅的「偵測落空被讀成沒有」。
+[ -n "$PLUGIN_MANIFEST" ] || { echo "✗ Phase 2.5: $PLUGIN_DIR 沒有 plugin manifest — README 六信號無法判定" >&2; exit 1; }
+NEW_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
+[ -n "$NEW_VERSION" ] || { echo "✗ Phase 2.5: 讀不到 $PLUGIN_MANIFEST 的 version — README 六信號無法判定" >&2; exit 1; }
 
 # README 是否有任何版本追蹤標記（給 Suppression A 用）
 HAS_VERSION_SECTION=false
@@ -1120,7 +1198,7 @@ fi
 #   B. 所有「比 README 新的 commits」都是 wrapper-only / marketplace.json sync 等
 #      不影響使用者可見 surface 的 plumbing 改動 → 不算 stale
 README_MTIME=$(git --literal-pathspecs log -1 --format=%ct -- "$PLUGIN_DIR/README.md" 2>/dev/null)
-CODE_MTIME=$(git --literal-pathspecs log -1 --format=%ct -- "$PLUGIN_DIR/.claude-plugin/plugin.json" "$PLUGIN_DIR/skills" "$PLUGIN_DIR/hooks" "$PLUGIN_DIR/agents" "$PLUGIN_DIR/rules" "$PLUGIN_DIR/commands" 2>/dev/null)
+CODE_MTIME=$(git --literal-pathspecs log -1 --format=%ct -- "$PLUGIN_MANIFEST" "$PLUGIN_DIR/skills" "$PLUGIN_DIR/hooks" "$PLUGIN_DIR/agents" "$PLUGIN_DIR/rules" "$PLUGIN_DIR/commands" 2>/dev/null)
 if [ -n "$README_MTIME" ] && [ -n "$CODE_MTIME" ] && [ "$README_MTIME" -lt "$CODE_MTIME" ]; then
     if [ "$HAS_VERSION_SECTION" = "false" ]; then
         # Suppression A — 沒版本追蹤標記，mtime drift 沒意義
@@ -1187,7 +1265,7 @@ fi
 # README 多半會在標題寫「(N tools)」「N MCP Tools」「Tool 數量: N」。
 # 把這個 N 抓出來跟 plugin.json description 中宣稱的 tool 數比對。
 # README 落後最容易在這露餡（che-ical-mcp v0.8.2 → v1.7.2 README 寫 20 tools 實際 28）。
-DESC=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("description", ""))' "$PLUGIN_DIR/.claude-plugin/plugin.json")
+DESC=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("description", ""))' "$PLUGIN_MANIFEST" 2>/dev/null)
 DESC_TOOLS=$(echo "$DESC" | grep -oE '[0-9]+ ?(?:個 )?(?:MCP )?(?:tools|工具)' | head -1 | grep -oE '^[0-9]+')
 README_TOOLS=$(grep -oE 'Available Tools \([0-9]+\)|\([0-9]+ (?:MCP )?tools\)|\*\*[0-9]+ MCP Tools\*\*|[0-9]+ 個工具' "$README" 2>/dev/null | grep -oE '[0-9]+' | head -1)
 if [ -n "$DESC_TOOLS" ] && [ -n "$README_TOOLS" ] && [ "$DESC_TOOLS" != "$README_TOOLS" ]; then

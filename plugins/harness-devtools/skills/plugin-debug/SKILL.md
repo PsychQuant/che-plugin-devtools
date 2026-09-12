@@ -84,10 +84,12 @@ source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 case "$PLUGIN_NAME" in ''|.*|-*|*[!A-Za-z0-9._-]*) echo "✗ 名稱不合法：只接受 [A-Za-z0-9._-] 且不以 . 或 - 開頭" >&2; exit 1 ;; esac
 IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
 [ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
-# 源碼版本——「源碼未解析」與「plugin.json 讀不到」分開講
+# 源碼版本——「源碼未解析」與「plugin.json 讀不到」分開講。manifest 位置用 resolver 的同一套查法
+# （.claude-plugin/plugin.json 或根目錄 plugin.json，safari-browser 等佈局），不要自己組路徑（#18 R6）
 if [ -z "$SRC" ]; then echo "UNKNOWN（源碼未解析）"
-elif [ ! -r "$SRC/.claude-plugin/plugin.json" ]; then echo "UNKNOWN（$SRC 沒有可讀的 .claude-plugin/plugin.json）"
-else jq -r '.version' "$SRC/.claude-plugin/plugin.json" 2>/dev/null || echo "UNKNOWN（plugin.json 解析失敗）"; fi
+elif ! PJ=$(plugin_manifest_path "$SRC"); then echo "UNKNOWN（$SRC 沒有 plugin manifest：.claude-plugin/plugin.json 或 plugin.json）"
+elif [ ! -r "$PJ" ]; then echo "UNKNOWN（$PJ 不可讀）"
+else jq -r '.version' "$PJ" 2>/dev/null || echo "UNKNOWN（$PJ 解析失敗）"; fi
 
 # Cache 裡有哪些版本
 ls ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/
