@@ -56,7 +56,7 @@ TaskCreate(name="propose_fix", description="Phase 6: 列出修復步驟，建議
 # cache 端的診斷對「已安裝但本機沒有 checkout」的 plugin 仍然有用（#18 R2）。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-case "$PLUGIN_NAME" in *[!A-Za-z0-9._-]*|''|.|..) echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+case "$PLUGIN_NAME" in ''|.*|-*|*[!A-Za-z0-9._-]*) echo "✗ 名稱不合法：只接受 [A-Za-z0-9._-] 且不以 . 或 - 開頭" >&2; exit 1 ;; esac
 IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
 [ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
 # SRC = manifest plugins[].source 解析結果（#18）；別再組 plugins/<name>。其餘硬編路徑見 #23。
@@ -81,7 +81,7 @@ ls "$SRC_LOCAL" 2>/dev/null
 # cache 端的診斷對「已安裝但本機沒有 checkout」的 plugin 仍然有用（#18 R2）。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-case "$PLUGIN_NAME" in *[!A-Za-z0-9._-]*|''|.|..) echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+case "$PLUGIN_NAME" in ''|.*|-*|*[!A-Za-z0-9._-]*) echo "✗ 名稱不合法：只接受 [A-Za-z0-9._-] 且不以 . 或 - 開頭" >&2; exit 1 ;; esac
 IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
 [ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
 # 源碼版本——「源碼未解析」與「plugin.json 讀不到」分開講
@@ -93,7 +93,7 @@ else jq -r '.version' "$SRC/.claude-plugin/plugin.json" 2>/dev/null || echo "UNK
 ls ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/
 
 # 當前啟用的版本
-claude plugin list 2>&1 | grep -A3 "$PLUGIN_NAME"
+claude plugin list 2>&1 | grep -A3 -- "$PLUGIN_NAME"
 ```
 
 ### Step 2: Diff 源碼 vs Cache
@@ -106,7 +106,7 @@ claude plugin list 2>&1 | grep -A3 "$PLUGIN_NAME"
 # cache 端的診斷對「已安裝但本機沒有 checkout」的 plugin 仍然有用（#18 R2）。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-case "$PLUGIN_NAME" in *[!A-Za-z0-9._-]*|''|.|..) echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
+case "$PLUGIN_NAME" in ''|.*|-*|*[!A-Za-z0-9._-]*) echo "✗ 名稱不合法：只接受 [A-Za-z0-9._-] 且不以 . 或 - 開頭" >&2; exit 1 ;; esac
 IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
 [ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
 # 找到 cache 裡最新版本的路徑
@@ -120,9 +120,9 @@ if [ -z "$SRC" ]; then
 elif [ -z "$CACHE_VER" ] || [ ! -d "$CACHE" ]; then
   echo "UNKNOWN：cache 目錄不存在（$CACHE）——尚未安裝，或 cache 路徑的 marketplace 名不對（#23）"
 else
-  for part in hooks skills commands; do
+  for part in hooks/hooks.json skills commands; do   # hooks 只比 hooks.json（原本的語意）
     if [ ! -e "$SRC/$part" ]; then
-      echo "$part: 源碼無此目錄"; continue
+      echo "$part: 源碼無此項"; continue
     fi
     diff -r "$SRC/$part" "$CACHE/$part"; rc=$?
     case $rc in

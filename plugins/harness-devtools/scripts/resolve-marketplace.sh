@@ -284,6 +284,8 @@ for p in plugins:
         s = p.get("source")
         if isinstance(s, str) and s.strip() == "":
             print(json.dumps(s)); sys.exit(11)
+        if isinstance(s, str) and any(ord(c) < 32 or ord(c) == 127 for c in s):
+            print(json.dumps(s)); sys.exit(11)   # control chars incl. a trailing newline the shell would strip
         if isinstance(s, str):
             if "://" in s or ":" in s.split("/")[0]:
                 print(s); sys.exit(12)      # URL or scheme:owner/repo
@@ -393,15 +395,37 @@ _contained_in() {
 # it (#18 verify R3). The legacy plugins/<name> probe uses the directory name
 # as its possession claim instead (materialized git-subdir subtrees may carry
 # no plugin.json), so this check applies only to manifest-derived directories.
-# FAIL CLOSED: an unparsable plugin.json, a plugin.json without a name, or no
-# python3 to read it all mean "cannot prove possession", and unproven is not
-# possessed — the first cut accepted all three, so a root with a broken
-# plugin.json could still claim any name (#18 verify R4). Without python3 the
-# only proof left is the directory being NAMED after the plugin.
+# ONE possession rule for every path (manifest-derived and legacy plugins/<name>;
+# #18 verify R5 found the two halves diverging so a plugin could pass Step 0.1
+# and stop resolving once its entry was written):
+#   * a plugin manifest may live at <dir>/.claude-plugin/plugin.json OR
+#     <dir>/plugin.json (Claude Code accepts both; safari-browser uses the latter)
+#   * if a manifest exists: it must parse and its name must equal the requested
+#     name. FAIL CLOSED — unparsable, nameless, or unreadable is not possessed
+#     (a root with a broken plugin.json could otherwise claim any name).
+#   * if no manifest exists: the directory must be NAMED after the plugin and
+#     look like a plugin (a materialized git-subdir subtree such as akashic-mcp
+#     carries skills/ but no manifest; an empty directory is not a plugin).
+#   * without python3 the manifest cannot be read: only the named-directory
+#     rule remains.
+_plugin_manifest_of() {
+  local d="${1:-}"
+  if [ -f "$d/.claude-plugin/plugin.json" ]; then printf '%s\n' "$d/.claude-plugin/plugin.json"
+  elif [ -f "$d/plugin.json" ]; then printf '%s\n' "$d/plugin.json"
+  else return 1; fi
+}
+_looks_like_plugin() {
+  local d="${1:-}" c
+  for c in .claude-plugin plugin.json skills commands hooks agents .mcp.json; do
+    [ -e "$d/$c" ] && return 0
+  done
+  return 1
+}
 _is_plugin_named() {
-  local dir="${1:-}" plugin="${2:-}" pj name
-  pj="$dir/.claude-plugin/plugin.json"
-  [ -f "$pj" ] || return 1
+  local dir="${1:-}" plugin="${2:-}" pj name rc
+  if ! pj=$(_plugin_manifest_of "$dir"); then
+    [ "${dir##*/}" = "$plugin" ] && _looks_like_plugin "$dir"; return
+  fi
   if ! command -v python3 >/dev/null 2>&1; then
     [ "${dir##*/}" = "$plugin" ]; return
   fi
@@ -413,21 +437,12 @@ except Exception:
 n = d.get("name") if isinstance(d, dict) else None
 if not isinstance(n, str) or not n:
     sys.exit(3)
-print(n)' "$pj" 2>/dev/null) || return 1
-  [ "$name" = "$plugin" ]
-}
-
-# The legacy plugins/<name> probe accepts a directory without plugin.json (a
-# materialized git-subdir subtree may carry none), but an EMPTY directory named
-# after a plugin is not a plugin either — an aggregator sorting first in the
-# index could claim any name with `mkdir` (#18 verify R4). Require at least one
-# plugin-shaped child.
-_looks_like_plugin() {
-  local d="${1:-}" c
-  for c in .claude-plugin skills commands hooks agents .mcp.json; do
-    [ -e "$d/$c" ] && return 0
-  done
-  return 1
+print(n)' "$pj" 2>/dev/null); rc=$?
+  case "$rc" in
+    0) [ "$name" = "$plugin" ] ;;
+    2|3) return 1 ;;                                  # unparsable / nameless: fail closed
+    *) [ "${dir##*/}" = "$plugin" ] ;;                # interpreter itself failed: named-directory rule only
+  esac
 }
 
 resolve_plugin_dir() {
@@ -462,11 +477,12 @@ resolve_plugin_dir() {
   # a plugins/<name> that happens to exist (#18 verify R4). The legacy probe
   # backs only rc 1 / 3 / 4 / 5.
   [ "$rc" -eq 2 ] && return 2
-  # legacy probe: the directory NAME is the possession claim, it must look like a
-  # plugin (not an empty directory), and containment is not optional here either
-  # — a symlink at plugins/<name> pointing outside used to pass while the same
-  # target via the manifest was refused (#18 verify R3).
-  if [ -d "$legacy" ] && _contained_in "$root" "$legacy" && _looks_like_plugin "$legacy"; then
+  # legacy probe: same possession rule as above (_is_plugin_named — a manifest
+  # there must agree, otherwise the directory name + plugin shape), and
+  # containment is not optional here either — a symlink at plugins/<name>
+  # pointing outside used to pass while the same target via the manifest was
+  # refused (#18 verify R3).
+  if [ -d "$legacy" ] && _contained_in "$root" "$legacy" && _is_plugin_named "$legacy" "$plugin"; then
     printf '%s\n' "$legacy"
     return 0
   fi
@@ -514,7 +530,7 @@ for p in (d.get("plugins") if isinstance(d, dict) else None) or []:
 # resolve_plugin_dir); a caller that wants "commits touched nothing" semantics
 # gets none for that layout.
 plugin_names_for_paths() {
-  local root="${1:-}" paths name dir rel prefix
+  local root="${1:-}" paths name dir rel prefix rc
   [ -n "$root" ] || return 1
   paths=$(cat)
   [ -n "$paths" ] || return 0
@@ -524,7 +540,13 @@ plugin_names_for_paths() {
   prefix=$(git -C "$root" rev-parse --show-prefix 2>/dev/null) || prefix=""
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    dir=$(resolve_plugin_dir "$root" "$name" 2>/dev/null) || continue
+    # "cannot resolve" must not read as "not touched": say so on stderr and
+    # move on (the consumers' counts stay clean, the gap is visible). #18 R5
+    dir=$(resolve_plugin_dir "$root" "$name" 2>/dev/null); rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "⚠ plugin_names_for_paths: '$name' did not resolve (rc $rc) — its paths are NOT counted; fix its entry / plugin.json" >&2
+      continue
+    fi
     if [ "$dir" = "$root" ]; then
       rel="$prefix"
     else
@@ -565,7 +587,8 @@ EOF
 #     parses the file, then re-verifies: names valid, MP_ROOT is one of that
 #     marketplace's candidates, resolve_plugin_dir(MP_ROOT, plugin) still gives
 #     PLUGIN_DIR. Sets MP_NAME MP_ROOT PLUGIN_DIR CTX_ID in the caller's shell.
-#     rc 1 missing; rc 2 verification failed; rc 3 refused (symlink / not owned /
+#     rc 1 missing; rc 2 verification failed (incl. older than
+#     PLUGIN_CTX_TTL_SECONDS, default 6 h); rc 3 refused (symlink / not owned /
 #     not a regular file); rc 6 invalid plugin name (message on stderr)
 #   remove_plugin_ctx <file>   — Phase 5 cleanup; a stale context must not let a
 #     later run skip Step 0.1's gate
@@ -576,11 +599,13 @@ plugin_ctx_path() {
   _valid_name "${1:-}" || return 6
   printf '%s/plugin-update-ctx-%s\n' "$(plugin_ctx_dir)" "$1"
 }
-_ctx_value_ok() {   # a path we will later cd into and quote: no shell-significant bytes
+_ctx_value_ok() {   # a path we will later cd into and quote: no shell-significant bytes ('=' is fine: the KEY= prefix is anchored)
   local LC_ALL=C v="${1:-}"
-  case "$v" in ''|*[[:cntrl:]]*|*\'*|*\"*|*\\*|*\$*|*\`*|*\|*|*=*) return 1 ;; esac
+  case "$v" in ''|*[[:cntrl:]]*|*\'*|*\"*|*\\*|*\$*|*\`*|*\|*) return 1 ;; esac
   return 0
 }
+_dir_mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null; }
+PLUGIN_CTX_TTL_SECONDS="${PLUGIN_CTX_TTL_SECONDS:-21600}"   # 6 h: a context from an aborted run must not pin the next one
 write_plugin_ctx() {
   local file="${1:-}" mp="${2:-}" root="${3:-}" dir="${4:-}" plugin="${5:-}" v d tmp
   [ -n "$file" ] || return 2
@@ -592,9 +617,10 @@ write_plugin_ctx() {
   [ "$d" != "$file" ] || d=.
   ( umask 077; mkdir -p "$d" ) 2>/dev/null || return 2
   [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] || return 2
+  case "$(_dir_mode "$d")" in 700) : ;; *) chmod 700 "$d" 2>/dev/null && [ "$(_dir_mode "$d")" = 700 ] || return 2 ;; esac   # a pre-existing shared-writable dir is not a boundary
   tmp=$(umask 077; mktemp "$d/.ctx.XXXXXX" 2>/dev/null) || return 2
-  printf 'MP_NAME=%s\nMP_ROOT=%s\nPLUGIN_DIR=%s\nPLUGIN_NAME=%s\nCTX_ID=%s\nWRITTEN=%s\n' \
-    "$mp" "$root" "$dir" "$plugin" "$$-$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" || { rm -f "$tmp"; return 2; }
+  printf 'MP_NAME=%s\nMP_ROOT=%s\nPLUGIN_DIR=%s\nPLUGIN_NAME=%s\nCTX_ID=%s\nWRITTEN=%s\nWRITTEN_EPOCH=%s\n' \
+    "$mp" "$root" "$dir" "$plugin" "$$-$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date +%s)" > "$tmp" || { rm -f "$tmp"; return 2; }
   # mv replaces a symlink planted at $file instead of writing through it
   mv -f "$tmp" "$file" 2>/dev/null || { rm -f "$tmp"; return 2; }
 }
@@ -602,7 +628,7 @@ _ctx_field() {   # value of KEY= line in <file>; exactly one line, nothing else 
   sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1
 }
 load_plugin_ctx() {
-  local file="${1:-}" plugin="${2:-}" got rc
+  local file="${1:-}" plugin="${2:-}" got rc epoch
   _valid_name "$plugin" || { echo "✗ plugin name '$(printf '%s' "$plugin" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-80)' is not a single [A-Za-z0-9._-] segment" >&2; return 6; }
   [ -e "$file" ] || { echo "✗ no Step 0.1 context at $file — run Step 0.1 first" >&2; return 1; }
   [ ! -L "$file" ] && [ -f "$file" ] && [ -O "$file" ] \
@@ -613,8 +639,16 @@ load_plugin_ctx() {
   [ "$PLUGIN_NAME" = "$plugin" ] || { echo "✗ context at $file is for '$(printf '%s' "$PLUGIN_NAME" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-80)', not '$plugin'" >&2; return 2; }
   _valid_name "$MP_NAME" || { echo "✗ context marketplace name is not [A-Za-z0-9._-]" >&2; return 2; }
   _ctx_value_ok "$MP_ROOT" && _ctx_value_ok "$PLUGIN_DIR" || { echo "✗ context paths contain shell-significant bytes" >&2; return 2; }
-  marketplace_candidates "$MP_NAME" 2>/dev/null | grep -qxF "$MP_ROOT" \
-    || { echo "✗ $MP_ROOT is no longer a checkout of marketplace '$MP_NAME'" >&2; return 2; }
+  epoch=$(_ctx_field "$file" WRITTEN_EPOCH)
+  case "$epoch" in ''|*[!0-9]*) echo "✗ context has no valid timestamp — run Step 0.1 again" >&2; return 2 ;; esac
+  if [ $(( $(date +%s) - epoch )) -gt "$PLUGIN_CTX_TTL_SECONDS" ]; then
+    echo "✗ context at $file is older than ${PLUGIN_CTX_TTL_SECONDS}s (left by an earlier run) — run Step 0.1 again" >&2; return 2
+  fi
+  # same source of truth as find_plugin_marketplace: the raw index (name<TAB>root),
+  # NOT marketplace_candidates — that one applies the plugins/ tie-break and drops a
+  # nested same-name parent that Step 0.1 legitimately resolved through (#18 R5)
+  marketplace_index 2>/dev/null | awk -F'\t' -v n="$MP_NAME" -v r="$MP_ROOT" '$1 == n && $2 == r { f = 1 } END { exit !f }' \
+    || { echo "✗ $MP_ROOT is not an indexed checkout of marketplace '$MP_NAME' any more" >&2; return 2; }
   got=$(resolve_plugin_dir "$MP_ROOT" "$plugin"); rc=$?
   [ "$rc" -eq 0 ] && [ "$got" = "$PLUGIN_DIR" ] \
     || { echo "✗ '$plugin' no longer resolves to $PLUGIN_DIR in $MP_ROOT (resolve_plugin_dir rc $rc, got '${got:-}')" >&2; return 2; }

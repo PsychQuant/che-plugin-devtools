@@ -429,8 +429,10 @@ assert_eq "normalized sources still map paths" "dotted" \
     "$(printf 'plugin/skills/a.md\n' | plugin_names_for_paths "$PD_TMP/norm" | tr '\n' ' ' | sed 's/ $//')"
 resolve_plugin_dir "$PD_TMP/norm" noname >/dev/null 2>&1; RC_NONAME=$?
 assert_eq "plugin.json without a name is not proof of possession -> rc 2 (fail closed)" "2" "$RC_NONAME"
-assert_eq "plugin_source_of strips control characters from third-party content (a JSON-escaped TAB here)" \
-    "./pluginx" "$(plugin_source_of "$PD_TMP/link" ctrl; :)"
+assert_eq "a source with a control character is classified unusable and shown JSON-escaped (rc 2 to the caller)" \
+    '"./plugin\tx"' "$(plugin_source_of "$PD_TMP/link" ctrl; :)"
+resolve_plugin_dir "$PD_TMP/link" ctrl >/dev/null 2>&1; RC_CTRL=$?
+assert_eq "control character in source -> rc 2" "2" "$RC_CTRL"
 assert_eq "plugin_source_of shows a non-string source as JSON (rc 2 to the caller)" \
     "true" "$(plugin_source_of "$PD_TMP/agg" boolean; :)"
 
@@ -477,9 +479,12 @@ load_plugin_ctx "$CTX" ghost >/dev/null 2>&1; RC_L1=$?
 assert_eq "load_plugin_ctx refuses a context written for another plugin -> rc 2" "2" "$RC_L1"
 write_plugin_ctx "$CTX" "ok'; touch pwned; #" "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x >/dev/null 2>&1; RC_W2=$?
 assert_eq "write_plugin_ctx refuses a marketplace name outside [A-Za-z0-9._-] -> rc 6" "6" "$RC_W2"
-printf "MP_NAME='pd-agg'\nMP_ROOT='%s'\nPLUGIN_DIR='%s'\nPLUGIN_NAME='x'\n" "$PD_TMP/solo" "$PD_TMP/agg/plugins/x" > "$CTX"
+printf 'MP_NAME=pd-agg\nMP_ROOT=%s\nPLUGIN_DIR=%s\nPLUGIN_NAME=x\nWRITTEN_EPOCH=%s\n' "$PD_TMP/solo" "$PD_TMP/agg/plugins/x" "$(date +%s)" > "$CTX"
 load_plugin_ctx "$CTX" x >/dev/null 2>&1; RC_L2=$?
 assert_eq "load_plugin_ctx refuses a root that is not a checkout of that marketplace (tampered file) -> rc 2" "2" "$RC_L2"
+printf 'MP_NAME=pd-agg\nMP_ROOT=%s\nPLUGIN_DIR=%s\nPLUGIN_NAME=x\nWRITTEN_EPOCH=%s\n' "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" "$(( $(date +%s) - 90000 ))" > "$CTX"
+load_plugin_ctx "$CTX" x >/dev/null 2>&1; RC_L8=$?
+assert_eq "load_plugin_ctx refuses a context older than the TTL (left by an aborted run) -> rc 2" "2" "$RC_L8"
 load_plugin_ctx "$PD_TMP/nope.ctx" x >/dev/null 2>&1; RC_L3=$?
 assert_eq "load_plugin_ctx without a context file -> rc 1" "1" "$RC_L3"
 load_plugin_ctx "$CTX" 'x"; echo pwned' >/dev/null 2>&1; RC_L4=$?
@@ -522,10 +527,10 @@ write_plugin_ctx "$CTX2" pd-agg "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x; RC_W3=$
 assert_eq "write_plugin_ctx creates the private dir and the file" "0" "$RC_W3"
 assert_eq "context dir is mode 700" "700" "$(stat -f %Lp "$CTXDIR" 2>/dev/null || stat -c %a "$CTXDIR")"
 assert_eq "context file is mode 600" "600" "$(stat -f %Lp "$CTX2" 2>/dev/null || stat -c %a "$CTX2")"
-printf 'MP_NAME=pd-agg\nMP_ROOT=%s\nPLUGIN_DIR=%s\nPLUGIN_NAME=x\ntouch "%s/EXECUTED"\n' "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" "$PD_TMP" > "$CTX2"
+printf 'MP_NAME=pd-agg\nMP_ROOT=%s\nPLUGIN_DIR=%s\nPLUGIN_NAME=x\nWRITTEN_EPOCH=%s\ntouch "%s/EXECUTED"\n' "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" "$(date +%s)" "$PD_TMP" > "$CTX2"
 load_plugin_ctx "$CTX2" x >/dev/null 2>&1; RC_L5=$?
 assert_eq "a command line inside the context file is never executed (load parses, does not source)" "0:absent" "$RC_L5:$([ -e "$PD_TMP/EXECUTED" ] && echo EXECUTED || echo absent)"
-printf 'MP_NAME=pd-agg\nMP_ROOT=%s\nPLUGIN_DIR=%s$(touch %s/EXECUTED2)\nPLUGIN_NAME=x\n' "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" "$PD_TMP" > "$CTX2"
+printf 'MP_NAME=pd-agg\nMP_ROOT=%s\nPLUGIN_DIR=%s$(touch %s/EXECUTED2)\nPLUGIN_NAME=x\nWRITTEN_EPOCH=%s\n' "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" "$PD_TMP" "$(date +%s)" > "$CTX2"
 load_plugin_ctx "$CTX2" x >/dev/null 2>&1; RC_L6=$?
 assert_eq "shell-significant bytes in a context value are refused, not evaluated" "2:absent" "$RC_L6:$([ -e "$PD_TMP/EXECUTED2" ] && echo EXECUTED2 || echo absent)"
 printf 'ORIGINAL SECRET\n' > "$PD_TMP/victim.txt"
@@ -543,9 +548,40 @@ assert_eq "plugin_ctx_path derives a per-plugin file under the state dir" \
     "$(plugin_ctx_dir)/plugin-update-ctx-x" "$(plugin_ctx_path x)"
 assert_fails "plugin_ctx_path refuses an invalid name" plugin_ctx_path 'x;y'
 
+# R5 verify: root-level plugin.json, one possession rule for both paths, index-based ctx re-verify
+mkdir -p "$PD_TMP/rootpj/.claude-plugin" "$PD_TMP/rootpj/plugins/bare/skills"
+printf '{ "name": "bare", "version": "1" }\n' > "$PD_TMP/rootpj/plugins/bare/plugin.json"   # manifest at the plugin ROOT (safari-browser layout)
+cat > "$PD_TMP/rootpj/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-rootpj", "plugins": [ { "name": "bare", "source": "./plugins/bare" } ] }
+JSON
+assert_eq "a plugin whose plugin.json sits at its root (not .claude-plugin/) resolves" \
+    "$PD_TMP/rootpj/plugins/bare" "$(resolve_plugin_dir "$PD_TMP/rootpj" bare)"
+mkdir -p "$PD_TMP/rename/.claude-plugin" "$PD_TMP/rename/plugins/foo/.claude-plugin"
+printf '{ "name": "foo-renamed" }\n' > "$PD_TMP/rename/plugins/foo/.claude-plugin/plugin.json"
+printf '{ "name": "pd-rename", "plugins": [] }\n' > "$PD_TMP/rename/.claude-plugin/marketplace.json"
+resolve_plugin_dir "$PD_TMP/rename" foo >/dev/null 2>&1; RC_REN=$?
+assert_eq "legacy plugins/<name> whose own plugin.json names something else is NOT possessed (one rule for both paths; unlisted -> rc 1)" "1" "$RC_REN"
+# nested same-name marketplaces: the parent (no plugins/) sorts first in the index; Step 0.1 resolves through it,
+# and load_plugin_ctx must accept that root — marketplace_candidates' tie-break would drop it (che-local-plugins, #18 R5)
+mkdir -p "$PD_TMP/nest/.claude-plugin" "$PD_TMP/nest/inner/.claude-plugin" "$PD_TMP/nest/inner/plugins/np/.claude-plugin"
+printf '{ "name": "np" }\n' > "$PD_TMP/nest/inner/plugins/np/.claude-plugin/plugin.json"
+cat > "$PD_TMP/nest/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-nest", "plugins": [ { "name": "np", "source": "./inner/plugins/np" } ] }
+JSON
+cat > "$PD_TMP/nest/inner/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-nest", "plugins": [ { "name": "np", "source": "./plugins/np" } ] }
+JSON
+NEST_HIT=$(find_plugin_marketplace np); IFS='|' read -r NMP NROOT NDIR <<< "$NEST_HIT"
+write_plugin_ctx "$PD_TMP/state/plugin-update-ctx-np" "$NMP" "$NROOT" "$NDIR" np
+load_plugin_ctx "$PD_TMP/state/plugin-update-ctx-np" np >/dev/null 2>&1; RC_NEST=$?
+assert_eq "load_plugin_ctx accepts the very root find_plugin_marketplace chose for a nested same-name marketplace" "0:$NROOT" "$RC_NEST:$MP_ROOT"
+
 PD_NOISE2=$( { resolve_plugin_dir "$PD_TMP/agg" orphan; resolve_plugin_dir "$PD_TMP/broken" absent; resolve_plugin_dir "$PD_TMP/agg" quoted; \
-               marketplace_plugin_names "$PD_TMP/broken"; printf 'x\n' | plugin_names_for_paths "$PD_TMP/agg"; } 2>&1 >/dev/null )
+               marketplace_plugin_names "$PD_TMP/broken"; printf 'x\n' | plugin_names_for_paths "$PD_TMP/solo"; } 2>&1 >/dev/null )
 assert_eq "new rc branches and helpers emit no stderr" "" "$PD_NOISE2"
+# the one deliberate stderr: a name that cannot be resolved is REPORTED, not silently uncounted
+PNP_WARN=$(printf 'plugins/ghost/a.md\n' | plugin_names_for_paths "$PD_TMP/agg" 2>&1 >/dev/null | grep -c "'ghost' did not resolve (rc 2)")
+assert_eq "plugin_names_for_paths reports an unresolvable name on stderr with its rc" "1" "$PNP_WARN"
 
 MARKETPLACE_SEARCH_ROOT="$SAVED_ROOT"
 rm -rf "$PD_TMP"

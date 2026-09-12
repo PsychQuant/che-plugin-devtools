@@ -40,9 +40,11 @@ marketplace_index                                     # name<TAB>root，一次�
 # 之後每個 block 只代入 plugin 名（核對 [A-Za-z0-9._-]，不以 . 或 - 開頭）、load_plugin_ctx
 # 逐行 parse（不 source）、拒絕 symlink / 非本人檔案、重驗後 cd "$MP_ROOT"；Phase 5 結束
 # remove_plugin_ctx。第三方 manifest 的值不經 agent 的手。
-# manifest 來源的目錄要有 .claude-plugin/plugin.json 且 name 等於請求名才算持有（JSON 壞掉或無
-# name 一律不算）；有 entry 但 source 不可用是確定的錯誤（rc 2），不退回 plugins/<name>；
-# plugins/<name> 的 legacy 探測只救 rc 1/3/4/5，目錄要有 plugin 形狀，兩者都做實體包含檢查。
+# 持有判準一套：目錄帶 manifest（.claude-plugin/plugin.json 或根目錄 plugin.json）就必須解析得動且
+# name 等於請求名（JSON 壞掉 / 無 name 一律不算）；沒有 manifest 時目錄名要等於請求名且有 plugin 形狀。
+# 有 entry 但 source 不可用是確定的錯誤（rc 2），不退回 plugins/<name>；legacy 探測只救 rc 1/3/4/5；
+# 兩者都做實體包含檢查。load_plugin_ctx 以 marketplace_index（不套 tie-break，與 find_plugin_marketplace
+# 同一份）重驗 root，並拒絕超過 6 小時的 context。
 
 # 同名多候選時看得到 shadowing（一行一個 root，precedence 序）
 marketplace_candidates che-local-plugins
