@@ -36,10 +36,13 @@ git diff --name-only HEAD~3 | plugin_names_for_paths "$MP_ROOT"   # 這些路徑
 marketplace_index                                     # name<TAB>root，一次走完所有 marketplace
 
 # skill 裡的每個 bash block 都是獨立的 Bash 呼叫：Step 0.1 用 write_plugin_ctx 把驗證過的
-# name|root|plugin_dir 寫進 context 檔，之後每個 block 只代入 plugin 名（核對 [A-Za-z0-9._-]）、
-# load_plugin_ctx 載回並重驗、cd "$MP_ROOT"。第三方 manifest 的值不經 agent 的手。
-# manifest 來源的目錄要有 .claude-plugin/plugin.json 且 name（若有）相符才算持有；
-# plugins/<name> 的 legacy 探測以目錄名為持有判準，兩者都做實體（pwd -P）包含檢查。
+# name|root|plugin_dir 寫進 context 檔（plugin_ctx_path：私有 state 目錄、mktemp+mv、純資料），
+# 之後每個 block 只代入 plugin 名（核對 [A-Za-z0-9._-]，不以 . 或 - 開頭）、load_plugin_ctx
+# 逐行 parse（不 source）、拒絕 symlink / 非本人檔案、重驗後 cd "$MP_ROOT"；Phase 5 結束
+# remove_plugin_ctx。第三方 manifest 的值不經 agent 的手。
+# manifest 來源的目錄要有 .claude-plugin/plugin.json 且 name 等於請求名才算持有（JSON 壞掉或無
+# name 一律不算）；有 entry 但 source 不可用是確定的錯誤（rc 2），不退回 plugins/<name>；
+# plugins/<name> 的 legacy 探測只救 rc 1/3/4/5，目錄要有 plugin 形狀，兩者都做實體包含檢查。
 
 # 同名多候選時看得到 shadowing（一行一個 root，precedence 序）
 marketplace_candidates che-local-plugins

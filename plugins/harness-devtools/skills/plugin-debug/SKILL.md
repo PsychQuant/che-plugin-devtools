@@ -84,8 +84,10 @@ source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 case "$PLUGIN_NAME" in *[!A-Za-z0-9._-]*|''|.|..) echo "✗ 名稱含非法字元或為空" >&2; exit 1 ;; esac
 IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
 [ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
-# 源碼版本
-[ -n "$SRC" ] && jq -r '.version' "$SRC/.claude-plugin/plugin.json" || echo "UNKNOWN（源碼未解析）"
+# 源碼版本——「源碼未解析」與「plugin.json 讀不到」分開講
+if [ -z "$SRC" ]; then echo "UNKNOWN（源碼未解析）"
+elif [ ! -r "$SRC/.claude-plugin/plugin.json" ]; then echo "UNKNOWN（$SRC 沒有可讀的 .claude-plugin/plugin.json）"
+else jq -r '.version' "$SRC/.claude-plugin/plugin.json" 2>/dev/null || echo "UNKNOWN（plugin.json 解析失敗）"; fi
 
 # Cache 裡有哪些版本
 ls ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/
@@ -108,7 +110,7 @@ case "$PLUGIN_NAME" in *[!A-Za-z0-9._-]*|''|.|..) echo "✗ 名稱含非法字�
 IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME")"
 [ -d "${SRC:-}" ] || { SRC=""; echo "⚠ 源碼未解析（'$PLUGIN_NAME' 不在任何本機 marketplace checkout）——源碼側檢查一律回報 UNKNOWN，只看 cache" >&2; }
 # 找到 cache 裡最新版本的路徑
-CACHE_VER=$(ls ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/ | sort -V | tail -1)
+CACHE_VER=$(ls ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/ 2>/dev/null | sort -V | tail -1)
 CACHE="$HOME/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/$CACHE_VER"
 
 # 「讀不到」與「沒差異」必須分開講（#18）：源碼或 cache 任一側讀不到 → UNKNOWN；

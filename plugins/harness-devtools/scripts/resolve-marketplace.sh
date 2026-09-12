@@ -26,8 +26,8 @@
 #   marketplace_plugin_names <root>           # declared ∪ plugins/ dirs, one per line
 #   git diff --name-only HEAD~3 | plugin_names_for_paths <root>   # which plugins those paths belong to
 #   marketplace_index                         # name<TAB>root, every marketplace once
-#   write_plugin_ctx <file> <mp> <root> <dir> <plugin> / load_plugin_ctx <file> <plugin>
-#                                             # Step 0.1 → later fences hand-off (see below)
+#   plugin_ctx_path <plugin>                  # private state file for the Step 0.1 → later fences hand-off
+#   write_plugin_ctx <file> <mp> <root> <dir> <plugin> / load_plugin_ctx <file> <plugin> / remove_plugin_ctx <file>
 #
 # WHY THIS EXISTS
 #   Before v1.0.0, five places hardcoded /Users/che/Developer/psychquant-claude-plugins
@@ -316,19 +316,21 @@ plugin_source_of() {
 
 # Where plugin <$2> lives inside marketplace root <$1>, read from the manifest.
 #   rc 0  printed the absolute directory
-#   rc 1  not listed (or never mentioned) AND nothing materialized at plugins/<name>
+#   rc 1  not listed (or never mentioned) AND nothing plugin-shaped at plugins/<name>
 #   rc 2  listed with a source that is unusable — empty / non-string, absolute
 #         path, `..` traversal, quotes / backslash / `$` / backtick / `|` /
-#         control characters, a directory that does not exist, a `.` layout
-#         without <root>/.claude-plugin/plugin.json, or a directory that resolves
-#         (through a symlink) to outside <root> — AND nothing at plugins/<name>
+#         control characters, a directory that does not exist or resolves
+#         (through a symlink) to outside <root>, or a directory that is not the
+#         plugin asked for (no .claude-plugin/plugin.json, unparsable, or its
+#         name differs). rc 2 is definite: it is NOT rescued by plugins/<name>
 #   rc 3  no usable python3 to read the manifest, AND nothing at plugins/<name>
 #   rc 4  the manifest is unreadable / does not parse / is mis-shaped, AND
 #         nothing at plugins/<name>
 #   rc 5  the source is not a local path (object such as git-subdir, or a
 #         URL / github: string) AND nothing at plugins/<name>
 #   rc 6  the plugin NAME itself is not a single path segment of [A-Za-z0-9._-]
-#         (the name is interpolated into paths downstream; nothing is probed)
+#         not starting with `.` or `-` (the name is interpolated into paths and
+#         argv downstream; nothing is probed)
 #
 # WHY THIS EXISTS (#18)
 #   Before it, find_plugin_marketplace decided "this marketplace has the plugin"
@@ -369,7 +371,7 @@ _normalize_rel() {   # collapse //, /./, leading ./, trailing /. and /
 # comment claimed (#18 verify R3).
 _valid_name() {
   local LC_ALL=C n="${1:-}"
-  case "$n" in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  case "$n" in ''|.*|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac   # no dotfile / option-shaped names
   return 0
 }
 
@@ -391,23 +393,45 @@ _contained_in() {
 # it (#18 verify R3). The legacy plugins/<name> probe uses the directory name
 # as its possession claim instead (materialized git-subdir subtrees may carry
 # no plugin.json), so this check applies only to manifest-derived directories.
+# FAIL CLOSED: an unparsable plugin.json, a plugin.json without a name, or no
+# python3 to read it all mean "cannot prove possession", and unproven is not
+# possessed — the first cut accepted all three, so a root with a broken
+# plugin.json could still claim any name (#18 verify R4). Without python3 the
+# only proof left is the directory being NAMED after the plugin.
 _is_plugin_named() {
   local dir="${1:-}" plugin="${2:-}" pj name
   pj="$dir/.claude-plugin/plugin.json"
   [ -f "$pj" ] || return 1
-  command -v python3 >/dev/null 2>&1 || return 0          # cannot read the name: accept presence
+  if ! command -v python3 >/dev/null 2>&1; then
+    [ "${dir##*/}" = "$plugin" ]; return
+  fi
   name=$(python3 -c 'import json,sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
-    sys.exit(0)
+    sys.exit(2)
 n = d.get("name") if isinstance(d, dict) else None
-print(n if isinstance(n, str) else "")' "$pj" 2>/dev/null) || return 0
-  [ -z "$name" ] || [ "$name" = "$plugin" ]
+if not isinstance(n, str) or not n:
+    sys.exit(3)
+print(n)' "$pj" 2>/dev/null) || return 1
+  [ "$name" = "$plugin" ]
+}
+
+# The legacy plugins/<name> probe accepts a directory without plugin.json (a
+# materialized git-subdir subtree may carry none), but an EMPTY directory named
+# after a plugin is not a plugin either — an aggregator sorting first in the
+# index could claim any name with `mkdir` (#18 verify R4). Require at least one
+# plugin-shaped child.
+_looks_like_plugin() {
+  local d="${1:-}" c
+  for c in .claude-plugin skills commands hooks agents .mcp.json; do
+    [ -e "$d/$c" ] && return 0
+  done
+  return 1
 }
 
 resolve_plugin_dir() {
-  local root="${1:-}" plugin="${2:-}" src dir rc legacy rel
+  local LC_ALL=C root="${1:-}" plugin="${2:-}" src dir rc legacy rel
   [ -n "$root" ] && [ -n "$plugin" ] || return 1
   _valid_name "$plugin" || return 6
   legacy="$root/plugins/$plugin"
@@ -433,10 +457,16 @@ resolve_plugin_dir() {
     printf '%s\n' "$dir"
     return 0
   fi
-  # legacy probe: the directory NAME is the possession claim; containment is not
-  # optional here either — a symlink at plugins/<name> pointing outside used to
-  # pass while the same target via the manifest was refused (#18 verify R3).
-  if [ -d "$legacy" ] && _contained_in "$root" "$legacy"; then
+  # rc 2 is a DEFINITE answer ("the manifest names a local path and it is wrong"),
+  # not a "cannot tell": a typo'd source must surface, not be quietly rescued by
+  # a plugins/<name> that happens to exist (#18 verify R4). The legacy probe
+  # backs only rc 1 / 3 / 4 / 5.
+  [ "$rc" -eq 2 ] && return 2
+  # legacy probe: the directory NAME is the possession claim, it must look like a
+  # plugin (not an empty directory), and containment is not optional here either
+  # — a symlink at plugins/<name> pointing outside used to pass while the same
+  # target via the manifest was refused (#18 verify R3).
+  if [ -d "$legacy" ] && _contained_in "$root" "$legacy" && _looks_like_plugin "$legacy"; then
     printf '%s\n' "$legacy"
     return 0
   fi
@@ -460,7 +490,13 @@ for p in (d.get("plugins") if isinstance(d, dict) else None) or []:
     if isinstance(p, dict) and isinstance(p.get("name"), str): print(p["name"])' "$manifest" 2>/dev/null) || declared=""
   fi
   dirs=""
-  [ -d "$root/plugins" ] && dirs=$(find "$root/plugins" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sed 's#.*/##')
+  if [ -d "$root/plugins" ]; then
+    # same possession bar as the legacy probe: a directory that does not look like
+    # a plugin (empty, or a stray folder) is not a plugin name
+    dirs=$(find "$root/plugins" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) 2>/dev/null | while IFS= read -r d; do
+      [ -d "$d" ] && _looks_like_plugin "$d" && printf '%s\n' "${d##*/}"
+    done)
+  fi
   # only names that can ever resolve (rc 6 otherwise) — a public helper must not
   # hand callers raw third-party strings (#18 verify R3)
   printf '%s\n%s\n' "$declared" "$dirs" | grep . | sort -u | while IFS= read -r n; do
@@ -506,7 +542,7 @@ EOF
   return 0
 }
 
-# ── Step 0.1 context hand-off for plugin-update (#18 verify R3) ──
+# ── Step 0.1 context hand-off for plugin-update (#18 verify R3/R4) ──
 # Each bash fence of a skill is its own Bash tool call; nothing survives between
 # them except what the agent pastes. Pasting a value read from a third-party
 # manifest (the marketplace name) into shell text is an injection surface, and
@@ -515,38 +551,78 @@ EOF
 # triple to a file and every later fence LOADS and re-verifies it. The agent
 # pastes exactly one thing: the plugin name it was invoked with.
 #
+# The file is DATA, never code: it is parsed line by line and never sourced
+# (the first cut `. `-sourced it — every statement had run before the first
+# check fired). It lives in a private state directory, is created with mktemp
+# and moved into place (a symlink planted at the final path is replaced, not
+# followed), and is refused on load unless it is a regular file owned by the
+# current user. Path: $(plugin_ctx_path <plugin>).
+#
 #   write_plugin_ctx <file> <mp_name> <root> <plugin_dir> <plugin>
 #     rc 0 written; rc 6 a name is invalid; rc 2 a path is unusable (control
-#     characters, quotes, `|`, not a directory)
+#     characters, quotes, `|`, not a directory) or the file cannot be created
 #   load_plugin_ctx <file> <plugin>
-#     sources the file, then re-verifies: names valid, MP_ROOT is one of that
+#     parses the file, then re-verifies: names valid, MP_ROOT is one of that
 #     marketplace's candidates, resolve_plugin_dir(MP_ROOT, plugin) still gives
-#     PLUGIN_DIR. Sets MP_NAME MP_ROOT PLUGIN_DIR in the caller's shell.
-#     rc 1 missing/unreadable file; rc 2 verification failed (message on stderr)
+#     PLUGIN_DIR. Sets MP_NAME MP_ROOT PLUGIN_DIR CTX_ID in the caller's shell.
+#     rc 1 missing; rc 2 verification failed; rc 3 refused (symlink / not owned /
+#     not a regular file); rc 6 invalid plugin name (message on stderr)
+#   remove_plugin_ctx <file>   — Phase 5 cleanup; a stale context must not let a
+#     later run skip Step 0.1's gate
+plugin_ctx_dir() {
+  printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/harness-devtools"
+}
+plugin_ctx_path() {
+  _valid_name "${1:-}" || return 6
+  printf '%s/plugin-update-ctx-%s\n' "$(plugin_ctx_dir)" "$1"
+}
+_ctx_value_ok() {   # a path we will later cd into and quote: no shell-significant bytes
+  local LC_ALL=C v="${1:-}"
+  case "$v" in ''|*[[:cntrl:]]*|*\'*|*\"*|*\\*|*\$*|*\`*|*\|*|*=*) return 1 ;; esac
+  return 0
+}
 write_plugin_ctx() {
-  local file="${1:-}" mp="${2:-}" root="${3:-}" dir="${4:-}" plugin="${5:-}" v
+  local file="${1:-}" mp="${2:-}" root="${3:-}" dir="${4:-}" plugin="${5:-}" v d tmp
   [ -n "$file" ] || return 2
   _valid_name "$mp" && _valid_name "$plugin" || return 6
   for v in "$root" "$dir"; do
-    case "$v" in ''|*[[:cntrl:]]*|*\'*|*\"*|*\\*|*\$*|*\`*|*\|*) return 2 ;; esac
-    [ -d "$v" ] || return 2
+    _ctx_value_ok "$v" && [ -d "$v" ] || return 2
   done
-  printf "MP_NAME='%s'\nMP_ROOT='%s'\nPLUGIN_DIR='%s'\nPLUGIN_NAME='%s'\n" "$mp" "$root" "$dir" "$plugin" > "$file" || return 2
+  d=${file%/*}
+  [ "$d" != "$file" ] || d=.
+  ( umask 077; mkdir -p "$d" ) 2>/dev/null || return 2
+  [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] || return 2
+  tmp=$(umask 077; mktemp "$d/.ctx.XXXXXX" 2>/dev/null) || return 2
+  printf 'MP_NAME=%s\nMP_ROOT=%s\nPLUGIN_DIR=%s\nPLUGIN_NAME=%s\nCTX_ID=%s\nWRITTEN=%s\n' \
+    "$mp" "$root" "$dir" "$plugin" "$$-$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" || { rm -f "$tmp"; return 2; }
+  # mv replaces a symlink planted at $file instead of writing through it
+  mv -f "$tmp" "$file" 2>/dev/null || { rm -f "$tmp"; return 2; }
 }
-
+_ctx_field() {   # value of KEY= line in <file>; exactly one line, nothing else read
+  sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1
+}
 load_plugin_ctx() {
-  local file="${1:-}" plugin="${2:-}" got
-  _valid_name "$plugin" || { echo "✗ plugin name '$(printf '%s' "$plugin" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-80)' is not [A-Za-z0-9._-]" >&2; return 6; }
-  [ -r "$file" ] || { echo "✗ no Step 0.1 context at $file — run Step 0.1 first" >&2; return 1; }
-  MP_NAME=""; MP_ROOT=""; PLUGIN_DIR=""; PLUGIN_NAME=""
-  # shellcheck disable=SC1090
-  . "$file" || return 1
-  [ "$PLUGIN_NAME" = "$plugin" ] || { echo "✗ context at $file is for '$PLUGIN_NAME', not '$plugin'" >&2; return 2; }
+  local file="${1:-}" plugin="${2:-}" got rc
+  _valid_name "$plugin" || { echo "✗ plugin name '$(printf '%s' "$plugin" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-80)' is not a single [A-Za-z0-9._-] segment" >&2; return 6; }
+  [ -e "$file" ] || { echo "✗ no Step 0.1 context at $file — run Step 0.1 first" >&2; return 1; }
+  [ ! -L "$file" ] && [ -f "$file" ] && [ -O "$file" ] \
+    || { echo "✗ refusing $file: must be a regular file owned by you (not a symlink)" >&2; return 3; }
+  MP_NAME=$(_ctx_field "$file" MP_NAME); MP_ROOT=$(_ctx_field "$file" MP_ROOT)
+  PLUGIN_DIR=$(_ctx_field "$file" PLUGIN_DIR); PLUGIN_NAME=$(_ctx_field "$file" PLUGIN_NAME)
+  CTX_ID=$(_ctx_field "$file" CTX_ID)
+  [ "$PLUGIN_NAME" = "$plugin" ] || { echo "✗ context at $file is for '$(printf '%s' "$PLUGIN_NAME" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-80)', not '$plugin'" >&2; return 2; }
   _valid_name "$MP_NAME" || { echo "✗ context marketplace name is not [A-Za-z0-9._-]" >&2; return 2; }
+  _ctx_value_ok "$MP_ROOT" && _ctx_value_ok "$PLUGIN_DIR" || { echo "✗ context paths contain shell-significant bytes" >&2; return 2; }
   marketplace_candidates "$MP_NAME" 2>/dev/null | grep -qxF "$MP_ROOT" \
     || { echo "✗ $MP_ROOT is no longer a checkout of marketplace '$MP_NAME'" >&2; return 2; }
-  got=$(resolve_plugin_dir "$MP_ROOT" "$plugin") && [ "$got" = "$PLUGIN_DIR" ] \
-    || { echo "✗ '$plugin' no longer resolves to $PLUGIN_DIR in $MP_ROOT (now: '${got:-}' rc $?)" >&2; return 2; }
+  got=$(resolve_plugin_dir "$MP_ROOT" "$plugin"); rc=$?
+  [ "$rc" -eq 0 ] && [ "$got" = "$PLUGIN_DIR" ] \
+    || { echo "✗ '$plugin' no longer resolves to $PLUGIN_DIR in $MP_ROOT (resolve_plugin_dir rc $rc, got '${got:-}')" >&2; return 2; }
+  return 0
+}
+remove_plugin_ctx() {
+  local file="${1:-}"
+  [ -n "$file" ] && [ ! -L "$file" ] && [ -f "$file" ] && [ -O "$file" ] && rm -f -- "$file"
   return 0
 }
 

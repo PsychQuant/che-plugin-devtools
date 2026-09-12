@@ -38,7 +38,7 @@ Plugin 修改後有 6 個環節容易漏掉：
 **動任何事之前**先用 `TaskCreate` 建 stage-level todo list，每完成一步立即 `TaskUpdate → completed`。**靜默完成 = 違規**。
 
 ```
-TaskCreate(name="detect_marketplace", description="Phase 0: 找到 plugin 所屬的 marketplace repo")
+TaskCreate(name="detect_marketplace", description="Phase 0: 找到 plugin 所屬的 marketplace repo（Step 0.1 寫 context 檔）。invocation 沒帶 plugin 名時，detect_changes（Phase 1 Step 1 推斷）提前到這一項之前，選定名稱後再回來")
 TaskCreate(name="sync_intent_gate", description="Phase 0.3 (v1.17.0+): pre-flight intent check — detect binary-backed plugin; if no shell changes AND binary not bumped AND binary already at last release, abort early (no-op short-circuit)")
 TaskCreate(name="git_state_gate", description="Phase 0.5 (v1.16.0+ #60): preview git status / unpushed commits / divergence + 5-case AskUserQuestion (abort default for non-clean states); idd-all unattended → auto-abort")
 TaskCreate(name="detect_changes", description="Phase 1: 確認 plugin + 最近 commits（git status 已由 Phase 0.5 gate）")
@@ -98,9 +98,13 @@ PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-200; }
 case "$PLUGIN_NAME" in
-    *[!A-Za-z0-9._-]*|''|.|..)
-        echo "✗ Phase 0.1: plugin 名稱 '$(clean "$PLUGIN_NAME")' 含非法字元。" >&2
-        echo "  名稱會進路徑與 pathspec，只接受 [A-Za-z0-9._-]。這不是 marketplace 的問題。" >&2
+    '')
+        echo "✗ Phase 0.1: 沒有 plugin 名稱。invocation 沒帶引數時，先跑 Phase 1 Step 1 推斷" >&2
+        echo "  （只掃當前 marketplace），選定名稱後帶著它重跑 Step 0.1。" >&2
+        exit 1 ;;
+    .*|-*|*[!A-Za-z0-9._-]*)
+        echo "✗ Phase 0.1: plugin 名稱 '$(clean "$PLUGIN_NAME")' 不合法。" >&2
+        echo "  名稱會進路徑與 argv，只接受 [A-Za-z0-9._-] 且不以 . 或 - 開頭。這不是 marketplace 的問題。" >&2
         exit 1 ;;
 esac
 
@@ -140,7 +144,9 @@ if [ -z "$MP_ROOT" ] || [ ! -d "$MP_ROOT" ]; then
         case "$rc" in
             0) echo "  ℹ '$mp' ($root) 其實解析得到，但 find_plugin_marketplace 沒回它——root 路徑含 | 分隔符（被跳過），或索引在兩次走訪之間變了；直接檢查該 root。" >&2 ;;
             2) echo "  ⚠ '$mp' ($root) 的 manifest 列了 '$PLUGIN_NAME'，但 source（untrusted，已截斷）= '$src'" >&2
-               echo "    不是可用的相對路徑（空、非字串、絕對、..、引號、|、控制字元、目錄不存在、symlink 逃出 root、'.' 佈局缺 plugin.json）。先修該 manifest。" >&2 ;;
+               echo "    不可用：source 本身有問題（空、非字串、絕對、..、引號、|、控制字元、目錄不存在、symlink 逃出 root）→ 修該 manifest；" >&2
+               echo "    或目標目錄不是這個 plugin（沒有 .claude-plugin/plugin.json、JSON 壞掉、或其 name 不等於 '$PLUGIN_NAME'）→ 修那個目錄的 plugin.json。" >&2
+               echo "    這是確定的錯誤，不會退回探 plugins/$PLUGIN_NAME。" >&2 ;;
             3) echo "  ⚠ '$mp' ($root)：此機器沒有可用的 python3，讀不了 manifest；只有 plugins/$PLUGIN_NAME 這種佈局偵測得到，而它不存在。" >&2 ;;
             4) echo "  ⚠ '$mp' ($root) 的 marketplace.json 讀不動（權限 / JSON 解析失敗 / 形狀不對），且 plugins/$PLUGIN_NAME 未物化。" >&2
                echo "    這不是「沒上架」——先修 JSON（常見：多餘逗號）。" >&2 ;;
@@ -164,12 +170,12 @@ if [ -z "$PLUGIN_DIR" ] || [ ! -d "$PLUGIN_DIR" ]; then
     exit 1
 fi
 
-# 把驗證過的三元組寫進 context 檔：之後每個 block 只載回並重驗，agent 不代入任何第三方值。
-# marketplace 名稱含非法字元（來自第三方 manifest）在這裡就擋掉。
-CTX="${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}"
+# 把驗證過的三元組寫進 context 檔（私有 state 目錄、mktemp+mv、純資料）：之後每個 block 只載回
+# 並重驗，agent 不代入任何第三方值。marketplace 名稱含非法字元（來自第三方 manifest）在這裡就擋掉。
+CTX=$(plugin_ctx_path "$PLUGIN_NAME")
 write_plugin_ctx "$CTX" "$MP_NAME" "$MP_ROOT" "$PLUGIN_DIR" "$PLUGIN_NAME" || {
     rc=$?
-    echo "✗ Phase 0.1: 無法寫 context（rc $rc）：marketplace 名稱 '$(clean "$MP_NAME")' 不在 [A-Za-z0-9._-]（untrusted manifest，不採用），或 root / plugin 目錄含引號、控制字元、|。" >&2
+    echo "✗ Phase 0.1: 無法寫 context（rc $rc）：marketplace 名稱 '$(clean "$MP_NAME")' 不在 [A-Za-z0-9._-]（untrusted manifest，不採用）、root / plugin 目錄含引號、控制字元、|，或 state 目錄不可寫。" >&2
     exit 1
 }
 echo "→ Step 0.1 OK: marketplace=$(clean "$MP_NAME") root=$(clean "$MP_ROOT") plugin_dir=$(clean "$PLUGIN_DIR") context=$CTX"
@@ -203,10 +209,11 @@ tie-break；(b) 第三方 manifest 的值（marketplace 名）不經 agent 代�
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 ```
 
@@ -232,10 +239,11 @@ cd "$MP_ROOT" || exit 1
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 
 # Signal: .mcp.json 或 bin/*-wrapper.sh with GITHUB_REPO → MCP binary plugin
@@ -251,10 +259,8 @@ if grep -q 'api.github.com.*releases' "$PLUGIN_DIR/hooks/session-start.sh" 2>/de
     IS_BINARY_BACKED=true
 fi
 
-# Signal: skill / hook 引用 ~/bin/<binary> → CLI-binary plugin（Phase 1.5 Step 1 表格第 4 列）
-if grep -rqE '\$HOME/bin/|~/bin/' "$PLUGIN_DIR/skills" "$PLUGIN_DIR/hooks" 2>/dev/null; then
-    IS_BINARY_BACKED=true
-fi
+# 注意：不要用「skills/ 或 hooks/ 的文字裡提到 ~/bin/」當信號——那是 grep 散文，harness-devtools
+# 自己的 SKILL.md 就會命中（#18 R4）。wrapper / hook 的結構性偵測改寫在 #22。
 echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=$IS_BINARY_BACKED"
 ```
 
@@ -267,16 +273,19 @@ echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=$IS_BINARY_BACKED"
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 
 # 路徑一律走 sys.argv，不內嵌進 python 原始碼：$PLUGIN_DIR 來自 manifest（第三方檔案），
 # 內嵌成 open('$PLUGIN_DIR/...') 時路徑裡一個 ' 就是任意程式碼執行（#18 R1 security）。
 # (a) 從 plugin.json 取 binary_version + shell version
-SHELL_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_DIR/.claude-plugin/plugin.json")
+SHELL_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null)
+# 讀不到 ≠ 已同步：legacy 探測命中的目錄可能沒有 plugin.json；空版本號不能拿去比對
+[ -n "$SHELL_VERSION" ] || { echo "✗ Phase 0.3: 讀不到 $PLUGIN_DIR/.claude-plugin/plugin.json 的 version — 無法判定 sync intent" >&2; exit 1; }
 BINARY_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binary_version", ""))' "$PLUGIN_DIR/.claude-plugin/plugin.json")
 
 # (b) 比對 marketplace.json — 落後嗎？
@@ -313,10 +322,13 @@ detect_binary_repo() {
     done
     return 1
 }
-BINARY_UNRELEASED=0
+# 三態：數字 = 比對過；unknown = 沒 clone / 沒 tag / 沒 main（查不到不是 0，#18 R4）；空 = 非 binary-backed
+BINARY_UNRELEASED=""
 if [ -n "$BINARY_VERSION" ]; then
+    BINARY_UNRELEASED=unknown
     BINARY_REPO_PATH=$(detect_binary_repo "$PLUGIN_DIR") || BINARY_REPO_PATH=""
-    if [ -d "$BINARY_REPO_PATH" ]; then
+    if [ -d "$BINARY_REPO_PATH" ] && git -C "$BINARY_REPO_PATH" rev-parse -q --verify "refs/tags/v$BINARY_VERSION" >/dev/null 2>&1 \
+       && git -C "$BINARY_REPO_PATH" rev-parse -q --verify main >/dev/null 2>&1; then
         BINARY_UNRELEASED=$(git -C "$BINARY_REPO_PATH" log "v$BINARY_VERSION..main" --oneline 2>/dev/null | wc -l | tr -d ' ')
     fi
 fi
@@ -324,15 +336,16 @@ fi
 # ── Step 3 + Step 4 的判定在同一個 shell 完成（值不跨 fence）；印出 Case 與數字，
 #    Step 4 只依這一行派發。Case A 的 abort 也在這裡。──
 if [ "$MP_DRIFT" = "yes" ] || [ -n "$SHELL_RECENT_TOUCHES" ]; then SYNC_CASE=C
+elif [ "$BINARY_UNRELEASED" = unknown ]; then SYNC_CASE=B          # 查不到 → 交給使用者，不當 0
 elif [ "${BINARY_UNRELEASED:-0}" -gt 0 ] 2>/dev/null; then SYNC_CASE=B
 else SYNC_CASE=A; fi
-echo "→ Phase 0.3 sync intent: Case $SYNC_CASE — marketplace=${MP_VERSION:-<missing>} plugin.json=$SHELL_VERSION drift=$MP_DRIFT recent_touches=$(printf '%s' "$SHELL_RECENT_TOUCHES" | grep -c .) binary=${BINARY_VERSION:-none} unreleased=$BINARY_UNRELEASED"
+echo "→ Phase 0.3 sync intent: Case $SYNC_CASE — marketplace=${MP_VERSION:-<missing>} plugin.json=$SHELL_VERSION drift=$MP_DRIFT recent_touches=$(printf '%s' "$SHELL_RECENT_TOUCHES" | grep -c .) binary=${BINARY_VERSION:-none} unreleased=${BINARY_UNRELEASED:-n/a}"
 case "$SYNC_CASE" in
   A)
     echo "✗ Phase 0.3: Nothing to sync."
     echo "  - marketplace.json @ ${MP_VERSION:-<missing>} matches plugin.json @ $SHELL_VERSION"
     echo "  - no plugin file changes in last 30 days"
-    [ -n "$BINARY_VERSION" ] && echo "  - binary v$BINARY_VERSION has no unreleased commits on main"
+    [ -n "$BINARY_VERSION" ] && echo "  - binary v$BINARY_VERSION: 0 unreleased commits on main（本機 clone 與 tag 皆核對過）"
     echo ""
     echo "  If you intended to force a marketplace cache refresh anyway,"
     echo "  bypass plugin-update and run: claude plugin marketplace update $MP_NAME"
@@ -341,9 +354,16 @@ case "$SYNC_CASE" in
     echo "→ Phase 0.3: sync intent confirmed"
     [ "$MP_DRIFT" = "yes" ] && echo "  - marketplace.json drift: ${MP_VERSION:-<missing>} → $SHELL_VERSION"
     [ -n "$SHELL_RECENT_TOUCHES" ] && echo "  - recent shell changes: $(printf '%s\n' "$SHELL_RECENT_TOUCHES" | grep -c .) files"
-    [ "$BINARY_UNRELEASED" -gt 0 ] 2>/dev/null && echo "  - binary main has $BINARY_UNRELEASED unreleased commits (see Phase 1.5 for warn detail)" ;;
+    [ "$BINARY_UNRELEASED" = unknown ] && echo "  - binary v$BINARY_VERSION: unreleased-commit check could not run（no local clone / tag / main）— see Phase 1.5"
+    [ "${BINARY_UNRELEASED:-0}" -gt 0 ] 2>/dev/null && echo "  - binary main has $BINARY_UNRELEASED unreleased commits (see Phase 1.5 for warn detail)"
+    exit 0 ;;
   B)
-    echo "→ Phase 0.3: binary main has $BINARY_UNRELEASED unreleased commits since v$BINARY_VERSION; shell unchanged, marketplace in sync — Step 4 Case B asks" ;;
+    if [ "$BINARY_UNRELEASED" = unknown ]; then
+      echo "→ Phase 0.3: binary v$BINARY_VERSION could not be checked against its repo (no local clone / tag / main); shell unchanged, marketplace in sync — Step 4 Case B asks"
+    else
+      echo "→ Phase 0.3: binary main has $BINARY_UNRELEASED unreleased commits since v$BINARY_VERSION; shell unchanged, marketplace in sync — Step 4 Case B asks"
+    fi
+    exit 0 ;;
 esac
 ```
 
@@ -364,7 +384,7 @@ esac
 
 #### Case A: Nothing to sync → abort
 
-當 (a) `MP_DRIFT=no` AND (b) `SHELL_RECENT_TOUCHES` 為空 AND (c) `BINARY_UNRELEASED=0`：
+當 (a) `MP_DRIFT=no` AND (b) `SHELL_RECENT_TOUCHES` 為空 AND (c) `BINARY_UNRELEASED` 是**核對過的** 0（查不到算 unknown，走 Case B）：
 
 訊息與 `exit 0` 由 Step 2 的 fence 在同一個 shell 印出（值不跨 fence）；agent 看到
 `Case A` 那行就停止。
@@ -420,12 +440,12 @@ options:
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-cd "$MP_ROOT"
 
 # Resolve upstream once + abort on missing/unusual configs (v1.16.0 fix #60-verify P1)
 # - No upstream tracking → abort with structured error (don't silently proxy to origin/main)
@@ -593,12 +613,12 @@ options:
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-cd "$MP_ROOT"
 TARGET_PLUGIN="$PLUGIN_NAME"
 # UPSTREAM 是 Step 1 那個 shell 的變數，這裡重算；空的 "$UPSTREAM"..HEAD 是 git 合法的空集合
 # （rc 0、零輸出），會讓這道 gate 安靜地死掉（#18 R2）。
@@ -608,7 +628,7 @@ UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) \
 # 收集 unpushed commits touch 到的 plugin 名(去重)——經 manifest 對映，不猜 plugins/<x>/ 佈局
 # （單一 plugin marketplace 的檔案在 plugin/ 底下；repo 即 plugin 的佈局擁有全部路徑，
 # 所以 root-sourced plugin 對任何 commit 都算被 touch——那是佈局語意，case (a) 對它不成立。#18）
-TOUCHED=$(git log --name-only --pretty=format: "$UPSTREAM"..HEAD \
+TOUCHED=$(git -c core.quotePath=false log --name-only --pretty=format: "$UPSTREAM"..HEAD \
   | plugin_names_for_paths "$MP_ROOT")
 TOUCHED_COUNT=$(echo -n "$TOUCHED" | grep -c . || true)
 
@@ -650,20 +670,30 @@ fi
 如果用戶指定了 plugin 名稱，直接使用。否則從 git 推斷：
 
 ```bash
-# 這一步還沒有 plugin 名（要推斷的就是它），所以不用前導：對機器上**每個** marketplace root
-# 各看一次（刻意掃全機——使用者從清單裡挑；marketplace 名是第三方值，印之前去控制字元）。
+# 這一步還沒有 plugin 名（要推斷的就是它），所以不用前導。只掃**一個** marketplace：cwd 在某個
+# marketplace checkout 裡就用它；否則列出 list_marketplaces 請使用者先選，不掃全機（35 個 root
+# 各跑 git + 逐名解析要十幾秒，且輸出混雜，#18 R4）。marketplace 名是第三方值，印之前去控制字元。
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-200; }
+HERE=$(pwd -P)
+ROOT=""; MPN=""
 while IFS="$(printf '\t')" read -r mp root; do
     [ -n "$root" ] || continue
-    hits=$(git --literal-pathspecs -C "$root" diff --name-only HEAD~3 2>/dev/null | plugin_names_for_paths "$root")
-    [ -n "$hits" ] && printf '%s\n' "$hits" | awk -v m="$(clean "$mp")" '{ print m ": " $0 }'
+    rp=$(cd "$root" 2>/dev/null && pwd -P) || continue
+    case "$HERE" in "$rp"|"$rp"/*) ROOT="$root"; MPN="$mp"; break ;; esac
 done <<EOF
 $(marketplace_index)
 EOF
+if [ -z "$ROOT" ]; then
+    echo "ℹ 當前目錄不在任何 marketplace checkout 裡。先選一個（AskUserQuestion），再以 ROOT=\$(resolve_marketplace_root <name>) 重跑本 block："
+    list_marketplaces | while IFS= read -r m; do echo "  - $(clean "$m")"; done
+    exit 0
+fi
+echo "→ marketplace: $(clean "$MPN") ($ROOT)"
+git -c core.quotePath=false -C "$ROOT" diff --name-only HEAD~3 2>/dev/null | plugin_names_for_paths "$ROOT"
 ```
 
-列出最近變更的 plugin（經 manifest 對映，`./plugin`、entry-less `plugins/<name>` 與 repo-即-plugin 佈局都算得到；巢狀 marketplace 的路徑以 `git rev-parse --show-prefix` 對齊），請用戶確認要更新哪一個；確認後以該 plugin 名跑 Step 0.1（Step 0.1 自己會找到它的 marketplace）。
+列出這個 marketplace 最近變更的 plugin（經 manifest 對映，`./plugin`、entry-less `plugins/<name>` 與 repo-即-plugin 佈局都算得到；巢狀 marketplace 的路徑以 `git rev-parse --show-prefix` 對齊；`core.quotePath=false` 讓非 ASCII 檔名不被引號化），請用戶確認要更新哪一個；確認後以該 plugin 名跑 Step 0.1（Step 0.1 自己會找到它的 marketplace，並以 context 檔綁定那份 checkout）。
 
 ### Step 2: 檢查 Git 狀態
 
@@ -687,7 +717,7 @@ Plugin 如果依賴外部 binary（MCP server、CLI 工具），plugin-update �
 | `.mcp.json` 存在 | **MCP binary** | `<PLUGIN_DIR>/.mcp.json` 存在 |
 | `bin/*-wrapper.sh` 有 `GITHUB_REPO` | **MCP binary** | `<PLUGIN_DIR>/bin/*.sh` 內 grep 到 `GITHUB_REPO` |
 | `hooks/session-start.sh` curl GitHub API | **CLI tool** | `<PLUGIN_DIR>/hooks/` 內 grep 到 `api.github.com.*releases` |
-| Skill / hook 引用 `~/bin/$BINARY` | **CLI tool** | `<PLUGIN_DIR>/{skills,hooks}/` 內 grep 到 `$HOME/bin/` 或 `~/bin/` |
+| Skill / hook 引用 `~/bin/$BINARY` | **CLI tool** | 文件描述用；**不是**可執行判準——對 skills/ 散文 grep 會把 harness-devtools 自己判成 binary-backed（#18 R4）。結構性偵測見 #22 |
 
 （`<PLUGIN_DIR>` 是敘述；可執行的判斷在 Phase 0.3 Step 1 帶前導的 fence。）
 
@@ -705,10 +735,11 @@ Plugin 如果依賴外部 binary（MCP server、CLI 工具），plugin-update �
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh; do
     [ -f "$wrapper" ] || continue
@@ -789,10 +820,11 @@ done
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 # 從 session-start.sh 抓 GitHub repo
 GFH_REPO=$(grep -oE '[A-Za-z0-9_-]+/[A-Za-z0-9_-]+' "$PLUGIN_DIR"/hooks/session-start.sh | head -1)
@@ -886,12 +918,12 @@ fi
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-cd "$MP_ROOT"
 cat .claude-plugin/marketplace.json | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -907,10 +939,11 @@ for p in data['plugins']:
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 cat "$PLUGIN_DIR"/.claude-plugin/plugin.json | python3 -c "
 import json, sys
@@ -953,14 +986,14 @@ marketplace.json 的變更也需要 commit + push，才能被 `marketplace updat
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-cd "$MP_ROOT"
 git add .claude-plugin/marketplace.json
-git commit -m "chore: update marketplace.json for {plugin_name} v{version}"
+git commit -m "chore: update marketplace.json for $PLUGIN_NAME v{version}"   # {version} = Phase 2 Step 2 印出的 plugin.json 版本
 git push
 ```
 
@@ -986,10 +1019,11 @@ catch-up gap」這三類常見 staleness。
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 README="$PLUGIN_DIR/README.md"
 NEW_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_DIR/.claude-plugin/plugin.json")
@@ -1166,7 +1200,17 @@ options:
 ### Step 1: 更新 marketplace cache
 
 ```bash
-claude plugin marketplace update {marketplace_name}
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
+# 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
+# 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
+cd "$MP_ROOT" || exit 1
+claude plugin marketplace update "$MP_NAME"
 ```
 
 這會從 source（git remote 或本地目錄）重新拉取 plugin index。
@@ -1174,7 +1218,17 @@ claude plugin marketplace update {marketplace_name}
 ### Step 2: 驗證
 
 ```bash
-claude plugin list 2>&1 | grep -A3 "{plugin_name}"
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
+# 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
+# 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
+cd "$MP_ROOT" || exit 1
+claude plugin list 2>&1 | grep -A3 -- "$PLUGIN_NAME"
 ```
 
 ---
@@ -1184,16 +1238,36 @@ claude plugin list 2>&1 | grep -A3 "{plugin_name}"
 ### 注意：必須加 `@marketplace_name` 後綴
 
 ```bash
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
+# 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
+# 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
+cd "$MP_ROOT" || exit 1
 # 已安裝 → 更新
-claude plugin update {plugin_name}@{marketplace_name}
+claude plugin update "$PLUGIN_NAME@$MP_NAME"
 
 # 未安裝 → 安裝
-claude plugin install {plugin_name}@{marketplace_name}
+claude plugin install "$PLUGIN_NAME@$MP_NAME"
 ```
 
 先檢查是否已安裝：
 ```bash
-claude plugin list 2>&1 | grep "{plugin_name}"
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
+# 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
+# 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
+cd "$MP_ROOT" || exit 1
+claude plugin list 2>&1 | grep -- "$PLUGIN_NAME"
 ```
 
 ---
@@ -1203,7 +1277,19 @@ claude plugin list 2>&1 | grep "{plugin_name}"
 ### Step 1: 確認最終狀態
 
 ```bash
-claude plugin list 2>&1 | grep -A5 "{plugin_name}"
+# ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
+# 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
+# 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
+# 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
+PLUGIN_NAME='<plugin-name>'
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
+cd "$MP_ROOT" || exit 1
+claude plugin list 2>&1 | grep -A5 -- "$PLUGIN_NAME"
+# 本次 invocation 結束：清掉 context 檔，下一次執行必須重新走 Step 0.1 的 gate
+remove_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")"
 ```
 
 檢查：
@@ -1223,12 +1309,15 @@ claude plugin list 2>&1 | grep -A5 "{plugin_name}"
 多個 plugin 需要更新時：
 
 ```bash
+# 批次更新沒有單一 PLUGIN_NAME，所以不用前導；marketplace 名由使用者指定（自己的引數，同樣核對
+# [A-Za-z0-9._-]），不是從 manifest 讀出來代入。
+MP_NAME='<marketplace-name>'
 # 1. 同步 marketplace（只需一次）
-claude plugin marketplace update {marketplace_name}
+claude plugin marketplace update "$MP_NAME"
 
 # 2. 逐一更新（需加 @marketplace 後綴）
-claude plugin update plugin-a@{marketplace_name}
-claude plugin update plugin-b@{marketplace_name}
+claude plugin update "plugin-a@$MP_NAME"
+claude plugin update "plugin-b@$MP_NAME"
 ```
 
 ---
@@ -1245,10 +1334,11 @@ Claude Code 有快取機制。需要重啟才能載入新版 skill 內容。
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 claude plugin validate "$PLUGIN_DIR"
 ```
@@ -1261,12 +1351,12 @@ claude plugin validate "$PLUGIN_DIR"
 # 唯一由 agent 代入的值是本次引數 PLUGIN_NAME：代入前先肉眼核對只含 [A-Za-z0-9._-]，
 # 不符就停下來回報、不執行任何指令（單引號裡一個 ' 就能逃出字串；shell 層的檢查在代入之後）。
 # 其餘（marketplace 名、root、plugin 目錄）一律從 Step 0.1 寫下的 context 檔載回並重驗
-# ——第三方 manifest 的值不經過 agent 的手，也不靠名稱重選 checkout。
+# ——那是純資料檔（逐行 parse，不 source），放在私有 state 目錄，第三方 manifest 的值
+# 不經過 agent 的手，也不靠名稱重選 checkout。
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-load_plugin_ctx "${TMPDIR:-/tmp}/plugin-update-ctx-${PLUGIN_NAME}" "$PLUGIN_NAME" || exit 1
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-cd "$MP_ROOT"
 git log origin/main..HEAD --oneline
 ```
 

@@ -129,8 +129,10 @@ plugin_source_of <root> <plugin>           # source 值（去控制字元、截�
 marketplace_plugin_names <root>            # manifest 宣告 ∪ plugins/ 子目錄
 git diff --name-only HEAD~3 | plugin_names_for_paths <root>   # 路徑 → plugin 名（不猜 plugins/<x>/ 佈局）
 marketplace_index                          # name<TAB>root，一次走完
-write_plugin_ctx <file> <mp> <root> <dir> <plugin>   # Step 0.1 → 後續 fence 的 hand-off（驗證後寫檔）
-load_plugin_ctx <file> <plugin>            # 載回並重驗（root 仍是該 marketplace 候選、resolve 結果一致）
+plugin_ctx_path <plugin>                   # 私有 state 目錄下的 context 檔路徑
+write_plugin_ctx <file> <mp> <root> <dir> <plugin>   # Step 0.1 → 後續 fence 的 hand-off（驗證後 mktemp+mv 寫純資料檔）
+load_plugin_ctx <file> <plugin>            # 逐行 parse（不 source）、拒絕 symlink / 非本人檔案、重驗（root 仍是該 marketplace 候選、resolve 結果一致）
+remove_plugin_ctx <file>                   # Phase 5 結束清掉
 
 marketplace_candidates che-local-plugins   # 一行一個 root，precedence 序
 list_marketplaces                          # 所有已發現的名稱
@@ -140,7 +142,7 @@ list_marketplaces                          # 所有已發現的名稱
 
 **解析方式是掃描而非列舉**（#20）：掃搜尋根底下的 `*/.claude-plugin/marketplace.json`，讀各檔自報的 `name`。新增 marketplace 不必改程式碼。同名多候選時，擁有 `plugins/` 目錄的優先——那只是 **tie-break**，不是准入條件（單一 plugin 的 marketplace 沒有 `plugins/`，它的 repo 本身就是那個 plugin）。
 
-**plugin 目錄從 manifest 讀，不猜佈局**（#18）：`find_plugin_marketplace` 與 `resolve_plugin_dir` 解析 `plugins[].source`；`./plugin`（單一 plugin）、`./plugins/<name>`（aggregator）、`.`（repo 即 plugin）都能命中。manifest 給不出本地路徑時（沒 entry、git-subdir 物件、URL、JSON 壞掉、python3 跑不起來）才退回探 `plugins/<name>`——「不知道」不能變成「沒有」。兩者都失敗時 rc 分六類（1 未列 / 2 不可用 / 3 無 python3 / 4 讀不動 / 5 非本地 / 6 名稱不合法），`plugin-update` Step 0.1 據此指名真正的原因，不會一律講成「沒上架」。source 裡的引號 / `..` / `|` / 控制字元一律拒絕、目錄（含 legacy `plugins/<name>`）以實體路徑檢查仍在 root 內、manifest 來源的目錄要有 `.claude-plugin/plugin.json` 且 name 相符（宣告不等於持有）：路徑會進 git pathspec 與 python argv，不能讓第三方檔案內容變成程式碼或宣稱別人的 plugin。skill 的每個 bash block 是獨立的 Bash 呼叫，Step 0.1 以 `write_plugin_ctx` 寫下驗證過的三元組、後續 block 以 `load_plugin_ctx` 載回並重驗——agent 只代入自己的引數。
+**plugin 目錄從 manifest 讀，不猜佈局**（#18）：`find_plugin_marketplace` 與 `resolve_plugin_dir` 解析 `plugins[].source`；`./plugin`（單一 plugin）、`./plugins/<name>`（aggregator）、`.`（repo 即 plugin）都能命中。manifest 給不出本地路徑時（沒 entry、git-subdir 物件、URL、JSON 壞掉、python3 跑不起來）才退回探 `plugins/<name>`——「不知道」不能變成「沒有」。兩者都失敗時 rc 分六類（1 未列 / 2 不可用 / 3 無 python3 / 4 讀不動 / 5 非本地 / 6 名稱不合法），`plugin-update` Step 0.1 據此指名真正的原因，不會一律講成「沒上架」。source 裡的引號 / `..` / `|` / 控制字元一律拒絕、目錄（含 legacy `plugins/<name>`）以實體路徑檢查仍在 root 內、manifest 來源的目錄要有 `.claude-plugin/plugin.json` 且 name 等於請求名（JSON 壞掉或無 name 不算；宣告不等於持有），legacy `plugins/<name>` 要有 plugin 形狀（空目錄不算）且只救「未列 / 無 python3 / 讀不動 / 非本地」，有 entry 但 source 寫錯是確定的錯誤不會被救回：路徑會進 git pathspec 與 python argv，不能讓第三方檔案內容變成程式碼或宣稱別人的 plugin。skill 的每個 bash block 是獨立的 Bash 呼叫，Step 0.1 以 `write_plugin_ctx` 寫下驗證過的三元組（私有 state 目錄、純資料）、後續 block 以 `load_plugin_ctx` 逐行 parse 並重驗——agent 只代入自己的引數。
 
 ## 參考資源
 

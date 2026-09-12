@@ -243,7 +243,8 @@ cat > "$PD_TMP/solo/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "pd-solo", "plugins": [ { "name": "pd-solo", "source": "./plugin" } ] }
 JSON
 printf '{ "name": "pd-solo", "version": "0.0.1" }\n' > "$PD_TMP/solo/plugin/.claude-plugin/plugin.json"
-mkdir -p "$PD_TMP/agg/.claude-plugin" "$PD_TMP/agg/plugins/x"
+mkdir -p "$PD_TMP/agg/.claude-plugin" "$PD_TMP/agg/plugins/x/.claude-plugin"
+printf '{ "name": "x" }\n' > "$PD_TMP/agg/plugins/x/.claude-plugin/plugin.json"
 cat > "$PD_TMP/agg/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "pd-agg",
   "plugins": [
@@ -297,7 +298,8 @@ assert_eq "plugin dir resolution emits no stderr" "" "$PD_NOISE"
 # ── R1 verify of #18 found six ways "cannot tell" or "legal but non-local" still
 # read as "no", plus a code-execution hole through the path itself. Each one
 # below broke before the fix; the comments say what the old code did.
-mkdir -p "$PD_TMP/agg/plugins/akashic" "$PD_TMP/agg/plugins/newbie" "$PD_TMP/agg/true" "$PD_TMP/agg/plugins/q"
+# legacy-probed directories carry no plugin.json (materialized subtrees) but must look like a plugin
+mkdir -p "$PD_TMP/agg/plugins/akashic/skills" "$PD_TMP/agg/plugins/newbie/skills" "$PD_TMP/agg/true" "$PD_TMP/agg/plugins/q/skills" "$PD_TMP/agg/plugins/emptydir"
 cat > "$PD_TMP/agg/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "pd-agg",
   "plugins": [
@@ -323,7 +325,7 @@ printf '{ "name": "dot", "version": "0.0.1" }\n' > "$PD_TMP/rootplugin/.claude-p
 cat > "$PD_TMP/claimant/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "pd-claimant", "plugins": [ { "name": "x", "source": "." } ] }
 JSON
-mkdir -p "$PD_TMP/broken/.claude-plugin" "$PD_TMP/broken/plugins/present"
+mkdir -p "$PD_TMP/broken/.claude-plugin" "$PD_TMP/broken/plugins/present/.claude-plugin"
 printf '{ "name": "pd-broken", "plugins": [ { "name": "present", "source": "./plugins/present" }, ] }\n' \
   > "$PD_TMP/broken/.claude-plugin/marketplace.json"     # trailing comma: the canonical hand-edit error
 
@@ -414,15 +416,19 @@ resolve_plugin_dir "$PD_TMP/link" esc >/dev/null 2>&1; RC_ESC=$?
 assert_eq "source dir that is a symlink to outside the root -> rc 2 (physical containment)" "2" "$RC_ESC"
 resolve_plugin_dir "$PD_TMP/link" pipe >/dev/null 2>&1; RC_PIPE=$?
 assert_eq "source containing the | field separator -> rc 2" "2" "$RC_PIPE"
-mkdir -p "$PD_TMP/norm/.claude-plugin" "$PD_TMP/norm/plugin/skills" "$PD_TMP/norm/plugin/.claude-plugin"
+mkdir -p "$PD_TMP/norm/.claude-plugin" "$PD_TMP/norm/plugin/skills" "$PD_TMP/norm/plugin/.claude-plugin" "$PD_TMP/norm/plugin2/.claude-plugin" "$PD_TMP/norm/noname/.claude-plugin"
 cat > "$PD_TMP/norm/.claude-plugin/marketplace.json" <<'JSON'
-{ "name": "pd-norm", "plugins": [ { "name": "dotted", "source": "./plugin/." }, { "name": "doubled", "source": ".//plugin//" } ] }
+{ "name": "pd-norm", "plugins": [ { "name": "dotted", "source": "./plugin/." }, { "name": "doubled", "source": ".//plugin2//" }, { "name": "noname", "source": "./noname" } ] }
 JSON
-printf '{ "version": "0.0.1" }\n' > "$PD_TMP/norm/plugin/.claude-plugin/plugin.json"   # no name: presence alone is accepted
+printf '{ "name": "dotted" }\n' > "$PD_TMP/norm/plugin/.claude-plugin/plugin.json"
+printf '{ "name": "doubled" }\n' > "$PD_TMP/norm/plugin2/.claude-plugin/plugin.json"
+printf '{ "version": "0.0.1" }\n' > "$PD_TMP/norm/noname/.claude-plugin/plugin.json"   # no name: NOT proof of possession
 assert_eq 'source "./plugin/." normalizes to the plugin dir' "$PD_TMP/norm/plugin" "$(resolve_plugin_dir "$PD_TMP/norm" dotted)"
-assert_eq 'source ".//plugin//" normalizes to the plugin dir' "$PD_TMP/norm/plugin" "$(resolve_plugin_dir "$PD_TMP/norm" doubled)"
-assert_eq "normalized sources still map paths" "dotted doubled" \
+assert_eq 'source ".//plugin2//" normalizes to the plugin dir' "$PD_TMP/norm/plugin2" "$(resolve_plugin_dir "$PD_TMP/norm" doubled)"
+assert_eq "normalized sources still map paths" "dotted" \
     "$(printf 'plugin/skills/a.md\n' | plugin_names_for_paths "$PD_TMP/norm" | tr '\n' ' ' | sed 's/ $//')"
+resolve_plugin_dir "$PD_TMP/norm" noname >/dev/null 2>&1; RC_NONAME=$?
+assert_eq "plugin.json without a name is not proof of possession -> rc 2 (fail closed)" "2" "$RC_NONAME"
 assert_eq "plugin_source_of strips control characters from third-party content (a JSON-escaped TAB here)" \
     "./pluginx" "$(plugin_source_of "$PD_TMP/link" ctrl; :)"
 assert_eq "plugin_source_of shows a non-string source as JSON (rc 2 to the caller)" \
@@ -485,6 +491,57 @@ cat > "$PD_TMP/badnames/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "pd-badnames", "plugins": [ { "name": "fine", "source": "./plugins/fine" }, { "name": "bad name; rm -rf x", "source": "./plugins/fine" } ] }
 JSON
 assert_eq "marketplace_plugin_names drops names outside [A-Za-z0-9._-]" "fine" "$(marketplace_plugin_names "$PD_TMP/badnames" | tr '\n' ' ' | sed 's/ $//')"
+
+# R4 verify: typo'd source is definite, empty legacy dir is not a plugin, broken plugin.json fails closed,
+# context file is data (never sourced), refused when symlinked / foreign
+mkdir -p "$PD_TMP/typo/.claude-plugin" "$PD_TMP/typo/plugins/x/.claude-plugin"
+printf '{ "name": "x" }\n' > "$PD_TMP/typo/plugins/x/.claude-plugin/plugin.json"
+cat > "$PD_TMP/typo/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-typo", "plugins": [ { "name": "x", "source": "./plugns/x" } ] }
+JSON
+resolve_plugin_dir "$PD_TMP/typo" x >/dev/null 2>&1; RC_TYPO2=$?
+assert_eq "typo'd relative source is NOT rescued by an existing plugins/<name> -> rc 2 (definite error)" "2" "$RC_TYPO2"
+resolve_plugin_dir "$PD_TMP/agg" emptydir >/dev/null 2>&1; RC_EMPTYDIR=$?
+assert_eq "an empty plugins/<name> directory is not a plugin -> rc 1" "1" "$RC_EMPTYDIR"
+mkdir -p "$PD_TMP/brokenpj/.claude-plugin"
+printf '{ not json\n' > "$PD_TMP/brokenpj/.claude-plugin/plugin.json"
+cat > "$PD_TMP/brokenpj/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "pd-brokenpj", "plugins": [ { "name": "harness-devtools", "source": "." } ] }
+JSON
+resolve_plugin_dir "$PD_TMP/brokenpj" harness-devtools >/dev/null 2>&1; RC_BPJ=$?
+assert_eq "unparsable plugin.json at a '.' root cannot claim a name -> rc 2 (fail closed)" "2" "$RC_BPJ"
+for n in .hidden -flag; do
+  resolve_plugin_dir "$PD_TMP/agg" "$n" >/dev/null 2>&1; RC_N=$?
+  assert_eq "name '$n' (dotfile / option shaped) -> rc 6" "6" "$RC_N"
+done
+
+# context file: written into a private dir, data-only, never executed
+CTXDIR="$PD_TMP/state"
+CTX2="$CTXDIR/plugin-update-ctx-x"
+write_plugin_ctx "$CTX2" pd-agg "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x; RC_W3=$?
+assert_eq "write_plugin_ctx creates the private dir and the file" "0" "$RC_W3"
+assert_eq "context dir is mode 700" "700" "$(stat -f %Lp "$CTXDIR" 2>/dev/null || stat -c %a "$CTXDIR")"
+assert_eq "context file is mode 600" "600" "$(stat -f %Lp "$CTX2" 2>/dev/null || stat -c %a "$CTX2")"
+printf 'MP_NAME=pd-agg\nMP_ROOT=%s\nPLUGIN_DIR=%s\nPLUGIN_NAME=x\ntouch "%s/EXECUTED"\n' "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" "$PD_TMP" > "$CTX2"
+load_plugin_ctx "$CTX2" x >/dev/null 2>&1; RC_L5=$?
+assert_eq "a command line inside the context file is never executed (load parses, does not source)" "0:absent" "$RC_L5:$([ -e "$PD_TMP/EXECUTED" ] && echo EXECUTED || echo absent)"
+printf 'MP_NAME=pd-agg\nMP_ROOT=%s\nPLUGIN_DIR=%s$(touch %s/EXECUTED2)\nPLUGIN_NAME=x\n' "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" "$PD_TMP" > "$CTX2"
+load_plugin_ctx "$CTX2" x >/dev/null 2>&1; RC_L6=$?
+assert_eq "shell-significant bytes in a context value are refused, not evaluated" "2:absent" "$RC_L6:$([ -e "$PD_TMP/EXECUTED2" ] && echo EXECUTED2 || echo absent)"
+printf 'ORIGINAL SECRET\n' > "$PD_TMP/victim.txt"
+ln -sf "$PD_TMP/victim.txt" "$CTX2"
+write_plugin_ctx "$CTX2" pd-agg "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x >/dev/null 2>&1
+assert_eq "write_plugin_ctx onto a planted symlink replaces the link and leaves the target untouched" \
+    "ORIGINAL SECRET" "$(cat "$PD_TMP/victim.txt")"
+assert_eq "…and the context path is now a regular file" "regular" "$([ -L "$CTX2" ] && echo symlink || echo regular)"
+ln -sf "$PD_TMP/victim.txt" "$CTXDIR/plugin-update-ctx-linked"
+load_plugin_ctx "$CTXDIR/plugin-update-ctx-linked" x >/dev/null 2>&1; RC_L7=$?
+assert_eq "load_plugin_ctx refuses a symlinked context -> rc 3" "3" "$RC_L7"
+remove_plugin_ctx "$CTX2"
+assert_eq "remove_plugin_ctx deletes the file" "gone" "$([ -e "$CTX2" ] && echo present || echo gone)"
+assert_eq "plugin_ctx_path derives a per-plugin file under the state dir" \
+    "$(plugin_ctx_dir)/plugin-update-ctx-x" "$(plugin_ctx_path x)"
+assert_fails "plugin_ctx_path refuses an invalid name" plugin_ctx_path 'x;y'
 
 PD_NOISE2=$( { resolve_plugin_dir "$PD_TMP/agg" orphan; resolve_plugin_dir "$PD_TMP/broken" absent; resolve_plugin_dir "$PD_TMP/agg" quoted; \
                marketplace_plugin_names "$PD_TMP/broken"; printf 'x\n' | plugin_names_for_paths "$PD_TMP/agg"; } 2>&1 >/dev/null )
