@@ -30,7 +30,7 @@ IFS='|' read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace harnes
 # 3 無可用 python3 / 4 manifest 讀不動 / 5 非本地 source（git-subdir 物件、URL）/ 6 名稱不合法。
 # 1–5 都先探 plugins/<name>，物化即命中——「不知道」不能變成「沒有」。
 resolve_plugin_dir "$MP_ROOT" harness-devtools
-plugin_source_of "$MP_ROOT" harness-devtools          # source 值（已去控制字元、截斷 200；同 rc 表）
+plugin_source_of "$MP_ROOT" harness-devtools          # source 值（已去控制字元、截斷 200；rc 1 = manifest 未列，不做 legacy 探測；印它用 printf）
 marketplace_plugin_names "$MP_ROOT"                   # manifest 宣告 ∪ plugins/ 子目錄，去重
 git diff --name-only HEAD~3 | plugin_names_for_paths "$MP_ROOT"   # 這些路徑屬於哪些 plugin（不猜佈局）
 marketplace_index                                     # name<TAB>root，一次走完所有 marketplace（名稱已過 [A-Za-z0-9._-]）
@@ -51,7 +51,7 @@ plugin_holders harness-devtools [marketplace]         # 每個持有該 plugin �
 # 同一份）重驗 root，並拒絕超過 6 小時的 context。
 
 # 同名多候選時看得到 shadowing（一行一個 root，precedence 序）
-marketplace_candidates che-local-plugins
+marketplace_candidates che-local-plugins              # 巢狀同名的子層是外層的 subtree，外層勝（與 find_plugin_marketplace / plugin_holders 同一規則）
 ```
 
 **為什麼**：harness-devtools 住在 `che-plugin-devtools`，但它管理的 plugin 分布在 `psychquant-claude-plugins`(28)、`sinica-claude-plugins`(2)、`che-local-plugins`(8) 等多個 marketplace。工具住哪裡與工具管哪裡是兩回事。v1.0.0 之前有 5 處把 `psychquant-claude-plugins` 寫死，是單一 marketplace 假設的殘留。

@@ -203,6 +203,18 @@ marketplace_candidates() {
   [ -n "$all" ] || return 1
 
   if [ "$(printf '%s\n' "$all" | grep -c .)" -gt 1 ]; then
+    # A same-name manifest NESTED inside another candidate is a subtree of that
+    # checkout, not a second checkout: the outer repo is the one registered in
+    # known_marketplaces.json, cloned and served (che-local-plugins inside
+    # che-claude-config: the outer manifest's sources point into the inner
+    # directory). Writing versions into the inner manifest updated a file nobody
+    # is served (#18 R6/R8) — so the outer wins, and this is the SAME rule
+    # find_plugin_marketplace / plugin_holders apply, so both public lookups
+    # agree on one root. The plugins/ tie-break below is then only for
+    # genuinely distinct checkouts.
+    all=$(_drop_nested_roots "$all")
+  fi
+  if [ "$(printf '%s\n' "$all" | grep -c .)" -gt 1 ]; then
     preferred=$(printf '%s\n' "$all" | while IFS= read -r d; do
       [ -d "$d/plugins" ] && printf '%s\n' "$d"
     done)
@@ -210,6 +222,25 @@ marketplace_candidates() {
   fi
 
   printf '%s\n' "$all"
+}
+# Drop every root that lies inside another root of the same list (physical paths).
+_drop_nested_roots() {
+  local list="${1:-}" d a dp ap keep
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    dp=$(cd "$d" 2>/dev/null && pwd -P) || continue
+    keep=1
+    while IFS= read -r a; do
+      [ -n "$a" ] && [ "$a" != "$d" ] || continue
+      ap=$(cd "$a" 2>/dev/null && pwd -P) || continue
+      case "$dp" in "$ap"/*) keep=0; break ;; esac
+    done <<EOF2
+$list
+EOF2
+    [ "$keep" = 1 ] && printf '%s\n' "$d"
+  done <<EOF
+$list
+EOF
 }
 
 # Resolve a marketplace name to its local repo root.
@@ -318,6 +349,10 @@ plugin_source_of() {
   local root="${1:-}" plugin="${2:-}" out rc
   [ -n "$root" ] && [ -n "$plugin" ] || return 1
   out=$(_plugin_source_of "$root/.claude-plugin/marketplace.json" "$plugin"); rc=$?
+  # Control characters are dropped, backslashes are NOT (control characters arrive
+  # JSON-escaped, e.g. \t, and that spelling is the diagnostic). Callers must print
+  # this value with printf '%s', never echo: zsh's echo expands \n / \e at print
+  # time and a two-character "\n" in a manifest could forge an output line (#18 R8).
   [ -n "$out" ] && printf '%s\n' "$out" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-200
   return "$rc"
 }
@@ -649,8 +684,12 @@ write_plugin_ctx() {
   tmp=$(umask 077; mktemp "$d/.ctx.XXXXXX" 2>/dev/null) || return 2
   printf 'MP_NAME=%s\nMP_ROOT=%s\nPLUGIN_DIR=%s\nPLUGIN_NAME=%s\nCTX_ID=%s\nWRITTEN=%s\nWRITTEN_EPOCH=%s\n' \
     "$mp" "$root" "$dir" "$plugin" "$$-$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date +%s)" > "$tmp" || { rm -f "$tmp"; return 2; }
-  # mv replaces a symlink planted at $file instead of writing through it
+  # mv replaces a symlink planted at $file instead of writing through it — but a
+  # DIRECTORY at $file (or a symlink to one) would make mv move the temp file INTO
+  # it and report success with nothing loadable at the path (#18 R8 codex)
+  [ ! -d "$file" ] || { rm -f "$tmp"; return 2; }
   mv -f "$tmp" "$file" 2>/dev/null || { rm -f "$tmp"; return 2; }
+  [ -f "$file" ] && [ ! -L "$file" ] || return 2
 }
 _ctx_field() {   # value of KEY= line in <file>; exactly one line, nothing else read
   sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1
@@ -789,7 +828,7 @@ plugin_manifest_path() {
 # breaks the tie by cwd and otherwise aborts naming every root.
 #   rc 0 at least one holder printed; rc 1 none (or invalid names)
 plugin_holders() {
-  local plugin="${1:-}" want="${2:-}" name root dir phys seen="" found=1
+  local plugin="${1:-}" want="${2:-}" name root dir phys rows=""
   _valid_name "$plugin" || return 1
   if [ -n "$want" ]; then _valid_name "$want" || return 1; fi
   while IFS="$(printf '\t')" read -r name root; do
@@ -798,12 +837,24 @@ plugin_holders() {
     case "$root$name" in *\|*) continue ;; esac
     dir=$(resolve_plugin_dir "$root" "$plugin") || continue
     phys=$(cd "$dir" 2>/dev/null && pwd -P) || continue
-    case "$seen" in *"|$phys|"*) continue ;; esac
-    seen="$seen|$phys|"
-    echo "$name|$root|$dir"; found=0
+    rows="$rows$name|$root|$dir|$phys
+"
   done <<EOF
 $(_marketplace_index)
 EOF
-  return $found
+  [ -n "$rows" ] || return 1
+  # Collapse rows that share marketplace NAME and physical plugin dir, keeping the
+  # OUTERMOST root (shortest path): the nested same-name manifest is a subtree of
+  # the outer checkout, and the outer one is what is registered and served — the
+  # same rule as marketplace_candidates (#18 R8). Rows with a different NAME are
+  # separate holders even for the same directory (two marketplaces listing one
+  # plugin): Step 0.1 must see both and let the user pin MP_NAME. Index order is
+  # find's directory order, so the choice must not depend on which row came first.
+  printf '%s' "$rows" | awk -F'|' '
+    { k = $1 "|" $4
+      if (!(k in best)) { order[++n] = k; best[k] = $0; rootlen[k] = length($2) }
+      else if (length($2) < rootlen[k]) { best[k] = $0; rootlen[k] = length($2) } }
+    END { for (i = 1; i <= n; i++) { split(best[order[i]], f, "|"); print f[1] "|" f[2] "|" f[3] } }'
+  return 0
 }
 

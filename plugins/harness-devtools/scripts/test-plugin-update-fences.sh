@@ -23,13 +23,13 @@ assert_contains() {   # desc needle haystack
 # ---- fixture: one marketplace, one CLI-style binary-backed plugin WITHOUT bin/ ----
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export MARKETPLACE_SEARCH_ROOT="$T/dev" XDG_STATE_HOME="$T/state" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT"
-mkdir -p "$T/dev/fx-mp/.claude-plugin" "$T/dev/fx-mp/plugins/nobin/.claude-plugin" "$T/dev/fx-mp/plugins/nobin/hooks" "$T/dev/fx-mp/plugins/nobin/skills/s"
+mkdir -p "$T/dev/fx-mp/.claude-plugin" "$T/dev/fx-mp/plugins/nobin/.claude-plugin" "$T/dev/fx-mp/plugins/nobin/hooks" "$T/dev/fx-mp/plugins/nobin/skills/s" "$T/dev/fx-mp/plugins/nobin/skills/t"
 cat > "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "fx-mp", "plugins": [ { "name": "nobin", "version": "1.0.0", "source": "./plugins/nobin" } ] }
 JSON
 printf '{ "name": "nobin", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/nobin/.claude-plugin/plugin.json"
 printf '#!/bin/sh\ncurl -s https://api.github.com/repos/x/y/releases/latest\n' > "$T/dev/fx-mp/plugins/nobin/hooks/session-start.sh"
-printf '# s\n' > "$T/dev/fx-mp/plugins/nobin/skills/s/SKILL.md"
+printf '# s\n' > "$T/dev/fx-mp/plugins/nobin/skills/s/SKILL.md"; printf '# t\n' > "$T/dev/fx-mp/plugins/nobin/skills/t/SKILL.md"   # TWO skills: zsh's non-splitting `for x in $VAR` only shows with a multi-line list
 ( cd "$T/dev/fx-mp" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm init ) 2>/dev/null
 
 # ---- fence extraction: the Nth ```bash fence containing a marker ----
@@ -67,6 +67,25 @@ run_both "Step 2 sees the session-start signal → unknown/no-pin" 'BINARY_UNKNO
 echo
 echo "Phase 1.5 Step 2 (no wrapper — the for-loop glob must not abort the fence):"
 run_both "Step 2 reaches its end" 'for wrapper in' nobin "→ Phase 1.5 Step 2: wrappers checked"
+
+echo
+echo "Phase 1.5 Step 3 (CLI, hook present but no \$HOME/bin/<name> line → must say so, not stay silent):"
+run_both "Step 3 reports what it could not extract" 'HOOK="$PLUGIN_DIR/hooks/session-start.sh"' nobin "判定不出"
+echo
+echo "Phase 2.5 (README missing a component → stale; complete README → fresh; loops must iterate under zsh):"
+printf '# nobin\n\nv1.0.0 — `s`\n' > "$T/dev/fx-mp/plugins/nobin/README.md"   # mentions s, never t
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm readme ) 2>/dev/null
+run_both "README that mentions s but never t is STALE (signal-4 must iterate both)" 'GIT_OK=true' nobin "signal-4: README missing 1 components: skill:t"
+run_both "…and the conclusion line says stale" 'GIT_OK=true' nobin "→ Phase 2.5: README stale"
+printf '# nobin\n\nv1.0.0 — `s` `t`\n' > "$T/dev/fx-mp/plugins/nobin/README.md"
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm readme2 ) 2>/dev/null
+run_both "README mentioning every component and the version is FRESH" 'GIT_OK=true' nobin "✅ Phase 2.5: README fresh（六信號全過）"
+rm "$T/dev/fx-mp/plugins/nobin/README.md"
+run_both "missing README is reported as its own state" 'GIT_OK=true' nobin "沒有 README.md"
+echo
+echo "plugin-debug version query (root-level manifest lookup):"
+SKILL="$PLUGIN_ROOT/skills/plugin-debug/SKILL.md"
+run_both "plugin-debug reads the version through plugin_manifest_path" 'plugin_manifest_path "$SRC"' nobin "1.0.0"
 
 echo; echo "─────────────────────────────"; echo "PASS: $PASS   FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]

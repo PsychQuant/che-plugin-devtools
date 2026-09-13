@@ -55,8 +55,11 @@ assert_eq "psychquant resolves" \
   "$HOME/Developer/psychquant-claude-plugins" \
   "$(resolve_marketplace_root psychquant-claude-plugins)"
 
-assert_eq "che-local-plugins is nested inside che-claude-config" \
-  "$HOME/Developer/che-claude-config/che-local-plugins" \
+# the nested same-name manifest is a subtree of the outer checkout; the OUTER one is
+# registered in known_marketplaces.json and served, so it wins (#18 R8 — reverses the
+# #20-era expectation that the inner dir with plugins/ wins)
+assert_eq "che-local-plugins resolves to the outer che-claude-config checkout" \
+  "$HOME/Developer/che-claude-config" \
   "$(resolve_marketplace_root che-local-plugins)"
 
 assert_fails "unknown marketplace returns non-zero" \
@@ -166,12 +169,15 @@ rm -rf "$NAME_TMP"
 echo
 echo "multi-hit disambiguation:"
 
-# che-local-plugins 有兩份 manifest 自報同名：父層 che-claude-config 是 aggregator
-# （source 指進子層、自己沒有 plugins/），子層才是實體 marketplace。候選必須自帶
-# plugins/ —— 這條規則讓上面那條既有斷言（解析到子層）繼續成立。
+# che-local-plugins 有兩份 manifest 自報同名：父層 che-claude-config 是被註冊、被 clone、
+# 被服務的 repo（source 指進子層），子層是它的 subtree。巢狀在另一個同名候選裡的 root
+# 不算第二份 checkout（#18 R8），所以候選只剩父層。
 CANDS=$(marketplace_candidates che-local-plugins)
-assert_eq "candidates exclude the aggregator parent (no plugins/ of its own)" \
+assert_eq "candidates drop the nested child (subtree of the outer checkout)" \
     "" \
+    "$(printf '%s\n' "$CANDS" | grep -x "$HOME/Developer/che-claude-config/che-local-plugins" || true)"
+assert_eq "candidates keep the outer checkout" \
+    "$HOME/Developer/che-claude-config" \
     "$(printf '%s\n' "$CANDS" | grep -x "$HOME/Developer/che-claude-config" || true)"
 
 # git worktree 帶著同一份 marketplace.json。選中它會讓 plugin-update 的 Phase 0.5
@@ -198,14 +204,6 @@ mkdir -p "$LAYOUT_TMP/solo/.claude-plugin" "$LAYOUT_TMP/solo/plugin"
 cat > "$LAYOUT_TMP/solo/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "fixture-solo", "plugins": [ { "name": "fixture-solo", "source": "./plugin" } ] }
 JSON
-# 同名兩份：父層無 plugins/、子層有 —— tie-break 必須選子層
-mkdir -p "$LAYOUT_TMP/agg/.claude-plugin" "$LAYOUT_TMP/agg/real/.claude-plugin" "$LAYOUT_TMP/agg/real/plugins"
-cat > "$LAYOUT_TMP/agg/.claude-plugin/marketplace.json" <<'JSON'
-{ "name": "fixture-dup", "plugins": [ { "name": "x", "source": "./real/plugins/x" } ] }
-JSON
-cat > "$LAYOUT_TMP/agg/real/.claude-plugin/marketplace.json" <<'JSON'
-{ "name": "fixture-dup", "plugins": [ { "name": "x", "source": "./plugins/x" } ] }
-JSON
 
 SAVED_ROOT="$MARKETPLACE_SEARCH_ROOT"
 MARKETPLACE_SEARCH_ROOT="$LAYOUT_TMP"
@@ -218,9 +216,25 @@ assert_eq "single-plugin marketplace is listed" \
     "fixture-solo" \
     "$(list_marketplaces | grep -x fixture-solo)"
 
-assert_eq "plugins/-bearing candidate wins when two declare the same name" \
-    "$LAYOUT_TMP/agg/real" \
+# 同名兩份、巢狀：子層是父層 checkout 的 subtree（父層才是被註冊 / 服務的 repo，
+# source 指進子層）——父層勝，不看誰有 plugins/（#18 R8；反轉 #20 時代的預期）
+mkdir -p "$LAYOUT_TMP/agg/.claude-plugin" "$LAYOUT_TMP/agg/real/.claude-plugin" "$LAYOUT_TMP/agg/real/plugins"
+cat > "$LAYOUT_TMP/agg/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "fixture-dup", "plugins": [ { "name": "x", "source": "./real/plugins/x" } ] }
+JSON
+cat > "$LAYOUT_TMP/agg/real/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "fixture-dup", "plugins": [ { "name": "x", "source": "./plugins/x" } ] }
+JSON
+assert_eq "nested same-name manifest is a subtree: the OUTER checkout wins" \
+    "$LAYOUT_TMP/agg" \
     "$(resolve_marketplace_root fixture-dup)"
+# 同名兩份、不巢狀（真的兩份 checkout）：plugins/ tie-break 仍然適用
+mkdir -p "$LAYOUT_TMP/siba/.claude-plugin" "$LAYOUT_TMP/sibb/.claude-plugin" "$LAYOUT_TMP/sibb/plugins"
+printf '{ "name": "fixture-sib", "plugins": [] }\n' > "$LAYOUT_TMP/siba/.claude-plugin/marketplace.json"
+printf '{ "name": "fixture-sib", "plugins": [] }\n' > "$LAYOUT_TMP/sibb/.claude-plugin/marketplace.json"
+assert_eq "plugins/-bearing candidate wins among genuinely distinct checkouts" \
+    "$LAYOUT_TMP/sibb" \
+    "$(resolve_marketplace_root fixture-sib)"
 
 MARKETPLACE_SEARCH_ROOT="$SAVED_ROOT"
 rm -rf "$LAYOUT_TMP"
@@ -614,7 +628,15 @@ assert_eq "a context timestamped in the future is refused -> rc 2" "2" "$RC_TTL2
 # plugin_holders: nested same-name marketplaces resolving to ONE physical dir = one holder
 HOLD_NP=$(plugin_holders np | grep -c .)
 assert_eq "plugin_holders collapses two index rows that resolve to the same physical dir (che-local-plugins shape)" "1" "$HOLD_NP"
-assert_eq "plugin_holders keeps the first index row for a collapsed holder (same first-wins as find_plugin_marketplace)" "$(find_plugin_marketplace np)" "$(plugin_holders np)"
+assert_eq "plugin_holders keeps the OUTER root for a collapsed nested same-name holder (independent of index order)" "pd-nest|$PD_TMP/nest|$PD_TMP/nest/inner/plugins/np" "$(plugin_holders np)"
+assert_eq "resolve_marketplace_root agrees: the outer checkout of a nested same-name marketplace" "$PD_TMP/nest" "$(resolve_marketplace_root pd-nest)"
+# two DIFFERENTLY named marketplaces (outer pd-top, nested pd-deep) holding one physical plugin dir are two holders:
+# Step 0.1 must see both and let the user pin MP_NAME
+mkdir -p "$PD_TMP/nest2/.claude-plugin" "$PD_TMP/nest2/deep/.claude-plugin" "$PD_TMP/nest2/deep/plugins/qq/.claude-plugin"
+printf '{ "name": "qq" }\n' > "$PD_TMP/nest2/deep/plugins/qq/.claude-plugin/plugin.json"
+printf '{ "name": "pd-top", "plugins": [ { "name": "qq", "source": "./deep/plugins/qq" } ] }\n' > "$PD_TMP/nest2/.claude-plugin/marketplace.json"
+printf '{ "name": "pd-deep", "plugins": [ { "name": "qq", "source": "./plugins/qq" } ] }\n' > "$PD_TMP/nest2/deep/.claude-plugin/marketplace.json"
+assert_eq "plugin_holders keeps differently named marketplaces as separate holders even for one physical dir" "2" "$(plugin_holders qq | grep -c .)"
 # two genuinely distinct checkouts of one marketplace = two holders; scoping by name works
 mkdir -p "$PD_TMP/twin-a/.claude-plugin" "$PD_TMP/twin-a/plugin/.claude-plugin" "$PD_TMP/twin-b/.claude-plugin" "$PD_TMP/twin-b/plugin/.claude-plugin"
 for t in twin-a twin-b; do
@@ -646,6 +668,13 @@ GNU_MODE=$(PATH="$PD_TMP/gnubin:$PATH" _dir_mode "$PD_TMP/state")
 assert_eq "_dir_mode under a GNU-shaped stat yields just the octal mode" "700" "$GNU_MODE"
 PATH="$PD_TMP/gnubin:$PATH" write_plugin_ctx "$PD_TMP/state/plugin-update-ctx-gnu" pd-agg "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x; RC_GNU=$?
 assert_eq "write_plugin_ctx succeeds when stat is GNU-shaped" "0" "$RC_GNU"
+# a directory (or a symlink to one) at the context path must not be "written into" and reported as success
+mkdir -p "$PD_TMP/state/plugin-update-ctx-dir"
+write_plugin_ctx "$PD_TMP/state/plugin-update-ctx-dir" pd-agg "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x >/dev/null 2>&1; RC_WD=$?
+assert_eq "write_plugin_ctx refuses a directory at the context path -> rc 2 (no stray temp file inside)" "2:0" "$RC_WD:$(ls "$PD_TMP/state/plugin-update-ctx-dir" | grep -c .)"
+ln -s "$PD_TMP/state/plugin-update-ctx-dir" "$PD_TMP/state/plugin-update-ctx-dirlink"
+write_plugin_ctx "$PD_TMP/state/plugin-update-ctx-dirlink" pd-agg "$PD_TMP/agg" "$PD_TMP/agg/plugins/x" x >/dev/null 2>&1; RC_WL=$?
+assert_eq "write_plugin_ctx refuses a symlink to a directory -> rc 2" "2" "$RC_WL"
 
 MARKETPLACE_SEARCH_ROOT="$SAVED_ROOT"
 rm -rf "$PD_TMP"

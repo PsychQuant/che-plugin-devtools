@@ -125,7 +125,7 @@ resolve_plugin_dir ~/Developer/che-keychain che-keychain
 # → ~/Developer/che-keychain/plugin
 #   rc 0 目錄 / 1 未列且沒 plugins/<name> / 2 source 不可用 / 3 無可用 python3 / 4 manifest 讀不動
 #   / 5 非本地 source（git-subdir 物件、URL）/ 6 名稱不合法；1–5 都先探 plugins/<name>，物化即命中
-plugin_source_of <root> <plugin>           # source 值（去控制字元、截斷；同 rc 表）
+plugin_source_of <root> <plugin>           # source 值（去控制字元、截斷；rc 1 = manifest 未列，不做 legacy 探測、無 rc 6；印它用 printf 不用 echo）
 marketplace_plugin_names <root>            # manifest 宣告 ∪ plugins/ 子目錄
 git diff --name-only HEAD~3 | plugin_names_for_paths <root>   # 路徑 → plugin 名（不猜 plugins/<x>/ 佈局）
 marketplace_index                          # name<TAB>root，一次走完
