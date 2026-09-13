@@ -121,7 +121,7 @@ CACHE="$HOME/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/$CACHE
 if [ -z "$SRC" ]; then
   echo "UNKNOWN：源碼未解析，無法 diff（見 Phase 1 Step 2）"
 elif [ -z "$CACHE_VER" ] || [ ! -d "$CACHE" ]; then
-  echo "UNKNOWN：cache 目錄不存在（$CACHE）——尚未安裝，或 cache 路徑的 marketplace 名不對（#23）"
+  echo "UNKNOWN：cache 目錄不存在（${CACHE}）——尚未安裝，或 cache 路徑的 marketplace 名不對（#23）"
 else
   for part in hooks/hooks.json skills commands; do   # hooks 只比 hooks.json（原本的語意）
     if [ ! -e "$SRC/$part" ]; then
@@ -131,7 +131,7 @@ else
     case $rc in
       0) echo "$part: no diff" ;;
       1) echo "$part: DIFFERS（上方為差異）" ;;
-      *) echo "$part: UNKNOWN（diff rc $rc：cache 缺此目錄或讀不動）" ;;
+      *) echo "$part: UNKNOWN（diff rc ${rc}：cache 缺此目錄或讀不動）" ;;
     esac
   done
 fi

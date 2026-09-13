@@ -407,11 +407,17 @@ SHELL_RECENT_TOUCHES=$(git --literal-pathspecs log --since="30 days ago" --name-
     | grep -v '^$' | sort -u | head -10)
 # (c') 工作目錄裡**未提交**的改動：git log 看不到它們，而「改完就跑 /plugin-update」正是本 skill 的主要情境——
 # 沉睡 30 天的 plugin 改完未 commit，沒有這個信號會被 Case A 用一句假的「30 天內沒改」擋掉（#19 R1）
-SHELL_DIRTY=$(git --literal-pathspecs status --porcelain -- "$PLUGIN_DIR" .claude-plugin/marketplace.json 2>/dev/null | head -10)   # 含 marketplace.json 自己的未提交鏡像（#19 R2）
+SHELL_DIRTY=$(git --literal-pathspecs status --porcelain -- "$PLUGIN_DIR" .claude-plugin/marketplace.json 2>/dev/null)   # 含 marketplace.json 自己的未提交鏡像（#19 R2）
+DIRTY_N=$(printf '%s' "$SHELL_DIRTY" | grep -c .)
 # (c'') 已 commit、尚未推送、且動到本 plugin 或 marketplace.json 的 commit：30 天窗口看不到超過 30 天的，
-# 而 #19 之前純 shell plugin 靠 Phase 0.5 Case B 接住這個狀態——0.3 對所有 plugin 執行後不能先一步 exit 0（#19 R2）
-SHELL_UNPUSHED=$(git --literal-pathspecs log --oneline '@{u}..HEAD' -- "$PLUGIN_DIR" .claude-plugin/marketplace.json 2>/dev/null | head -10)
-REPO_UNPUSHED=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo unknown)
+# 而 #19 之前純 shell plugin 靠 Phase 0.5 Case B 接住這個狀態——0.3 對所有 plugin 執行後不能先一步 exit 0（#19 R2）。
+# @{u} 答不出來（沒有 upstream / detached HEAD）跟上面的 work-tree 探測同一條規則：abort，不得靜默當 0（#19 R3）
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) \
+  || { echo "✗ Phase 0.3: 目前 branch 沒有 upstream tracking（或 detached HEAD）— 未推送的變更無法判定。先 git branch --set-upstream-to=<remote>/<branch>（或 push -u）再重跑" >&2; exit 1; }
+SHELL_UNPUSHED=$(git --literal-pathspecs log --oneline "$UPSTREAM..HEAD" -- "$PLUGIN_DIR" .claude-plugin/marketplace.json 2>/dev/null) \
+  || { echo "✗ Phase 0.3: 算不出 $UPSTREAM..HEAD" >&2; exit 1; }
+UNPUSHED_N=$(printf '%s' "$SHELL_UNPUSHED" | grep -c .)
+REPO_UNPUSHED=$(git rev-list --count "$UPSTREAM..HEAD" 2>/dev/null) || { echo "✗ Phase 0.3: 算不出 $UPSTREAM..HEAD" >&2; exit 1; }
 
 # (d) BINARY repo: main 是否有 unreleased commits（信號移植自 #66 Phase 1.5 強化）
 # detect_binary_repo 定義在本 fence 內（函式也不跨 Bash 呼叫存活）：從 wrapper 的
@@ -452,7 +458,7 @@ if [ "$MP_DRIFT" = "yes" ] || [ -n "$SHELL_RECENT_TOUCHES" ] || [ -n "$SHELL_DIR
 elif [ "$BINARY_UNRELEASED" = unknown ]; then SYNC_CASE=B          # 查不到 → 交給使用者，不當 0
 elif [ "${BINARY_UNRELEASED:-0}" -gt 0 ] 2>/dev/null; then SYNC_CASE=B
 else SYNC_CASE=A; fi
-echo "→ Phase 0.3 sync intent: Case $SYNC_CASE — marketplace=${MP_VERSION:-<missing>} plugin.json=$SHELL_VERSION drift=$MP_DRIFT recent_touches=$(printf '%s' "$SHELL_RECENT_TOUCHES" | grep -c .) dirty=$(printf '%s' "$SHELL_DIRTY" | grep -c .) unpushed_here=$(printf '%s' "$SHELL_UNPUSHED" | grep -c .) repo_unpushed=$REPO_UNPUSHED binary=${BINARY_VERSION:-none} unreleased=${BINARY_UNRELEASED:-n/a}${BINARY_UNKNOWN_WHY:+ why=$BINARY_UNKNOWN_WHY} binary_repo=${BINARY_REPO_PATH:-none}"
+echo "→ Phase 0.3 sync intent: Case $SYNC_CASE — marketplace=${MP_VERSION:-<missing>} plugin.json=$SHELL_VERSION drift=$MP_DRIFT recent_touches=$(printf '%s' "$SHELL_RECENT_TOUCHES" | grep -c .) dirty=$DIRTY_N unpushed_here=$UNPUSHED_N repo_unpushed=$REPO_UNPUSHED upstream=$UPSTREAM binary=${BINARY_VERSION:-none} unreleased=${BINARY_UNRELEASED:-n/a}${BINARY_UNKNOWN_WHY:+ why=$BINARY_UNKNOWN_WHY} binary_repo=${BINARY_REPO_PATH:-none}"
 case "$SYNC_CASE" in
   A)
     echo "✗ Phase 0.3: Nothing to sync."
@@ -463,10 +469,11 @@ case "$SYNC_CASE" in
     echo ""
     # MP_DRIFT 比的是本機的兩個 JSON，跟 remote 無關：repo 還有未推送 commit 時，刷 cache 抓到的仍是舊版（#19 R2）
     if [ "$REPO_UNPUSHED" = 0 ]; then
-        echo "  If you intended to force a marketplace cache refresh anyway (repo has 0 unpushed commits),"
+        echo "  If you intended to force a marketplace cache refresh anyway (repo has 0 unpushed commits vs $UPSTREAM),"
         echo "  bypass plugin-update and run: claude plugin marketplace update $MP_NAME"
     else
-        echo "  Note: this repo has $REPO_UNPUSHED unpushed commit(s) not touching this plugin — push them first if a cache refresh is what you want."
+        echo "  Note: this repo has $REPO_UNPUSHED unpushed commit(s) vs $UPSTREAM that do not touch this plugin or marketplace.json —"
+        echo "  this run stops here, so Phase 0.5 Step 5's cross-plugin warning will NOT run for them; push them first if a cache refresh is what you want."
     fi
     remove_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")"   # 本次 invocation 到此結束
     exit 0 ;;
@@ -474,8 +481,8 @@ case "$SYNC_CASE" in
     echo "→ Phase 0.3: sync intent confirmed"
     [ "$MP_DRIFT" = "yes" ] && echo "  - marketplace.json drift: ${MP_VERSION:-<missing>} → $SHELL_VERSION"
     [ -n "$SHELL_RECENT_TOUCHES" ] && echo "  - recent shell changes: $(printf '%s\n' "$SHELL_RECENT_TOUCHES" | grep -c .) files"
-    [ -n "$SHELL_DIRTY" ] && echo "  - uncommitted changes under the plugin dir / marketplace.json: $(printf '%s\n' "$SHELL_DIRTY" | grep -c .) status entries（最多列 10；attended 時 Phase 0.5 會問要不要 commit，unattended 則 auto-abort）"
-    [ -n "$SHELL_UNPUSHED" ] && echo "  - unpushed commits touching this plugin / marketplace.json: $(printf '%s\n' "$SHELL_UNPUSHED" | grep -c .)（Phase 0.5 Case B 會問要不要 push）"
+    [ -n "$SHELL_DIRTY" ] && echo "  - uncommitted changes under the plugin dir / marketplace.json: $DIRTY_N status entries（attended 時 Phase 0.5 會問要不要 commit，unattended 則 auto-abort）"
+    [ -n "$SHELL_UNPUSHED" ] && echo "  - unpushed commits touching this plugin / marketplace.json: ${UNPUSHED_N}（Phase 0.5 會依優先序表分類——B / D / E——後問要不要 push；unattended 則 auto-abort）"
     if [ "$BINARY_UNKNOWN_WHY" = no-pin ]; then echo "  - binary-backed but no binary_version / binaryVersion pinned in $PLUGIN_MANIFEST — release status not checked（#22 會補 pin）"
     elif [ "$BINARY_UNRELEASED" = unknown ]; then echo "  - binary v$BINARY_VERSION: unreleased-commit check could not run（no local clone / tag / main）— see Phase 1.5"; fi
     [ "${BINARY_UNRELEASED:-0}" -gt 0 ] 2>/dev/null && echo "  - binary main has $BINARY_UNRELEASED unreleased commits (see Phase 1.5 for warn detail)"
@@ -503,7 +510,7 @@ esac
 | marketplace.json 版本落後 plugin.json (`MP_DRIFT=yes`) | YES | shell 已 bump 但 marketplace 沒同步 — 經典 plugin-update use case |
 | 30 天內有 plugin 檔案 commits（`SHELL_RECENT_TOUCHES` 非空）| YES | shell 真的有改動 |
 | plugin 目錄或 marketplace.json 有未提交改動（`SHELL_DIRTY` 非空）| YES | 改完還沒 commit——本 skill 的主要情境；attended 時 Phase 0.5 Case C/D 會問怎麼 commit |
-| 有未推送 commit 動到 plugin 目錄或 marketplace.json（`SHELL_UNPUSHED` 非空）| YES | 上次 push 失敗 / 手動 commit 未推；Phase 0.5 Case B 會問要不要 push |
+| 有未推送 commit 動到 plugin 目錄或 marketplace.json（`SHELL_UNPUSHED` 非空）| YES | 上次 push 失敗 / 手動 commit 未推；Phase 0.5 依優先序表分類（clean → B、dirty → D、分歧 → E）後問要不要 push |
 | Binary repo `main` 超前 last release ≥ 1 commits | MAYBE | 提示「binary 有 unreleased commits — 是不是該先 mcp-deploy / release？」|
 | 全部都沒命中 | **NO** | nothing to sync — short-circuit abort |
 
@@ -583,7 +590,7 @@ options:
 
 ## Phase 0.5: Git State Preview & Confirmation Gate（v1.16.0+ #60）
 
-> **為什麼這 phase 在 Phase 1 之前**:Phase 1+ 會 `git add` / `git commit` / `git push` / `claude plugin marketplace update`,在那之前,user 必須對樹上**既有**的變更（未提交 / 未推送 / 分歧，Case B–E）明確表態要不要一起推。clean start（Case A）沒有裁決點，直接通過（#19）——這代表在 clean start 下（含 unattended）**以下動作不經人工確認就會發生（封閉列舉，不得類推）**：(1) Phase 2 對 `.claude-plugin/marketplace.json` 的鏡像 commit + push——只在該檔的 entry 版本已等於 plugin.json 且相對 HEAD 有變更時，push 前列出視窗內混進的 commit 與其 plugin 歸屬；(2) Phase 3 `claude plugin marketplace update`（重拉 plugin index）；(3) Phase 4 `claude plugin update` / `install`（把 plugin 程式碼裝進本機；binary-backed plugin 的 wrapper 下次啟動會自動下載 release binary）。#19 之前 unattended 在 Phase 0.5 一律 abort，這三項從未在無人看管下執行過；現在它們是 common-release-flow 自動鏈刻意要的行為。需要人裁決的點仍會停：Phase 1.5 Step 4（binary 不同步）abort、Phase 2.5 Step 2（README stale）自動略過並標註。
+> **為什麼這 phase 在 Phase 1 之前**:Phase 1+ 會 `git add` / `git commit` / `git push` / `claude plugin marketplace update`,在那之前,user 必須對樹上**既有**的變更（未提交 / 未推送 / 分歧，Case B–E）明確表態要不要一起推。clean start（Case A）沒有裁決點，直接通過（#19）——這代表在 clean start 下（含 unattended）**以下動作不經人工確認就會發生（封閉列舉，不得類推）**：(1) Phase 2 對 `.claude-plugin/marketplace.json` 的鏡像 commit + push——只在該檔的 entry 版本已等於 plugin.json 且相對 HEAD 有變更時，push 前列出視窗內混進的 commit 與其 plugin 歸屬；(2) Phase 3 `claude plugin marketplace update`（重拉 plugin index）；(3) Phase 4 `claude plugin update` / `install`（把 plugin 程式碼裝進本機；binary-backed plugin 的 wrapper 下次啟動會自動下載 release binary）。#19 之前 unattended 在 Phase 0.5 一律 abort，這三項從未在無人看管下執行過；現在它們是 common-release-flow 自動鏈刻意要的行為。其餘兩道互動閘在 unattended 下：**仍會 abort** 的只有 Phase 1.5 Step 4（binary 不同步）；Phase 2.5 Step 2（README stale）**不 abort**，自動「先略過」繼續 Phase 3，並印一行 `AUDIT:` 供 Phase 5 的最終 report 收錄。
 >
 > 既有 (pre-v1.16.0) 行為:Phase 1 Step 2 印出 `git status` 後接 narrative reminder text 「請先 commit + push」,但**沒實際 gate**,AI executor 可以印 reminder 後繼續。新 phase 把這個決定升格成 **AskUserQuestion** explicit dispatch,跟 skill 內既有 [Phase 1.5: External Binary Dependency Check](#phase-15-external-binary-dependency-check若有) + [Phase 2.5: README Freshness Check](#phase-25-readme-freshness-check) 同 pattern(用 section refs 而非 line numbers,避免後續 insert 後 stale)。
 >
@@ -726,12 +733,14 @@ load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 # 這行不是宣告，是量測：Case A 誤判的代價從「exit 0 不做事」變成「放行 → Phase 2 push」（#19 R2），
 # 所以 fence 自己重驗，不符就退回 Step 2 重新分類（fail-safe）
-UNPUSHED=$(git rev-list --count '@{u}..HEAD' 2>/dev/null) || { echo "✗ Phase 0.5 Case A: 沒有 upstream — Step 1 應已 abort" >&2; exit 1; }
-if [ -n "$(git status --porcelain)" ] || [ "$UNPUSHED" != 0 ]; then
-    echo "✗ Phase 0.5: 這不是 Case A — status entries: $(git status --porcelain | grep -c .), unpushed commits: ${UNPUSHED}。回 Step 2 依優先序表重新分類（Case B–E 要問）。" >&2
-    exit 1
+# Case A 的定義是三條件：divergence `0 0`（behind 與 ahead 皆 0）∧ 樹乾淨——三條都驗，純 behind（E'）也要拒絕
+DIV=$(git rev-list --left-right --count '@{u}...HEAD' 2>/dev/null) || { echo "✗ Phase 0.5 Case A: 沒有 upstream — Step 1 應已 abort" >&2; exit 75; }
+BEHIND=${DIV%%[[:space:]]*}; AHEAD=${DIV##*[[:space:]]}
+if [ -n "$(git status --porcelain)" ] || [ "$AHEAD" != 0 ] || [ "$BEHIND" != 0 ]; then
+    echo "✗ Phase 0.5: 這不是 Case A — status entries: $(git status --porcelain | grep -c .), behind: ${BEHIND}, ahead: ${AHEAD}。回 Step 1 重跑 preview、依 Step 2 優先序表重新分類（behind>0 → E'；其餘 B–E 要問，unattended 則照 B–E abort）。" >&2
+    exit 75
 fi
-echo "→ Phase 0.5: clean tree, 0 pre-existing unpushed commits (verified) — nothing to gate; Phase 2 will mirror marketplace.json (commit + push only if it changes)"
+echo "→ Phase 0.5: clean tree, divergence 0 0 (verified) — nothing to gate; Phase 2 will mirror marketplace.json (commit + push only if it changes)"
 ```
 
 > #19 之前這裡 `exit 0` 並建議「bypass plugin-update 直接跑 `claude plugin marketplace update`」——marketplace.json 還沒 bump 時，那條指令抓到的仍是舊版本。
@@ -799,14 +808,16 @@ options:
 
 #### Case E': Pure behind → ff-only 後重測
 
-沒有裁決點：`git pull --ff-only` 不會改寫任何本地 commit。成功後**回 Step 2 重測**——重測結果可能是 Case A（繼續）也可能是 C / D（髒樹，要問；unattended 則 abort）。ff-only 失敗（髒樹擋住、或其實有分歧）就 abort，**不重試**（attended / unattended 相同；unattended 沒有人喊停）：
+沒有裁決點：`git pull --ff-only` 不會改寫任何本地 commit——但它會把 upstream 上任何人推的內容拉進本機工作樹，而重測落到 Case A 時同一次 unattended run 會接著跑 Phase 3 / 4 把它裝進本機；這是 E' 在 unattended 下的實際範圍。成功後 fence 自己印出新的 divergence / status 當作新 preview，**回 Step 1 重跑 preview block、再依 Step 2 優先序表重新分類**——結果可能是 Case A（繼續）也可能是 C / D（髒樹，要問；unattended 則 abort）。**每次 invocation E' 最多走一次**：重測仍是 E'（代表 pull 與重測之間 upstream 又前進了）即 abort。ff-only 失敗（髒樹擋住、或其實有分歧）就 abort，**不重試**（attended / unattended 相同；unattended 沒有人喊停）：
 
 ```bash
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-if git pull --ff-only; then echo "→ Phase 0.5 Case E': fast-forwarded to upstream — 回 Step 2 重測（重測落到哪個 case 就照那個 case 的規則）"
+if git pull --ff-only; then
+    echo "→ Phase 0.5 Case E': fast-forwarded to upstream. New preview — divergence (behind ahead): $(git rev-list --left-right --count '@{u}...HEAD' 2>/dev/null | tr '\t' ' '); status entries: $(git status --porcelain | grep -c .)"
+    echo "   回 Step 1 重跑 preview、依 Step 2 重新分類；重測仍是 E' 就 abort（每次 invocation 最多一次）"
 else remove_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")"; echo "✗ Phase 0.5 Case E': ff-only 失敗（髒樹擋住或已分歧）— 手動處理後重跑 plugin-update" >&2; exit 75; fi
 ```
 
@@ -835,7 +846,7 @@ git fetch && git "$MODE" '@{u}' && echo "→ Phase 0.5: $MODE onto upstream done
      Detected state: $STATE.
      User must run /plugin-update <name> manually after IDD chain completes.
    ```
-3. Case B–E 的 abort 回非零退出碼(e.g. 75 = "abort by gate")so `idd-all` 在 final report 標 "plugin-update skipped under unattended mode"；Case A **不**回這個狀態、context 保留、繼續 Phase 1；Case E' 的 ff-only 成功後**重測 Step 2，重測落到哪個 case 就照那個 case 的規則**（A → 繼續；B–E → abort），ff-only 失敗 → abort（exit 75，不重試）
+3. Case B–E 的 abort 回非零退出碼(e.g. 75 = "abort by gate")so `idd-all` 在 final report 標 "plugin-update skipped under unattended mode"；Case A 的 fence 自驗通過 → **不**回這個狀態、context 保留、繼續 Phase 1；**Case A 的 fence 自驗失敗**（exit 75，context 保留）→ 回 Step 1 重跑 preview、重新分類，落到 B–E 就照 B–E abort（此時才 `remove_plugin_ctx`）；Case E' 的 ff-only 成功後**回 Step 1 重跑 preview、重測落到哪個 case 就照那個 case 的規則**（A → 繼續；B–E → abort；仍是 E' → abort，每次 invocation 最多一次），ff-only 失敗 → abort（exit 75，不重試）
 
 設計同 `idd-diagnose` Step 3.4 F unattended-mode pattern:auto-default to safe path + audit trail entry。**Plan tier 的 EnterPlanMode + plugin-update 的 Phase 0.5 Case B–E 都是 user-attendance-required gates**,unattended mode 統一走 abort + audit；Case A 通過之後，後面兩道互動閘各自有 unattended 分支——Phase 1.5 Step 4（binary 不同步 → auto-abort）與 Phase 2.5 Step 2（README stale → 自動「先略過」並在 report 標註）。
 
@@ -1144,7 +1155,7 @@ options:
   - "中止" — 停止 plugin-update，讓我手動處理（先 `remove_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")"`，同 Phase 0.5 Step 3）
 ```
 
-**unattended（`IDD_ALL_UNATTENDED=1`）**：要不要順便更新 binary 是需要人裁決的（「順便更新」會觸發 mcp-deploy / cli-upgrade 這類有副作用的動作）→ 先 `remove_plugin_ctx`，auto-abort + structured error（同 Phase 0.5 Step 4 的格式，`Detected state: binary out of sync`，退出碼 75），`idd-all` 在 final report 標 "plugin-update skipped under unattended mode: binary out of sync"。這條路徑在 #19 之前不可達（unattended 走不過 Phase 0.5），是 Case A 放行後才需要的分支。
+**unattended（`IDD_ALL_UNATTENDED=1`）**：要不要順便更新 binary 是需要人裁決的（「順便更新」會觸發 mcp-deploy / cli-upgrade 這類有副作用的動作）→ 先 `remove_plugin_ctx`，auto-abort + structured error（同 Phase 0.5 Step 4 的格式，`Detected state: binary out of sync`，退出碼 75），印一行 `AUDIT: Phase 1.5 binary out of sync — aborted under unattended`，`idd-all` 在 final report 標 "plugin-update skipped under unattended mode: binary out of sync"。這條路徑在 #19 之前不可達（unattended 走不過 Phase 0.5），是 Case A 放行後才需要的分支。
 
 **若使用者選「順便更新」**：
 
@@ -1305,6 +1316,7 @@ cd "$MP_ROOT" || exit 1
 NEW_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
 [ -n "$NEW_VERSION" ] || { echo "✗ 讀不到 $PLUGIN_MANIFEST 的 version" >&2; exit 1; }
 case "$NEW_VERSION" in *[!0-9A-Za-z.+-]*) echo "✗ plugin.json 的 version 含非法字元（只接受 [0-9A-Za-z.+-]）" >&2; exit 1 ;; esac
+clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]\\' | LC_ALL=C cut -c1-80; }
 # 「已同步」要驗**版本**，不是驗「檔案沒被改過」：Step 2 / 3 的 Edit 是 agent 的手動步驟，漏做時檔案
 # 也是乾淨的——印一句肯定的「已同步」就是 #19 要治的那類假訊息（#19 R2）。用 Phase 0.3 (b) 同一段讀法。
 MP_NOW=$(python3 -c '
@@ -1313,35 +1325,47 @@ try:
     d = json.load(open(sys.argv[1]))
     for p in d.get("plugins") or []:
         if isinstance(p, dict) and p.get("name") == sys.argv[2]:
-            print(p.get("version") or ""); break
+            v = p.get("version"); print(v if isinstance(v, str) else ""); break
 except Exception:
     print("")
 ' .claude-plugin/marketplace.json "$PLUGIN_NAME" 2>/dev/null)
-if [ "$MP_NOW" != "$NEW_VERSION" ]; then
-    echo "✗ Phase 2: marketplace.json 的 '$PLUGIN_NAME' entry 是 v${MP_NOW:-<missing>}，plugin.json 是 v${NEW_VERSION} — Step 2 / Step 3 的 Edit 沒落地（或 entry 不存在）。先把 entry 的 version 改成 ${NEW_VERSION} 再重跑本 fence。" >&2
+if [ -z "$MP_NOW" ]; then
+    echo "✗ Phase 2: marketplace.json 沒有 '$PLUGIN_NAME' 的 entry（或 entry 沒有 version）— 回 Step 3 依範本新增整個 entry（name / version / description / author / source / category；source 是後續所有 phase 解析路徑的依據）後重跑本 fence。" >&2
+    exit 1
+elif [ "$MP_NOW" != "$NEW_VERSION" ]; then
+    echo "✗ Phase 2: marketplace.json 的 '$PLUGIN_NAME' entry 是 v$(clean "$MP_NOW")，plugin.json 是 v${NEW_VERSION} — Step 2 的 Edit 沒落地。先把 entry 的 version 改成 ${NEW_VERSION} 再重跑本 fence。" >&2
     exit 1
 fi
+# 參考點是 upstream，不是 index：本 fence 自己 push 失敗後重跑、或 Phase 1.5 的 mcp-deploy 順手 commit 了鏡像，
+# 都會留下「已在 HEAD、upstream 還沒有」的狀態——只比 index↔HEAD 會把它印成成功（#19 R3）
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || { echo "✗ Phase 2: 沒有 upstream — Phase 0.5 Step 1 應已 abort" >&2; exit 1; }
 git --literal-pathspecs add -- .claude-plugin/marketplace.json
-if git --literal-pathspecs diff --cached --quiet -- .claude-plugin/marketplace.json; then
-    # MP_DRIFT=no 的 Case C（30 天內改過但版本已同步）會走到這裡：沒有東西可 commit 不是失敗，
-    # 但也不能無條件 commit（rc 1「nothing to commit」）再 push（rc 0）把它洗成成功（#19 R1）
-    echo "→ Phase 2: marketplace.json 已與 plugin.json 同步（v${NEW_VERSION}，已在 HEAD）— 無需 commit；繼續 Phase 3"
+if ! git --literal-pathspecs diff --cached --quiet -- .claude-plugin/marketplace.json; then
+    git --literal-pathspecs commit -m "chore: update marketplace.json for $PLUGIN_NAME v$NEW_VERSION" -- .claude-plugin/marketplace.json \
+      || { echo "✗ Phase 2: commit 失敗" >&2; exit 1; }
+    echo "→ Phase 2: committed marketplace.json mirror (v${NEW_VERSION})"
+fi
+AHEAD=$(git rev-list --count "$UPSTREAM..HEAD" 2>/dev/null) || { echo "✗ Phase 2: 算不出 $UPSTREAM..HEAD" >&2; exit 1; }
+if [ "$AHEAD" = 0 ]; then
+    echo "→ Phase 2: marketplace.json v${NEW_VERSION} 已在 HEAD 且 $UPSTREAM 已包含 HEAD — 無需 push；繼續 Phase 3"
 else
     # push 推的是整個 branch：Phase 0.5 量到 0 既有未推送是「當時」的事實，中間隔著 Phase 1 / 1.5
-    # （mcp-deploy 可能 opt-in commit）。混進來的 commit 一併列出並做 Step 5 同款的 plugin 歸屬分析
-    # （不靜默、不 fail-open：@{u} 答不出來就 abort）。
-    UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || { echo "✗ Phase 2: 沒有 upstream — Phase 0.5 Step 1 應已 abort" >&2; exit 1; }
-    EXTRA=$(git rev-list --count "$UPSTREAM..HEAD" 2>/dev/null) || { echo "✗ Phase 2: 算不出 $UPSTREAM..HEAD" >&2; exit 1; }
-    if [ "$EXTRA" != 0 ]; then
-        echo "⚠ Phase 2: 本次 push 會一併推送 $EXTRA 個在 Phase 0.5 之後出現的 commit："; git log --oneline "$UPSTREAM..HEAD" | sed 's/^/     /'
-        echo "  它們動到的 plugin（manifest 對映；解析不到的名稱在 stderr）："
-        git -c core.quotePath=false -c diff.relative=false log --name-only --pretty=format: "$UPSTREAM..HEAD" | plugin_names_for_paths "$MP_ROOT" | sed 's/^/     - /'
+    # （mcp-deploy 可能 opt-in commit）。全部列出並做 Step 5 同款的 plugin 歸屬分析（解析不到的名稱算未知）。
+    echo "→ Phase 2: $AHEAD commit(s) to push to ${UPSTREAM}："; git log --oneline "$UPSTREAM..HEAD" | sed 's/^/     /'
+    PNP_ERR=$(mktemp) || exit 1
+    TOUCHED=$(git -c core.quotePath=false -c diff.relative=false log --name-only --pretty=format: "$UPSTREAM..HEAD" | plugin_names_for_paths "$MP_ROOT" 2>"$PNP_ERR")
+    UNRES=$(grep -c 'did not resolve' "$PNP_ERR" || true); rm -f "$PNP_ERR"
+    echo "  plugins touched (manifest 對映): ${TOUCHED:-(none)}; unresolved names: ${UNRES:-0}$( [ "${UNRES:-0}" = 0 ] || printf ' — 未知，不是沒動到')" | tr '\n' ' '; echo
+    # push 明寫 remote 與 refspec（從 @{u} 拆出），不靠 push.default / pushRemote：裸 `git push` 在 push.default=current
+    # 或 matching 下會在本地 branch 名 ≠ upstream 名時開新分支或什麼都不推卻 rc 0；`origin HEAD` 同樣開新分支（#19 R2/R3）。
+    # push 之後再驗 @{u} == HEAD 才印成功——成功訊息必須是量出來的，不是宣告的。
+    REMOTE=${UPSTREAM%%/*}; RBRANCH=${UPSTREAM#*/}
+    git push "$REMOTE" "HEAD:refs/heads/$RBRANCH" || { echo "✗ Phase 2: push to $UPSTREAM failed（鏡像 commit 仍在本地 HEAD，重跑本 fence 會再推）" >&2; exit 1; }
+    if [ "$(git rev-parse '@{u}' 2>/dev/null)" = "$(git rev-parse HEAD)" ]; then
+        echo "→ Phase 2: marketplace.json mirrored to v${NEW_VERSION}, pushed — $UPSTREAM == HEAD (verified)"
+    else
+        echo "✗ Phase 2: push 回 0 但 $UPSTREAM 仍 != HEAD（remote-tracking ref 未更新）— 檢查 remote 設定後重跑" >&2; exit 1
     fi
-    # push 用裸 `git push`（走 Phase 0.5 Step 1 驗證過的 upstream；push.default=simple 時本地 branch 名 ≠ upstream
-    # branch 名會硬失敗）——不寫 `origin HEAD`：那會在 origin 開一條同名新分支、被服務的 ref 原地不動、還印
-    # 「pushed」（#19 R2 實測）。與 Phase 0.5 / Phase 2.5 的 push fence 同一條規則。
-    git --literal-pathspecs commit -m "chore: update marketplace.json for $PLUGIN_NAME v$NEW_VERSION" -- .claude-plugin/marketplace.json \
-      && git push && echo "→ Phase 2: marketplace.json mirrored to v${NEW_VERSION}, committed and pushed to $UPSTREAM"
 fi
 ```
 
@@ -1567,7 +1591,7 @@ options:
 | 已經沒問題 | 繼續 Phase 3，不記 warning |
 | 先略過 | 繼續 Phase 3，**Phase 5 最終 report 要顯眼標註** README 待補 |
 
-**unattended（`IDD_ALL_UNATTENDED=1`）**：自動採「先略過」——不改任何檔案、不問，final report 標註 "README stale（signal-N），待手動處理"。這是唯一不需要人裁決也不會動到東西的選項；#19 之前 unattended 走不到這裡。
+**unattended（`IDD_ALL_UNATTENDED=1`）**：自動採「先略過」——不改任何檔案、不問，印一行 `AUDIT: Phase 2.5 README stale（signal-N）— skipped under unattended, 待手動處理`，Phase 5 Step 3 的最終 report 原樣收錄。這是唯一不需要人裁決也不會動到東西的選項；#19 之前 unattended 走不到這裡。
 
 ```bash
 # 「更新 README」的 commit + push（帶前導，git 在 marketplace repo 內跑；COMMIT_MSG 是使用者確認過的訊息）
@@ -1710,6 +1734,22 @@ remove_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")"
 
 > 更新完成。請重啟 Claude Code（退出再重新開啟）讓變更完全生效。
 > 或者在下次啟動新對話時，新版 plugin 就會自動載入。
+
+### Step 3: 最終 report（attended / unattended 皆印；unattended 時這是唯一的痕跡，#19）
+
+把本次各 phase 印過的決定行彙整成固定格式，貼在回覆（unattended 下由 `idd-all` 收進 final report）：
+
+```
+plugin-update report — <PLUGIN_NAME> @ <marketplace> (<mode: attended|unattended>)
+- Phase 0.3: Case <A|B|C> — drift=<yes|no> recent_touches=<n> dirty=<n> unpushed_here=<n> binary=<…>
+- Phase 0.5: Case <A verified|B|C|D|E|E'→重測> — <push N as-is | commit+push | abort | clean start>
+- Phase 1.5: <no wrapper | binary in sync | binary out of sync → mcp-deploy / cli-upgrade | AUDIT: skipped under unattended (binary out of sync)>
+- Phase 2: <mirrored vX and pushed to <upstream> (verified) | already at HEAD and upstream | abort: Edit 沒落地>
+- Phase 2.5: <README fresh | README updated | AUDIT: README stale（signal-N）待手動處理 | 使用者選「已經沒問題」>
+- Phase 3/4: marketplace update <ok|failed>; plugin update <ok|failed>; installed version <…>
+```
+
+Phase 1.5 Step 4 與 Phase 2.5 Step 2 在 unattended 下各印一行以 `AUDIT:` 開頭的固定文字，這一步把它們原樣收進來——不改寫、不省略。
 
 ---
 

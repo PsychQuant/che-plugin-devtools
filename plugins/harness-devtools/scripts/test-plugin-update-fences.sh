@@ -114,15 +114,25 @@ f=$(prep 'nothing to gate; Phase 2 will mirror' pure)
 assert_contains "Case A with unpushed commits present is refused (bash)" "這不是 Case A" "$(cd "$T" && bash "$f" 2>&1)"
 assert_contains "Case A with unpushed commits present is refused (zsh)" "這不是 Case A" "$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)"
 ( cd "$T/dev/fx-mp" && git push -q 2>/dev/null )   # now genuinely clean + 0 unpushed
-run_both "Case A on a truly clean tree prints the verified pass-through line" 'nothing to gate; Phase 2 will mirror' pure "0 pre-existing unpushed commits (verified)"
+run_both "Case A on a truly clean tree prints the verified pass-through line" 'nothing to gate; Phase 2 will mirror' pure "divergence 0 0 (verified)"
+# pure BEHIND (upstream ahead by one): Case A must refuse (that is E')
+( cd "$T/dev/fx-mp" && git reset -q --hard HEAD~1 )
+f=$(prep 'nothing to gate; Phase 2 will mirror' pure)
+assert_contains "Case A on a clean but BEHIND tree is refused (E', not A)" "behind: 1" "$(cd "$T" && bash "$f" 2>&1)"
+( cd "$T/dev/fx-mp" && git pull -q --ff-only 2>/dev/null )
+# a branch with no upstream: Phase 0.3 Step 2 must abort, not print 'no unpushed commit'
+( cd "$T/dev/fx-mp" && git checkout -q -b no-upstream )
+prep01 pure
+run_both "Phase 0.3 Step 2 on a branch without upstream aborts instead of asserting 'no unpushed'" 'BINARY_UNKNOWN_WHY' pure "沒有 upstream tracking"
+( cd "$T/dev/fx-mp" && git checkout -q - && git branch -q -D no-upstream )
 if [ -f "$T/state/harness-devtools/plugin-update-ctx-pure" ]; then PASS=$((PASS+1)); echo "  ✓ Case A keeps the context file"; else FAIL=$((FAIL+1)); echo "  ✗ Case A keeps the context file"; fi
 echo
 echo "Phase 2 Step 4 (version verified; mirror commit only when marketplace.json changed):"
-run_both "Phase 2 Step 4 with an in-sync marketplace.json prints the skip line instead of failing" 'MP_NOW=$(python3 -c' nobin "→ Phase 2: marketplace.json 已與 plugin.json 同步"
+run_both "Phase 2 Step 4 with an in-sync marketplace.json prints the skip line instead of failing" 'MP_NOW=$(python3 -c' nobin "無需 push；繼續 Phase 3"
 printf '{ "name": "pure", "version": "1.0.2" }\n' > "$T/dev/fx-mp/plugins/pure/.claude-plugin/plugin.json"
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm pure-bump ) 2>/dev/null
 prep01 pure
-run_both "Phase 2 Step 4 with drift but the Edit NOT applied aborts instead of claiming sync" 'MP_NOW=$(python3 -c' pure "Step 2 / Step 3 的 Edit 沒落地"
+run_both "Phase 2 Step 4 with drift but the Edit NOT applied aborts instead of claiming sync" 'MP_NOW=$(python3 -c' pure "的 Edit 沒落地"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PY'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p))
@@ -131,11 +141,41 @@ for e in d['plugins']:
 json.dump(d,open(p,'w'))
 PY
 f=$(prep 'MP_NOW=$(python3 -c' pure)
-OUT=$(cd "$T" && bash "$f" 2>&1)
-assert_contains "Phase 2 Step 4 with the Edit applied commits and pushes to the upstream" "committed and pushed to origin/" "$OUT"
+OUT=$(cd "$T" && bash "$f" 2>&1); [ -n "${FENCE_DEBUG:-}" ] && printf '%s\n' "$OUT" | sed 's/^/      dbg| /'
+assert_contains "Phase 2 Step 4 with the Edit applied commits and pushes to the upstream" "pushed — origin/" "$OUT"
 assert_contains "…and lists the extra commit that appeared after Phase 0.5 (pure-bump)" "pure-bump" "$OUT"
 REMOTE_HEAD=$(cd "$T/dev/fx-mp" && git rev-parse '@{u}' 2>/dev/null); LOCAL_HEAD=$(cd "$T/dev/fx-mp" && git rev-parse HEAD)
 if [ -n "$REMOTE_HEAD" ] && [ "$REMOTE_HEAD" = "$LOCAL_HEAD" ]; then PASS=$((PASS+1)); echo "  ✓ the tracked upstream ref now equals HEAD (pushed to the right ref)"; else FAIL=$((FAIL+1)); echo "  ✗ the tracked upstream ref now equals HEAD"; fi
+# committed-but-UNPUSHED mirror (e.g. a previous push failed): the fence must push, not print 'already in sync'
+printf '{ "name": "pure", "version": "1.0.3" }\n' > "$T/dev/fx-mp/plugins/pure/.claude-plugin/plugin.json"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p))
+for e in d['plugins']:
+    if e['name']=='pure': e['version']='1.0.3'
+json.dump(d,open(p,'w'))
+PY
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm mirror-local-only ) 2>/dev/null
+prep01 pure
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "a mirror already committed but not pushed is pushed (no false 'already in sync')" "pushed — origin/" "$OUT"
+if [ "$(cd "$T/dev/fx-mp" && git rev-parse '@{u}')" = "$(cd "$T/dev/fx-mp" && git rev-parse HEAD)" ]; then PASS=$((PASS+1)); echo "  ✓ upstream == HEAD after pushing the pre-committed mirror"; else FAIL=$((FAIL+1)); echo "  ✗ upstream == HEAD after pushing the pre-committed mirror"; fi
+# push.default=current + local branch renamed: the push must still land on the TRACKED ref, never create a new remote branch
+( cd "$T/dev/fx-mp" && git config push.default current && git branch -m renamed-local )
+printf '{ "name": "pure", "version": "1.0.4" }\n' > "$T/dev/fx-mp/plugins/pure/.claude-plugin/plugin.json"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p))
+for e in d['plugins']:
+    if e['name']=='pure': e['version']='1.0.4'
+json.dump(d,open(p,'w'))
+PY
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm bump-on-renamed ) 2>/dev/null
+prep01 pure
+OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
+assert_contains "push.default=current + renamed local branch: pushed to the tracked upstream ref (verified)" "== HEAD (verified)" "$OUT"
+NB=$(cd "$T/remote.git" && git branch --list renamed-local | grep -c .)
+if [ "$NB" = 0 ] && [ "$(cd "$T/dev/fx-mp" && git rev-parse '@{u}')" = "$(cd "$T/dev/fx-mp" && git rev-parse HEAD)" ]; then PASS=$((PASS+1)); echo "  ✓ no stray remote branch created; upstream == HEAD"; else FAIL=$((FAIL+1)); echo "  ✗ no stray remote branch created; upstream == HEAD (stray=$NB)"; fi
 echo
 echo "Phase 1.5 Step 3 (CLI, hook present but no \$HOME/bin/<name> line → must say so, not stay silent):"
 run_both "Step 3 reports what it could not extract" 'HOOK="$PLUGIN_DIR/hooks/session-start.sh"' nobin "判定不出"
