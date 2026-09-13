@@ -31,6 +31,17 @@ printf '{ "name": "nobin", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/nobin
 printf '#!/bin/sh\ncurl -s https://api.github.com/repos/x/y/releases/latest\n' > "$T/dev/fx-mp/plugins/nobin/hooks/session-start.sh"
 printf '# s\n' > "$T/dev/fx-mp/plugins/nobin/skills/s/SKILL.md"; printf '# t\n' > "$T/dev/fx-mp/plugins/nobin/skills/t/SKILL.md"   # TWO skills: zsh's non-splitting `for x in $VAR` only shows with a multi-line list
 ( cd "$T/dev/fx-mp" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm init ) 2>/dev/null
+# a PURE-SHELL plugin (no .mcp.json / bin / session-start / binary pin), committed with an OLD date so it is
+# "dormant" (no commits in 30 days): #19 makes Phase 0.3 run for it too, and the clean-start / dirty / drift
+# scenarios must resolve as the decision table says
+mkdir -p "$T/dev/fx-mp/plugins/pure/.claude-plugin" "$T/dev/fx-mp/plugins/pure/skills/p"
+printf '{ "name": "pure", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/pure/.claude-plugin/plugin.json"
+printf '# p\n' > "$T/dev/fx-mp/plugins/pure/skills/p/SKILL.md"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"pure","version":"1.0.0","source":"./plugins/pure"}); json.dump(d,open(p,'w'))
+PY
+( cd "$T/dev/fx-mp" && git add -A && GIT_AUTHOR_DATE=2024-01-01T00:00:00 GIT_COMMITTER_DATE=2024-01-01T00:00:00 git -c user.name=t -c user.email=t@t commit -qm pure-old ) 2>/dev/null
 # an upstream, so Phase 0.5 Step 5 (needs @{u}) can run: bare remote + one unpushed commit touching nobin
 git init -q --bare "$T/remote.git" && ( cd "$T/dev/fx-mp" && git remote add origin "$T/remote.git" && git push -q -u origin HEAD 2>/dev/null \
   && printf '# more\n' >> plugins/nobin/skills/s/SKILL.md && git add -A && git -c user.name=t -c user.email=t@t commit -qm touch-nobin ) 2>/dev/null
@@ -74,6 +85,29 @@ run_both "Step 2 reaches its end" 'for wrapper in' nobin "→ Phase 1.5 Step 2: 
 echo
 echo "Phase 0.5 Step 5 (cross-plugin gate must print a conclusion; runs before any push):"
 run_both "Step 5 counts the unpushed commit touching nobin" 'UNRESOLVED_NAMES=' nobin "→ Phase 0.5 Step 5: 1 plugin(s) touched by 1 unpushed commit(s): nobin"
+echo
+echo "Phase 0.3 for a PURE-SHELL plugin (#19): clean + synced + dormant → Case A; dirty tree → Case C; drift → Case C"
+run_both "pure: Step 0.1 resolves" 'plugin_holders "$PLUGIN_NAME" "$WANT_MP"' pure "→ Step 0.1 OK: marketplace=fx-mp"
+run_both "pure: Step 1 says not binary-backed (all four signals miss)" 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' pure "IS_BINARY_BACKED=false"
+prep01() { fence_with 'plugin_holders "$PLUGIN_NAME" "$WANT_MP"' | sed "s/^PLUGIN_NAME='<plugin-name>'/PLUGIN_NAME='$1'/; s/^MP_NAME='<marketplace-name-or-empty>'/MP_NAME=''/" > "$T/fence01.sh"; (cd "$T" && bash "$T/fence01.sh" >/dev/null 2>&1); }   # Phase 0.3 Case A removes the context; re-arm it (own file: must not clobber $T/fence.sh)
+prep01 pure; f=$(prep 'BINARY_UNKNOWN_WHY' pure); assert_contains "pure: clean + synced + dormant → Case A (bash)" "→ Phase 0.3 sync intent: Case A" "$(cd "$T" && bash "$f" 2>&1)"
+prep01 pure; assert_contains "pure: clean + synced + dormant → Case A (zsh)" "→ Phase 0.3 sync intent: Case A" "$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)"
+printf '# edited, not committed\n' >> "$T/dev/fx-mp/plugins/pure/skills/p/SKILL.md"
+prep01 pure
+run_both "pure: uncommitted edit under the plugin dir → Case C (not the false 'no changes' abort)" 'BINARY_UNKNOWN_WHY' pure "→ Phase 0.3 sync intent: Case C"
+run_both "pure: …and the Case C summary names the uncommitted paths" 'BINARY_UNKNOWN_WHY' pure "uncommitted changes under the plugin dir: 1 paths"
+( cd "$T/dev/fx-mp" && git checkout -q -- plugins/pure/skills/p/SKILL.md )
+printf '{ "name": "pure", "version": "1.0.1" }\n' > "$T/dev/fx-mp/plugins/pure/.claude-plugin/plugin.json"
+( cd "$T/dev/fx-mp" && git add -A && GIT_AUTHOR_DATE=2024-01-02T00:00:00 GIT_COMMITTER_DATE=2024-01-02T00:00:00 git -c user.name=t -c user.email=t@t commit -qm pure-bump-old ) 2>/dev/null
+prep01 pure
+run_both "pure: plugin.json bumped (old commit) but marketplace.json not mirrored → drift → Case C" 'BINARY_UNKNOWN_WHY' pure "drift=yes"
+echo
+echo "Phase 0.5 Case A (clean start passes, one line, context kept):"
+run_both "Case A prints the pass-through line" 'nothing to gate; Phase 2 will mirror' pure "→ Phase 0.5: clean tree, 0 pre-existing unpushed commits"
+if [ -f "$T/state/harness-devtools/plugin-update-ctx-pure" ]; then PASS=$((PASS+1)); echo "  ✓ Case A keeps the context file"; else FAIL=$((FAIL+1)); echo "  ✗ Case A keeps the context file"; fi
+echo
+echo "Phase 2 Step 4 (mirror commit only when marketplace.json changed):"
+run_both "Phase 2 Step 4 with an in-sync marketplace.json prints the skip line instead of failing" 'git diff --cached --quiet -- .claude-plugin/marketplace.json' nobin "→ Phase 2: marketplace.json 已與 plugin.json 同步"
 echo
 echo "Phase 1.5 Step 3 (CLI, hook present but no \$HOME/bin/<name> line → must say so, not stay silent):"
 run_both "Step 3 reports what it could not extract" 'HOOK="$PLUGIN_DIR/hooks/session-start.sh"' nobin "判定不出"
