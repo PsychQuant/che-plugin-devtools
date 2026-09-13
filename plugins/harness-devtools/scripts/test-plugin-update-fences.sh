@@ -31,6 +31,9 @@ printf '{ "name": "nobin", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/nobin
 printf '#!/bin/sh\ncurl -s https://api.github.com/repos/x/y/releases/latest\n' > "$T/dev/fx-mp/plugins/nobin/hooks/session-start.sh"
 printf '# s\n' > "$T/dev/fx-mp/plugins/nobin/skills/s/SKILL.md"; printf '# t\n' > "$T/dev/fx-mp/plugins/nobin/skills/t/SKILL.md"   # TWO skills: zsh's non-splitting `for x in $VAR` only shows with a multi-line list
 ( cd "$T/dev/fx-mp" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm init ) 2>/dev/null
+# an upstream, so Phase 0.5 Step 5 (needs @{u}) can run: bare remote + one unpushed commit touching nobin
+git init -q --bare "$T/remote.git" && ( cd "$T/dev/fx-mp" && git remote add origin "$T/remote.git" && git push -q -u origin HEAD 2>/dev/null \
+  && printf '# more\n' >> plugins/nobin/skills/s/SKILL.md && git add -A && git -c user.name=t -c user.email=t@t commit -qm touch-nobin ) 2>/dev/null
 
 # ---- fence extraction: the Nth ```bash fence containing a marker ----
 fence_with() {   # marker → fence body on stdout
@@ -69,6 +72,9 @@ echo "Phase 1.5 Step 2 (no wrapper — the for-loop glob must not abort the fenc
 run_both "Step 2 reaches its end" 'for wrapper in' nobin "→ Phase 1.5 Step 2: wrappers checked"
 
 echo
+echo "Phase 0.5 Step 5 (cross-plugin gate must print a conclusion; runs before any push):"
+run_both "Step 5 counts the unpushed commit touching nobin" 'UNRESOLVED_NAMES=' nobin "→ Phase 0.5 Step 5: 1 plugin(s) touched by 1 unpushed commit(s): nobin"
+echo
 echo "Phase 1.5 Step 3 (CLI, hook present but no \$HOME/bin/<name> line → must say so, not stay silent):"
 run_both "Step 3 reports what it could not extract" 'HOOK="$PLUGIN_DIR/hooks/session-start.sh"' nobin "判定不出"
 echo
@@ -79,7 +85,7 @@ run_both "README that mentions s but never t is STALE (signal-4 must iterate bot
 run_both "…and the conclusion line says stale" 'GIT_OK=true' nobin "→ Phase 2.5: README stale"
 printf '# nobin\n\nv1.0.0 — `s` `t`\n' > "$T/dev/fx-mp/plugins/nobin/README.md"
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm readme2 ) 2>/dev/null
-run_both "README mentioning every component and the version is FRESH" 'GIT_OK=true' nobin "✅ Phase 2.5: README fresh（六信號全過）"
+run_both "README mentioning every component and the version is FRESH (with the unevaluated signals named)" 'GIT_OK=true' nobin "✅ Phase 2.5: README fresh（已評估的信號通過；未評估： 3(無 CHANGELOG.md) 5(無 tool count 可比) 6(無 Version History 或無 git)）"
 rm "$T/dev/fx-mp/plugins/nobin/README.md"
 run_both "missing README is reported as its own state" 'GIT_OK=true' nobin "沒有 README.md"
 echo

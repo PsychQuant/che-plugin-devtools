@@ -64,9 +64,10 @@ IFS="|" read -r MP_NAME MP_ROOT SRC <<< "$(find_plugin_marketplace "$PLUGIN_NAME
 # cache 路徑（可能有多個版本）
 ls -la ~/.claude/plugins/cache/psychquant-claude-plugins/$PLUGIN_NAME/ 2>/dev/null
 
-# che-local-plugins（舊文件寫的 Dropbox 路徑已不存在，實體在 ~/Developer）
-SRC_LOCAL="$(resolve_marketplace_root che-local-plugins)/plugins/$PLUGIN_NAME"
-ls "$SRC_LOCAL" 2>/dev/null
+# che-local-plugins（舊文件寫的 Dropbox 路徑已不存在，實體在 ~/Developer）——目錄由 manifest 解析，
+# 不組 plugins/<name>：resolve_marketplace_root 現在回外層 checkout，那裡沒有 plugins/（#18 R9）
+SRC_LOCAL=$(resolve_plugin_dir "$(resolve_marketplace_root che-local-plugins)" "$PLUGIN_NAME" 2>/dev/null) \
+  && ls "$SRC_LOCAL" || echo "ℹ che-local-plugins 沒有 '$PLUGIN_NAME'（或未解析）"
 ```
 
 ---

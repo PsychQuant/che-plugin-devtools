@@ -120,7 +120,7 @@ MP_ROOT=$(resolve_marketplace_root "$MP") || { echo "未知的 marketplace: $MP"
 MP_REPO="PsychQuant/$MP"
 
 # 抓實際 plugin 數量
-PLUGIN_COUNT=$(ls -d "$MP_ROOT"/plugins/*/ | wc -l | tr -d ' ')
+PLUGIN_COUNT=$(marketplace_plugin_names "$MP_ROOT" | wc -l | tr -d ' ')   # 經 manifest，不猜 plugins/ 佈局（glob 對不到在 zsh 會中止整個 fence，#18）
 
 # marketplace repo description 是否反映
 CURRENT_DESC=$(gh repo view "$MP_REPO" --json description -q .description)

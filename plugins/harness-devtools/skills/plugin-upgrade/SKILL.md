@@ -67,7 +67,8 @@ TaskCreate(name="deploy", description="Step 12: 呼叫 plugin-update（git commi
 ```bash
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 MARKETPLACE_ROOT="$(resolve_marketplace_root psychquant-claude-plugins)"   # 或改成目標 plugin 所在的 marketplace
-PLUGIN_DIR="$MARKETPLACE_ROOT/plugins/{plugin-name}"
+# 目錄由 manifest 的 plugins[].source 解析（#18）；plugins/<name> 硬編對 ./plugin 佈局與巢狀 marketplace 都指到不存在的目錄
+PLUGIN_DIR=$(resolve_plugin_dir "$MARKETPLACE_ROOT" '{plugin-name}') || { echo "✗ '{plugin-name}' 不在 $MARKETPLACE_ROOT 的 manifest 裡（resolve_plugin_dir rc $?）" >&2; exit 1; }
 
 # 確認存在
 ls "$PLUGIN_DIR/.claude-plugin/plugin.json"

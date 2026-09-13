@@ -666,8 +666,8 @@ _dir_mode() {
   return 1
 }
 PLUGIN_CTX_TTL_SECONDS="${PLUGIN_CTX_TTL_SECONDS:-21600}"   # 6 h: a context from an aborted run must not pin the next one
-_ctx_ttl() {   # the env value is untrusted too: non-numeric would disable the expiry check with a bare test(1) error
-  case "${PLUGIN_CTX_TTL_SECONDS:-}" in ''|*[!0-9]*) printf '21600\n' ;; *) printf '%s\n' "$PLUGIN_CTX_TTL_SECONDS" ;; esac
+_ctx_ttl() {   # the env value is untrusted too: non-numeric (or absurdly large — test(1) errors past the integer range) would disable the expiry check
+  case "${PLUGIN_CTX_TTL_SECONDS:-}" in ''|*[!0-9]*) printf '21600\n' ;; *) [ "${#PLUGIN_CTX_TTL_SECONDS}" -le 8 ] && printf '%s\n' "$PLUGIN_CTX_TTL_SECONDS" || printf '21600\n' ;; esac
 }
 write_plugin_ctx() {
   local file="${1:-}" mp="${2:-}" root="${3:-}" dir="${4:-}" plugin="${5:-}" v d tmp
@@ -756,49 +756,16 @@ marketplace_index() {
 # is resolve_plugin_dir's answer (#18); consumers read all three:
 #   IFS="|" read -r MP_NAME MP_ROOT PLUGIN_DIR <<< "$(find_plugin_marketplace x)"
 find_plugin_marketplace() {
-  local plugin="${1:-}" name root dir
-  [ -n "$plugin" ] || return 1
-
-  # Walks the index directly rather than calling resolve_marketplace_root per
-  # name. Two reasons, both found while verifying #20:
-  #
-  #   * that loop rebuilt the whole index once per marketplace — 33 scans for one
-  #     lookup;
-  #   * resolve_marketplace_root warns on ambiguous names, so looking up `macdoc`
-  #     printed a multi-checkout warning about che-apple-mail-mcp. The warning is
-  #     right for a name the *caller* asked for and pure noise for one this sweep
-  #     happened to walk past.
-  #
-  # Skipping the tie-break loses nothing here: the tie-break prefers candidates
-  # owning a plugins/ directory, and a hit below requires a USABLE local
-  # directory — the manifest's source resolved inside the root, or a
-  # materialized plugins/<name>, both under the one possession rule
-  # (_is_plugin_named) — so a tie-break loser can only match when it
-  # genuinely hosts the plugin's files. Declaration alone is not possession.
-  #
-  # A non-zero resolve_plugin_dir (rc 2 / 3 / 4 / 5) is NOT a hit: the same
-  # plugin may be complete in another checkout further down the index. Step 0.1
-  # of plugin-update re-asks resolve_plugin_dir per root when the whole walk
-  # misses, so those rcs still surface in the abort message with their cause.
-  #
-  # An invalid name (rc 6) cannot match anywhere, so the walk is skipped. A root
-  # containing the field separator would misalign the three-field contract, so
-  # such roots are skipped too.
-  #
-  # here-doc, not a pipe: a pipe opens a subshell, so `return 0` would end only
-  # that subshell and the function would fall through to `return 1`.
+  # The FIRST holder from plugin_holders — so this lookup applies the very same
+  # rules as Step 0.1 (nested same-name roots are subtrees, outermost wins, one
+  # row per marketplace name + physical dir) instead of the index's readdir order.
+  # Before #18 R9 this walked the index and returned the first resolving row, so
+  # che-local-plugins resolved to the outer or the inner checkout depending on
+  # which directory find(1) listed first. Across DIFFERENT marketplace names the
+  # first holder is still index order; Step 0.1 uses the full list and disambiguates.
+  local plugin="${1:-}"
   _valid_name "$plugin" || return 1
-  while IFS="$(printf '\t')" read -r name root; do
-    [ -n "$root" ] || continue
-    case "$root$name" in *\|*) continue ;; esac
-    if dir=$(resolve_plugin_dir "$root" "$plugin"); then
-      echo "$name|$root|$dir"
-      return 0
-    fi
-  done <<EOF
-$(_marketplace_index)
-EOF
-  return 1
+  plugin_holders "$plugin" | head -1 | grep .
 }
 
 # The plugin manifest of a plugin directory: <dir>/.claude-plugin/plugin.json, else
@@ -828,7 +795,7 @@ plugin_manifest_path() {
 # breaks the tie by cwd and otherwise aborts naming every root.
 #   rc 0 at least one holder printed; rc 1 none (or invalid names)
 plugin_holders() {
-  local plugin="${1:-}" want="${2:-}" name root dir phys rows=""
+  local plugin="${1:-}" want="${2:-}" name root dir phys rows="" keep rp ap n2 r2 d2 p2
   _valid_name "$plugin" || return 1
   if [ -n "$want" ]; then _valid_name "$want" || return 1; fi
   while IFS="$(printf '\t')" read -r name root; do
@@ -843,6 +810,25 @@ plugin_holders() {
 $(_marketplace_index)
 EOF
   [ -n "$rows" ] || return 1
+  # A same-name row whose root lies INSIDE another same-name row's root is that
+  # checkout's subtree (marketplace_candidates applies the identical rule), even
+  # when the two manifests point at different plugin directories (#18 R9).
+  rows=$(printf '%s' "$rows" | while IFS='|' read -r name root dir phys; do
+    [ -n "$root" ] || continue
+    keep=1; rp=$(cd "$root" 2>/dev/null && pwd -P) || continue
+    while IFS='|' read -r n2 r2 d2 p2; do
+      [ "$n2" = "$name" ] && [ "$r2" != "$root" ] || continue
+      ap=$(cd "$r2" 2>/dev/null && pwd -P) || continue
+      # a prefix test, not `case`: bash 3.2 mis-parses a case pattern's `)` inside the enclosing $( … )
+      if [ "${rp#"$ap"/}" != "$rp" ]; then keep=0; break; fi
+    done <<EOF2
+$rows
+EOF2
+    [ "$keep" = 1 ] && printf '%s|%s|%s|%s\n' "$name" "$root" "$dir" "$phys"
+  done)
+  [ -n "$rows" ] || return 1
+  rows="$rows
+"
   # Collapse rows that share marketplace NAME and physical plugin dir, keeping the
   # OUTERMOST root (shortest path): the nested same-name manifest is a subtree of
   # the outer checkout, and the outer one is what is registered and served — the

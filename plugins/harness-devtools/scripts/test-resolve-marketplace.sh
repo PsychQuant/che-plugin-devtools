@@ -587,6 +587,7 @@ cat > "$PD_TMP/nest/inner/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "pd-nest", "plugins": [ { "name": "np", "source": "./plugins/np" } ] }
 JSON
 NEST_HIT=$(find_plugin_marketplace np); IFS='|' read -r NMP NROOT NDIR <<< "$NEST_HIT"
+assert_eq "find_plugin_marketplace applies the nested rule too: OUTER root, independent of index order" "pd-nest|$PD_TMP/nest|$PD_TMP/nest/inner/plugins/np" "$NEST_HIT"
 write_plugin_ctx "$PD_TMP/state/plugin-update-ctx-np" "$NMP" "$NROOT" "$NDIR" np
 load_plugin_ctx "$PD_TMP/state/plugin-update-ctx-np" np >/dev/null 2>&1; RC_NEST=$?
 assert_eq "load_plugin_ctx accepts the very root find_plugin_marketplace chose for a nested same-name marketplace" "0:$NROOT" "$RC_NEST:$MP_ROOT"
@@ -625,6 +626,9 @@ assert_eq "non-numeric PLUGIN_CTX_TTL_SECONDS falls back to the default (fresh c
 sed -i.bak "s/^WRITTEN_EPOCH=.*/WRITTEN_EPOCH=$(( $(date +%s) + 86400 ))/" "$PD_TMP/state/plugin-update-ctx-bare"; rm -f "$PD_TMP/state/plugin-update-ctx-bare.bak"
 load_plugin_ctx "$PD_TMP/state/plugin-update-ctx-bare" bare >/dev/null 2>&1; RC_TTL2=$?
 assert_eq "a context timestamped in the future is refused -> rc 2" "2" "$RC_TTL2"
+sed -i.bak "s/^WRITTEN_EPOCH=.*/WRITTEN_EPOCH=$(( $(date +%s) - 30000 ))/" "$PD_TMP/state/plugin-update-ctx-bare"; rm -f "$PD_TMP/state/plugin-update-ctx-bare.bak"
+PLUGIN_CTX_TTL_SECONDS=99999999999999999999 load_plugin_ctx "$PD_TMP/state/plugin-update-ctx-bare" bare >/dev/null 2>&1; RC_TTL3=$?
+assert_eq "an absurdly large TTL falls back to the default instead of disabling expiry -> stale context rc 2" "2" "$RC_TTL3"
 # plugin_holders: nested same-name marketplaces resolving to ONE physical dir = one holder
 HOLD_NP=$(plugin_holders np | grep -c .)
 assert_eq "plugin_holders collapses two index rows that resolve to the same physical dir (che-local-plugins shape)" "1" "$HOLD_NP"
@@ -637,6 +641,12 @@ printf '{ "name": "qq" }\n' > "$PD_TMP/nest2/deep/plugins/qq/.claude-plugin/plug
 printf '{ "name": "pd-top", "plugins": [ { "name": "qq", "source": "./deep/plugins/qq" } ] }\n' > "$PD_TMP/nest2/.claude-plugin/marketplace.json"
 printf '{ "name": "pd-deep", "plugins": [ { "name": "qq", "source": "./plugins/qq" } ] }\n' > "$PD_TMP/nest2/deep/.claude-plugin/marketplace.json"
 assert_eq "plugin_holders keeps differently named marketplaces as separate holders even for one physical dir" "2" "$(plugin_holders qq | grep -c .)"
+# nested SAME-name roots holding DIFFERENT physical dirs: the inner one is a subtree, not a second holder
+mkdir -p "$PD_TMP/nest3/.claude-plugin" "$PD_TMP/nest3/plugins/dd/.claude-plugin" "$PD_TMP/nest3/sub/.claude-plugin" "$PD_TMP/nest3/sub/plugins/dd/.claude-plugin"
+printf '{ "name": "dd" }\n' > "$PD_TMP/nest3/plugins/dd/.claude-plugin/plugin.json"; printf '{ "name": "dd" }\n' > "$PD_TMP/nest3/sub/plugins/dd/.claude-plugin/plugin.json"
+printf '{ "name": "pd-nest3", "plugins": [ { "name": "dd", "source": "./plugins/dd" } ] }\n' > "$PD_TMP/nest3/.claude-plugin/marketplace.json"
+printf '{ "name": "pd-nest3", "plugins": [ { "name": "dd", "source": "./plugins/dd" } ] }\n' > "$PD_TMP/nest3/sub/.claude-plugin/marketplace.json"
+assert_eq "plugin_holders drops a same-name root nested inside another (subtree), even with a different plugin dir" "pd-nest3|$PD_TMP/nest3|$PD_TMP/nest3/plugins/dd" "$(plugin_holders dd)"
 # two genuinely distinct checkouts of one marketplace = two holders; scoping by name works
 mkdir -p "$PD_TMP/twin-a/.claude-plugin" "$PD_TMP/twin-a/plugin/.claude-plugin" "$PD_TMP/twin-b/.claude-plugin" "$PD_TMP/twin-b/plugin/.claude-plugin"
 for t in twin-a twin-b; do

@@ -253,6 +253,11 @@ marketplace（che-keychain、che-apple-mail-mcp、che-ical-mcp）那個目錄不
 **這是 abort，不是 warn。** 繼續下去的每一條路徑都是對錯的目標動手，而其中一條會
 主動邀請使用者 push 一個不相干的 repo。
 
+**同名 plugin 被多份實體不同的 checkout 持有時**（本機目前有 7 個：bestocr、parallel-ai-agents、
+che-creative-suite、che-dropbox-ignore、che-pixel-mcp、che-svg-mcp 各在兩個 marketplace 上架；
+che-apple-mail-mcp 有兩份 clone），`/plugin-update <name>` 不再靜默取索引第一份：站在要更新的
+checkout 裡跑、或帶 marketplace 名（Step 0.1 的 `MP_NAME`），否則 Step 0.1 會列出全部持有者並 abort。
+
 **每個 bash block 自己載回 context（#18）**：agent 是分次呼叫 Bash 工具執行這份 SKILL.md
 的，shell 變數不跨呼叫存活。Step 0.1 設好的 `MP_ROOT` / `PLUGIN_DIR` 到 Phase 0.3 那個
 shell 已經不存在——空的 `$PLUGIN_DIR/.mcp.json` 測的是 `/.mcp.json`，答案是「沒有」，而
@@ -652,6 +657,8 @@ echo "(left = origin behind us; right = we ahead of origin; '0 0' = synced; '0 N
 
 依 detected state 跑對應的 AskUserQuestion。**Default option = `abort` for any state with multiple sensible actions**;`push as-is` 只在 unambiguous clean+unpushed case 是 default。
 
+**任何 push 選項在執行 push fence 之前，先跑 Step 5 的 cross-plugin 檢查**（push 之後 `$UPSTREAM..HEAD` 就是空集合，Step 5 會誤報「沒碰任何 plugin」，#18 R9）。
+
 **選項裡的 commit / push 動作一律用下面兩個 fence 執行，不在對話裡現組 `git push`**：Step 1 的
 `cd "$MP_ROOT"` 到這個 Bash 呼叫已經失效，現組的 git 會跑在 session 的 cwd——那正是 Step 0.1
 存在理由裡的那個災害（推了不相干的 repo）。兩個 fence 都帶前導，git 因此在 marketplace repo 內跑；
@@ -664,12 +671,19 @@ PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-COMMIT_MSG='<commit-message-or-empty>'; AMEND='<yes-or-empty>'
-case "$COMMIT_MSG" in '<commit-message-or-empty>') COMMIT_MSG="" ;; esac
+# commit message 走 quoted heredoc → 檔案 → `git commit -F`：訊息裡的單引號是常態（don't、plugin's），
+# 不能放進單引號常值；quoted delimiter 不展開任何東西，唯一的逃逸是一整行恰等於 MSGEOF（#18 R9）
+AMEND='<yes-or-empty>'
 case "$AMEND" in yes) : ;; *) AMEND="" ;; esac
-git add -A
+MSGF=$(mktemp) || exit 1
+cat > "$MSGF" <<'MSGEOF'
+<commit-message-or-empty>
+MSGEOF
+git add -A -- "$MP_ROOT"   # pathspec 收斂到 marketplace root：巢狀在外層 repo 的 marketplace 不得把外層一起 stage
 if [ -n "$AMEND" ]; then git commit --amend --no-edit
-else [ -n "$COMMIT_MSG" ] || { echo "✗ 需要 commit message" >&2; exit 1; }; git commit -m "$COMMIT_MSG"; fi
+elif grep -qv '^<commit-message-or-empty>$' "$MSGF" && grep -q . "$MSGF"; then git commit -F "$MSGF"
+else echo "✗ 需要 commit message" >&2; rm -f "$MSGF"; exit 1; fi
+rm -f "$MSGF"
 ```
 
 ```bash
@@ -788,7 +802,7 @@ git fetch && git "$MODE" '@{u}' && echo "→ Phase 0.5: $MODE onto upstream done
 
 ### Step 5: Cross-plugin Commits Warning（v1.16.0 Tier A:warn-only)
 
-當 Step 3 選擇 `push N as-is` / `push N+1`,檢查 unpushed commits 有沒有 touch 預期外的 plugin / 完全沒 touch target plugin。target 就是本次引數 `PLUGIN_NAME`（前導代入）；沒帶名稱的 invocation 先走 Phase 1 Step 1 的推斷、拿到名稱後再回來跑本 step。
+當 Step 3 選擇 `push N as-is` / `push N+1`,**在執行 push fence 之前**檢查 unpushed commits 有沒有 touch 預期外的 plugin / 完全沒 touch target plugin（push 之後 `$UPSTREAM..HEAD` 為空，本 step 只能在 push 前跑）。target 就是本次引數 `PLUGIN_NAME`（前導代入）；沒帶名稱的 invocation 先走 Phase 1 Step 1 的推斷、拿到名稱後再回來跑本 step。
 
 ```bash
 # ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
@@ -810,9 +824,14 @@ UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) \
 # 收集 unpushed commits touch 到的 plugin 名(去重)——經 manifest 對映，不猜 plugins/<x>/ 佈局
 # （單一 plugin marketplace 的檔案在 plugin/ 底下；repo 即 plugin 的佈局擁有全部路徑，
 # 所以 root-sourced plugin 對任何 commit 都算被 touch——那是佈局語意，case (a) 對它不成立。#18）
+# plugin_names_for_paths 對解析不到的名稱只在 stderr 警告、不計入：那些是「未知」，不是「沒動到」——
+# 收下 stderr 算出數量，有就升成本 gate 自己的警告並走 case (c)（#18 R9）
+PNP_ERR=$(mktemp) || exit 1
 TOUCHED=$(git -c core.quotePath=false -c diff.relative=false log --name-only --pretty=format: "$UPSTREAM"..HEAD \
-  | plugin_names_for_paths "$MP_ROOT")
+  | plugin_names_for_paths "$MP_ROOT" 2>"$PNP_ERR")
 TOUCHED_COUNT=$(echo -n "$TOUCHED" | grep -c . || true)
+UNRESOLVED=$(grep -c 'did not resolve' "$PNP_ERR" || true); UNRESOLVED_NAMES=$(grep -o "'[^']*' did not resolve" "$PNP_ERR" | cut -d"'" -f2 | tr '\n' ' ')
+rm -f "$PNP_ERR"
 
 # Three cases:
 #   (a) TOUCHED_COUNT = 0 — 無 plugin 被 touch (commits 只改 root files / 沒碰任何 manifest 宣告的 plugin 目錄) — 危險!
@@ -826,7 +845,7 @@ if [ "$TOUCHED_COUNT" = "0" ]; then
     git log --oneline "$UPSTREAM"..HEAD | sed 's/^/     /'
     echo "   Pushing will publish marketplace.json / docs / root-only changes."
     echo "   If you intended to update '$TARGET_PLUGIN' specifically, abort and re-check commits."
-elif [ "$TOUCHED_COUNT" = "1" ] && [ "$TOUCHED" = "$TARGET_PLUGIN" ]; then
+elif [ "$TOUCHED_COUNT" = "1" ] && [ "$TOUCHED" = "$TARGET_PLUGIN" ] && [ "${UNRESOLVED:-0}" = "0" ]; then
     : # Happy path — single-plugin commit matching target. No warning.
 else
     # Cross-plugin or wrong target
@@ -835,6 +854,8 @@ else
     echo "   Pushing will publish all of them via marketplace update."
     echo "   (warn-only; active scope guard 留給 follow-up issue #65 處理)"
 fi
+[ "${UNRESOLVED:-0}" = "0" ] || echo "⚠ Heads-up: $UNRESOLVED plugin name(s) touched by these commits could NOT be resolved（$UNRESOLVED_NAMES）— 它們是「未知」，不是「沒動到」；push 會一併發佈它們的變更。修那些 entry 的 source 或 manifest 再判斷。"
+echo "→ Phase 0.5 Step 5: $TOUCHED_COUNT plugin(s) touched by $(git rev-list --count "$UPSTREAM"..HEAD) unpushed commit(s)${TOUCHED:+: $(printf '%s' "$TOUCHED" | tr '\n' ' ')}; unresolved=${UNRESOLVED:-0}"
 ```
 
 **Tier A scope = warn-only(3 cases:empty / happy / cross-plugin)**;**Tier C scope guard(active 拒絕 push,refuse + suggest interactive rebase)留給 follow-up issue #65 處理**。
@@ -864,13 +885,13 @@ case "$MP_NAME" in '<marketplace-name-or-empty>') MP_NAME="" ;; esac
 case "$MP_NAME" in .*|-*|*[!A-Za-z0-9._-]*) echo "✗ marketplace 名稱不合法（只接受 [A-Za-z0-9._-]，不以 . 或 - 開頭）" >&2; exit 1 ;; esac
 HERE=$(pwd -P)
 ROOT=""; MPN=""; BEST=""
+if [ -n "$MP_NAME" ]; then
+    # 指定名稱：走 marketplace_candidates（巢狀同名的子層是 subtree、外層勝——與 Step 0.1 同一規則，不靠索引順序）
+    ROOT=$(marketplace_candidates "$MP_NAME" 2>/dev/null | head -1); MPN="$MP_NAME"
+    [ "$(marketplace_candidates "$MP_NAME" 2>/dev/null | grep -c .)" -le 1 ] || echo "ℹ marketplace '$MP_NAME' 有多份實體不同的 checkout；這一步只推斷名稱，Step 0.1 會以 cwd 消歧、不在任何一份裡時要求你 cd。"
+fi
 while IFS="$(printf '\t')" read -r mp root; do
-    [ -n "$root" ] || continue
-    if [ -n "$MP_NAME" ]; then
-        [ "$mp" = "$MP_NAME" ] || continue
-        [ -n "$ROOT" ] && { echo "ℹ marketplace '$MP_NAME' 有多份 checkout（$ROOT、$root）；這一步只推斷名稱，Step 0.1 會以 cwd 消歧、不在任何一份裡時要求你 cd。"; continue; }
-        ROOT="$root"; MPN="$mp"; continue
-    fi
+    [ -n "$root" ] && [ -z "$MP_NAME" ] || continue
     rp=$(cd "$root" 2>/dev/null && pwd -P) || continue
     # cwd 在哪份 checkout 裡：取**最內層**（最長）的包含 root——巢狀 marketplace 時外層也包含 cwd，
     # 取第一個命中會把站在內層的使用者判到外層（#18 R6）
@@ -1048,12 +1069,17 @@ cd "$MP_ROOT" || exit 1
 HOOK="$PLUGIN_DIR/hooks/session-start.sh"
 [ -f "$HOOK" ] || { echo "ℹ Phase 1.5 Step 3: $PLUGIN_DIR 沒有 hooks/session-start.sh — CLI 版本比對沒有可驗證的對象（不是「已同步」）"; exit 0; }
 # repo 只認 GITHUB_REPO= / REPO= 賦值或 api.github.com/repos/<owner>/<repo>（不要抓檔案裡第一個 a/b 形的字串：#!/bin/sh 就會命中）
-GFH_REPO=$(grep -oE '(^(GITHUB_REPO|REPO)="?|api\.github\.com/repos/)[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' "$HOOK" | head -1 | sed -E 's/^(GITHUB_REPO|REPO)="?//; s#^api\.github\.com/repos/##')
-BINARY_NAME=$(grep -oE '\$HOME/bin/[A-Za-z0-9_.-]+' "$HOOK" | head -1 | sed 's#.*/##')
-case "$GFH_REPO" in ''|.*|-*|*[!A-Za-z0-9._/-]*|*/*/*) echo "❓ $HOOK 判定不出 GITHUB_REPO（owner/repo）— CLI 版本比對沒驗證任何東西"; exit 0 ;; esac
+# 認得的形狀（封閉列舉）：`<任何>_REPO="owner/repo"` / `REPO="owner/repo"` 賦值（gifthub 是 GFH_REPO=）、
+# 字面 api.github.com/repos/owner/repo、字面 github.com/owner/repo；不抓檔案裡第一個 a/b 形字串
+GFH_REPO=$(grep -oE '(^[A-Z_]*REPO="?|api\.github\.com/repos/|github\.com/)[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*' "$HOOK" | head -1 | sed -E 's/^[A-Z_]*REPO="?//; s#^api\.github\.com/repos/##; s#^github\.com/##')
+BINARY_NAME=$(grep -oE '(\$HOME|~)/bin/[A-Za-z0-9_.-]+' "$HOOK" | head -1 | sed 's#.*/##')
+# 與 Step 2 同一條：兩段都以英數開頭（擋 .. / .git）、只含 [A-Za-z0-9._-]、恰一個斜線
+case "$GFH_REPO" in [A-Za-z0-9]*/[A-Za-z0-9]*) case "$GFH_REPO" in *[!A-Za-z0-9._/-]*|*/*/*) GFH_REPO="" ;; esac ;; *) GFH_REPO="" ;; esac
+[ -n "$GFH_REPO" ] || { echo "❓ $HOOK 判定不出 repo（只認 *_REPO=\"owner/repo\" 賦值、api.github.com/repos/owner/repo、github.com/owner/repo 字面）— CLI 版本比對沒驗證任何東西"; exit 0; }
 case "$BINARY_NAME" in ''|.*|-*|*[!A-Za-z0-9._-]*) echo "❓ $HOOK 判定不出 \$HOME/bin/<name> — CLI 版本比對沒驗證任何東西"; exit 0 ;; esac
 [ -x "$HOME/bin/$BINARY_NAME" ] || echo "ℹ $HOME/bin/$BINARY_NAME 未安裝（或不可執行）— 本機版本無法取得"
-LOCAL_VERSION=$("$HOME/bin/$BINARY_NAME" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+# 這是 plugin 檔案內容點名的 binary（它自己的 CLI）：從中性目錄執行，不讓它以 marketplace repo 為 cwd
+LOCAL_VERSION=$(cd / && "$HOME/bin/$BINARY_NAME" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 LATEST_VERSION=$(curl -sL "https://api.github.com/repos/$GFH_REPO/releases/latest" 2>/dev/null \
     | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 if [ -z "$LATEST_VERSION" ]; then echo "❓ 取不到 $GFH_REPO 的 latest release（網路 / 沒有 release / rate limit）— 無法比對"
@@ -1277,6 +1303,8 @@ STALE_README=false
 GIT_OK=true
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git rev-parse -q --verify HEAD >/dev/null 2>&1 || GIT_OK=false
 [ "$GIT_OK" = true ] || echo "ℹ Phase 2.5: $MP_ROOT 不是可用的 git work tree — 信號 2 / 6 無法判定"
+# 每個信號在「沒有輸入可評估」時記一筆，結論行只宣稱真的跑過的那幾個（#18 R9）
+SKIPPED=""
 # 讀不到 version 就 abort：空的 NEW_VERSION 會讓下面信號 1 的 pattern 變成 `v\|`（空 alternation
 # 匹配每一行）→ README 永遠「沒有 stale」——這正是 #18 要消滅的「偵測落空被讀成沒有」。
 [ -n "$PLUGIN_MANIFEST" ] || { echo "✗ Phase 2.5: $PLUGIN_DIR 沒有 plugin manifest — README 六信號無法判定" >&2; exit 1; }
@@ -1290,6 +1318,7 @@ if grep -qE '## (Version|Changelog)|# Changelog|v[0-9]+\.[0-9]+' "$README" 2>/de
 fi
 
 # 信號 1: README 沒出現新版本字串
+[ "$HAS_VERSION_SECTION" = "true" ] || SKIPPED="$SKIPPED 1(README 無版本標記)"
 if [ "$HAS_VERSION_SECTION" = "true" ] && ! grep -q "v$NEW_VERSION\|$NEW_VERSION" "$README" 2>/dev/null; then
     echo "⚠️  signal-1: README has version markers but doesn't mention v$NEW_VERSION"
     STALE_README=true
@@ -1302,6 +1331,7 @@ fi
 #      不影響使用者可見 surface 的 plumbing 改動 → 不算 stale
 README_MTIME=$(git --literal-pathspecs log -1 --format=%ct -- "$PLUGIN_DIR/README.md" 2>/dev/null)
 CODE_MTIME=$(git --literal-pathspecs log -1 --format=%ct -- "$PLUGIN_MANIFEST" "$PLUGIN_DIR/skills" "$PLUGIN_DIR/hooks" "$PLUGIN_DIR/agents" "$PLUGIN_DIR/rules" "$PLUGIN_DIR/commands" 2>/dev/null)
+{ [ "$GIT_OK" = true ] && [ -n "$README_MTIME" ] && [ -n "$CODE_MTIME" ] && [ "$HAS_VERSION_SECTION" = "true" ]; } || SKIPPED="$SKIPPED 2(無 git mtime 或無版本標記)"
 if [ -n "$README_MTIME" ] && [ -n "$CODE_MTIME" ] && [ "$README_MTIME" -lt "$CODE_MTIME" ]; then
     if [ "$HAS_VERSION_SECTION" = "false" ]; then
         # Suppression A — 沒版本追蹤標記，mtime drift 沒意義
@@ -1324,6 +1354,7 @@ fi
 
 # 信號 3: 若有 CHANGELOG.md，檢查最新 entry 是否已出現在 README
 CHANGELOG="$PLUGIN_DIR/CHANGELOG.md"
+[ -f "$CHANGELOG" ] || SKIPPED="$SKIPPED 3(無 CHANGELOG.md)"
 if [ -f "$CHANGELOG" ]; then
     LATEST_CL_VERSION=$(grep -oE '^## \[?[0-9]+\.[0-9]+\.[0-9]+\]?' "$CHANGELOG" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
     if [ -n "$LATEST_CL_VERSION" ] && ! grep -q "$LATEST_CL_VERSION" "$README" 2>/dev/null; then
@@ -1342,9 +1373,13 @@ fi
 #   commands/*.md    檔案必須存在
 # 迴圈一律 `while read` 吃 heredoc，不寫 `for x in $VAR`：Bash 工具是 zsh，未加引號的展開**不分詞**，
 # 整串換行相連的名單會當成一個項目、grep 收到含換行的 pattern → 信號 4 / 6 永遠不觸發（#18 R8）
-ACTUAL_SKILLS=$(find "$PLUGIN_DIR/skills/" -maxdepth 2 -name 'SKILL.md' 2>/dev/null | xargs -n1 dirname 2>/dev/null | xargs -n1 basename 2>/dev/null | sort)
-ACTUAL_AGENTS=$(find "$PLUGIN_DIR/agents/" -maxdepth 1 -name '*.md' 2>/dev/null | xargs -n1 basename -s .md 2>/dev/null | sort)
-ACTUAL_COMMANDS=$(find "$PLUGIN_DIR/commands/" -maxdepth 1 -name '*.md' 2>/dev/null | xargs -n1 basename -s .md 2>/dev/null | sort)
+# 名稱來自檔案系統：不經 xargs（空白 / 引號會被重切）、只接受 [A-Za-z0-9._-]（其餘記為未評估）、
+# 拼進 ERE 前把 . 跳脫（`a.b` 不得匹配 `axb`）（#18 R9）
+ACTUAL_SKILLS=$(find "$PLUGIN_DIR/skills" -mindepth 2 -maxdepth 2 -name 'SKILL.md' 2>/dev/null | sed 's#/SKILL\.md$##; s#.*/##' | sort)
+ACTUAL_AGENTS=$(find "$PLUGIN_DIR/agents" -mindepth 1 -maxdepth 1 -name '*.md' 2>/dev/null | sed 's#.*/##; s#\.md$##' | sort)
+ACTUAL_COMMANDS=$(find "$PLUGIN_DIR/commands" -mindepth 1 -maxdepth 1 -name '*.md' 2>/dev/null | sed 's#.*/##; s#\.md$##' | sort)
+name_ok() { case "$1" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac; }
+re_esc() { printf '%s' "$1" | sed 's/[.]/\\./g'; }
 MISSING_COMPONENTS=()
 # 認可的引用格式（任一命中即視為「README 提到這個 component」）：
 #   `name`              — backtick-quoted reference
@@ -1353,16 +1388,19 @@ MISSING_COMPONENTS=()
 #   @name               — agent reference
 #   - **name**          — markdown bold list entry
 while IFS= read -r s; do [ -n "$s" ] || continue
+    name_ok "$s" || { SKIPPED="$SKIPPED 4(skill 名含非法字元:$s)"; continue; }; s=$(re_esc "$s")
     grep -qE "\`$s\`|/${s}\b|/[a-z0-9_-]+:${s}\b|^- \*\*$s\*\*" "$README" 2>/dev/null || MISSING_COMPONENTS+=("skill:$s")
 done <<EOF
 $ACTUAL_SKILLS
 EOF
 while IFS= read -r a; do [ -n "$a" ] || continue
+    name_ok "$a" || { SKIPPED="$SKIPPED 4(agent 名含非法字元:$a)"; continue; }; a=$(re_esc "$a")
     grep -qE "\`$a\`|@$a\b|/[a-z0-9_-]+:${a}\b|^- \*\*$a\*\*" "$README" 2>/dev/null || MISSING_COMPONENTS+=("agent:$a")
 done <<EOF
 $ACTUAL_AGENTS
 EOF
 while IFS= read -r c; do [ -n "$c" ] || continue
+    name_ok "$c" || { SKIPPED="$SKIPPED 4(command 名含非法字元:$c)"; continue; }; c=$(re_esc "$c")
     grep -qE "/${c}\b|\`/${c}\`|/[a-z0-9_-]+:${c}\b" "$README" 2>/dev/null || MISSING_COMPONENTS+=("command:$c")
 done <<EOF
 $ACTUAL_COMMANDS
@@ -1379,6 +1417,7 @@ fi
 DESC=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("description", ""))' "$PLUGIN_MANIFEST" 2>/dev/null)
 DESC_TOOLS=$(echo "$DESC" | grep -oE '[0-9]+ ?(?:個 )?(?:MCP )?(?:tools|工具)' | head -1 | grep -oE '^[0-9]+')
 README_TOOLS=$(grep -oE 'Available Tools \([0-9]+\)|\([0-9]+ (?:MCP )?tools\)|\*\*[0-9]+ MCP Tools\*\*|[0-9]+ 個工具' "$README" 2>/dev/null | grep -oE '[0-9]+' | head -1)
+{ [ -n "$DESC_TOOLS" ] && [ -n "$README_TOOLS" ]; } || SKIPPED="$SKIPPED 5(無 tool count 可比)"
 if [ -n "$DESC_TOOLS" ] && [ -n "$README_TOOLS" ] && [ "$DESC_TOOLS" != "$README_TOOLS" ]; then
     echo "⚠️  signal-5: README tool count ($README_TOOLS) != plugin.json description ($DESC_TOOLS)"
     STALE_README=true
@@ -1388,6 +1427,7 @@ fi
 # 如果 README 有 Version History 表格，掃「最近 90 天」的 git log 找出 bump commits，
 # 確保表格涵蓋這段時間出貨的版本 — 不只是「latest 有沒有」（信號 1）而是「中間是否漏版本」。
 # 範圍只看 90 天避免 major rewrite（plugin v1.x → v2.x README 改寫）誤觸發。
+{ [ "$GIT_OK" = true ] && grep -q '## Version History\|### Changelog' "$README" 2>/dev/null; } || SKIPPED="$SKIPPED 6(無 Version History 或無 git)"
 if grep -q '## Version History\|### Changelog' "$README" 2>/dev/null; then
     SHIPPED_VERSIONS=$(git --literal-pathspecs log --since="90 days ago" --format='%s' -- "$PLUGIN_DIR/" 2>/dev/null | \
         grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | sort -uV | tail -8)
@@ -1414,8 +1454,8 @@ fi
 # 結論要印出來：沒有任何 ⚠️ 與「fence 中途死掉」在 stdout 上一模一樣（#18 R7）；
 # 「全過」只能說已評估的信號——靠 git 的兩個在非 git 目錄是 unknown（#18 R8）
 if [ "$STALE_README" = true ]; then echo "→ Phase 2.5: README stale（見上方 signal-N）— Step 2 詢問是否更新"
-elif [ "$GIT_OK" = true ]; then echo "✅ Phase 2.5: README fresh（六信號全過）— 繼續 Phase 3"
-else echo "✅ Phase 2.5: README fresh（信號 1/3/4/5 通過；信號 2/6 無法判定：非 git）— 繼續 Phase 3"; fi
+elif [ -z "$SKIPPED" ]; then echo "✅ Phase 2.5: README fresh（六信號全過）— 繼續 Phase 3"
+else echo "✅ Phase 2.5: README fresh（已評估的信號通過；未評估：${SKIPPED}）— 繼續 Phase 3"; fi   # ${…}：bash 會把緊接的全形括號吃進變數名
 ```
 
 **設計理由速覽**：
@@ -1453,10 +1493,14 @@ PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
-COMMIT_MSG='<commit-message>'
-case "$COMMIT_MSG" in ''|'<commit-message>') echo "✗ 需要 commit message" >&2; exit 1 ;; esac
-git --literal-pathspecs add -- "$PLUGIN_DIR/README.md" && git commit -m "$COMMIT_MSG" && git push \
+MSGF=$(mktemp) || exit 1
+cat > "$MSGF" <<'MSGEOF'
+<commit-message>
+MSGEOF
+grep -qv '^<commit-message>$' "$MSGF" && grep -q . "$MSGF" || { echo "✗ 需要 commit message" >&2; rm -f "$MSGF"; exit 1; }
+git --literal-pathspecs add -- "$PLUGIN_DIR/README.md" && git commit -F "$MSGF" && git push \
   && echo "→ Phase 2.5: README committed and pushed in $MP_ROOT"
+rm -f "$MSGF"
 ```
 
 ### 狀況表
