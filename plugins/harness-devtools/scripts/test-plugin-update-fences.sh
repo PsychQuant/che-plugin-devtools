@@ -95,19 +95,47 @@ prep01 pure; assert_contains "pure: clean + synced + dormant → Case A (zsh)" "
 printf '# edited, not committed\n' >> "$T/dev/fx-mp/plugins/pure/skills/p/SKILL.md"
 prep01 pure
 run_both "pure: uncommitted edit under the plugin dir → Case C (not the false 'no changes' abort)" 'BINARY_UNKNOWN_WHY' pure "→ Phase 0.3 sync intent: Case C"
-run_both "pure: …and the Case C summary names the uncommitted paths" 'BINARY_UNKNOWN_WHY' pure "uncommitted changes under the plugin dir: 1 paths"
+run_both "pure: …and the Case C summary names the uncommitted paths" 'BINARY_UNKNOWN_WHY' pure "uncommitted changes under the plugin dir / marketplace.json: 1 status entries"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/pure/skills/p/SKILL.md )
 printf '{ "name": "pure", "version": "1.0.1" }\n' > "$T/dev/fx-mp/plugins/pure/.claude-plugin/plugin.json"
 ( cd "$T/dev/fx-mp" && git add -A && GIT_AUTHOR_DATE=2024-01-02T00:00:00 GIT_COMMITTER_DATE=2024-01-02T00:00:00 git -c user.name=t -c user.email=t@t commit -qm pure-bump-old ) 2>/dev/null
 prep01 pure
 run_both "pure: plugin.json bumped (old commit) but marketplace.json not mirrored → drift → Case C" 'BINARY_UNKNOWN_WHY' pure "drift=yes"
 echo
-echo "Phase 0.5 Case A (clean start passes, one line, context kept):"
-run_both "Case A prints the pass-through line" 'nothing to gate; Phase 2 will mirror' pure "→ Phase 0.5: clean tree, 0 pre-existing unpushed commits"
+echo "Phase 0.3 for pure: an unpushed commit touching the plugin (older than 30 days, tree clean, versions in sync) → Case C, not Case A"
+printf '{ "name": "pure", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/pure/.claude-plugin/plugin.json"   # back in sync with marketplace.json
+( cd "$T/dev/fx-mp" && git add -A && GIT_AUTHOR_DATE=2024-01-03T00:00:00 GIT_COMMITTER_DATE=2024-01-03T00:00:00 git -c user.name=t -c user.email=t@t commit -qm pure-resync-old ) 2>/dev/null
+prep01 pure
+run_both "pure: dormant + clean + synced but UNPUSHED plugin commits → Case C (unpushed_here>0)" 'BINARY_UNKNOWN_WHY' pure "→ Phase 0.3 sync intent: Case C"
+echo
+echo "Phase 0.5 Case A (the fence VERIFIES clean + 0 unpushed; misclassification is refused):"
+prep01 pure
+f=$(prep 'nothing to gate; Phase 2 will mirror' pure)
+assert_contains "Case A with unpushed commits present is refused (bash)" "這不是 Case A" "$(cd "$T" && bash "$f" 2>&1)"
+assert_contains "Case A with unpushed commits present is refused (zsh)" "這不是 Case A" "$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)"
+( cd "$T/dev/fx-mp" && git push -q 2>/dev/null )   # now genuinely clean + 0 unpushed
+run_both "Case A on a truly clean tree prints the verified pass-through line" 'nothing to gate; Phase 2 will mirror' pure "0 pre-existing unpushed commits (verified)"
 if [ -f "$T/state/harness-devtools/plugin-update-ctx-pure" ]; then PASS=$((PASS+1)); echo "  ✓ Case A keeps the context file"; else FAIL=$((FAIL+1)); echo "  ✗ Case A keeps the context file"; fi
 echo
-echo "Phase 2 Step 4 (mirror commit only when marketplace.json changed):"
-run_both "Phase 2 Step 4 with an in-sync marketplace.json prints the skip line instead of failing" 'git diff --cached --quiet -- .claude-plugin/marketplace.json' nobin "→ Phase 2: marketplace.json 已與 plugin.json 同步"
+echo "Phase 2 Step 4 (version verified; mirror commit only when marketplace.json changed):"
+run_both "Phase 2 Step 4 with an in-sync marketplace.json prints the skip line instead of failing" 'MP_NOW=$(python3 -c' nobin "→ Phase 2: marketplace.json 已與 plugin.json 同步"
+printf '{ "name": "pure", "version": "1.0.2" }\n' > "$T/dev/fx-mp/plugins/pure/.claude-plugin/plugin.json"
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm pure-bump ) 2>/dev/null
+prep01 pure
+run_both "Phase 2 Step 4 with drift but the Edit NOT applied aborts instead of claiming sync" 'MP_NOW=$(python3 -c' pure "Step 2 / Step 3 的 Edit 沒落地"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p))
+for e in d['plugins']:
+    if e['name']=='pure': e['version']='1.0.2'
+json.dump(d,open(p,'w'))
+PY
+f=$(prep 'MP_NOW=$(python3 -c' pure)
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "Phase 2 Step 4 with the Edit applied commits and pushes to the upstream" "committed and pushed to origin/" "$OUT"
+assert_contains "…and lists the extra commit that appeared after Phase 0.5 (pure-bump)" "pure-bump" "$OUT"
+REMOTE_HEAD=$(cd "$T/dev/fx-mp" && git rev-parse '@{u}' 2>/dev/null); LOCAL_HEAD=$(cd "$T/dev/fx-mp" && git rev-parse HEAD)
+if [ -n "$REMOTE_HEAD" ] && [ "$REMOTE_HEAD" = "$LOCAL_HEAD" ]; then PASS=$((PASS+1)); echo "  ✓ the tracked upstream ref now equals HEAD (pushed to the right ref)"; else FAIL=$((FAIL+1)); echo "  ✗ the tracked upstream ref now equals HEAD"; fi
 echo
 echo "Phase 1.5 Step 3 (CLI, hook present but no \$HOME/bin/<name> line → must say so, not stay silent):"
 run_both "Step 3 reports what it could not extract" 'HOOK="$PLUGIN_DIR/hooks/session-start.sh"' nobin "判定不出"
