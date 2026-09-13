@@ -39,8 +39,8 @@ Plugin 修改後有 6 個環節容易漏掉：
 
 ```
 TaskCreate(name="detect_marketplace", description="Phase 0: 找到 plugin 所屬的 marketplace repo（Step 0.1 寫 context 檔）。invocation 沒帶 plugin 名時，detect_changes（Phase 1 Step 1 推斷）提前到這一項之前，選定名稱後再回來")
-TaskCreate(name="sync_intent_gate", description="Phase 0.3 (v1.17.0+): pre-flight intent check — detect binary-backed plugin; if no shell changes AND binary not bumped AND binary already at last release, abort early (no-op short-circuit)")
-TaskCreate(name="git_state_gate", description="Phase 0.5 (v1.16.0+ #60): preview git status / unpushed commits / divergence + 5-case AskUserQuestion (abort default for non-clean states); idd-all unattended → auto-abort")
+TaskCreate(name="sync_intent_gate", description="Phase 0.3 (v1.17.0+, #19 對所有 plugin 執行): pre-flight intent check — 信號 = marketplace drift ∨ 30 天內 shell 變更 ∨ binary 信號（純 shell plugin 的 binary 信號為空）；全部落空 → abort early (no-op short-circuit)；binary unknown / unreleased → Case B 問")
+TaskCreate(name="git_state_gate", description="Phase 0.5 (v1.16.0+ #60, #19): preview git status / unpushed commits / divergence；clean start（樹乾淨、0 既有未推送）直接通過（Phase 2 的 commit 由 Phase 2 自己 push）；只有樹上既有未提交 / 未推送 / 分歧時才 AskUserQuestion（abort default）；idd-all unattended → Case B–E auto-abort、Case A 通過")
 TaskCreate(name="detect_changes", description="Phase 1: 確認 plugin + 最近 commits（git status 已由 Phase 0.5 gate）")
 TaskCreate(name="check_external_deps", description="Phase 1.5: 偵測 MCP/CLI 依賴，不同步時 AskUserQuestion")
 TaskCreate(name="sync_marketplace_json", description="Phase 2: 比對 plugin.json 和 marketplace.json 版本，commit+push")
@@ -344,9 +344,9 @@ echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=$IS_BINARY_BACKED"
 [ "$IS_BINARY_BACKED" = true ] || echo "  （四個信號皆未命中：.mcp.json / bin/*-wrapper.sh 含 GITHUB_REPO / session-start.sh 打 releases API / manifest 有 binary pin。不等於一定沒有 binary——其他 wrapper 命名的偵測見 #22）"
 ```
 
-**非 binary-backed plugin（純 skill / rule / agent）**：跳過 Phase 0.3，直接走 Phase 0.5。Pure-shell plugin 沒有「binary version drift」這層問題，sync intent 比較單純（要嘛 shell 改了要 push，要嘛沒改 → Phase 0.5 自然 abort）。
+**非 binary-backed plugin（純 skill / rule / agent）也照跑 Step 2**（#19）：它們的 binary 信號為空（`BINARY_UNRELEASED` 空 → 不進 Case B），但 `MP_DRIFT` 與 `SHELL_RECENT_TOUCHES` 這兩個信號跟 binary 無關、只算在 Step 2 裡——跳過 Step 2 等於純 shell plugin 沒有任何地方判定「marketplace.json 落後了沒」。#19 之前這裡寫「跳過 Phase 0.3，直接走 Phase 0.5」，理由是「沒改 → Phase 0.5 自然 abort」；但 0.5 看的是**此刻**有沒有待推送，跟「30 天內改過、已 push、marketplace 還沒鏡像」是正交的（那正是 Case C 該接住的情境），而 2026-08-31 che-apple-mail-mcp 3.0.0 的誤攔就是兩道 gate 判準正交的結果。
 
-### Step 2: 收集 sync 候選變更（binary-backed only）
+### Step 2: 收集 sync 候選變更（所有 plugin；binary 部分只對 binary-backed 有值）
 
 ```bash
 # ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
@@ -573,6 +573,8 @@ options:
 >
 > **Relationship to IDD `pr_policy`**:`pr_policy` 控制 development-time PR-vs-direct-commit 決定(during `idd-implement`)。Phase 0.5 控制 release-time push-or-abort 決定(during `plugin-update`)。**Different lifecycle moments;Phase 0.5 不 consult / 不 override `pr_policy`**。
 
+> **這道 gate 問的是什麼（#19）**：不是「有沒有東西要推」，而是「樹上**既有**、不屬於本次 sync 的東西要不要一起推」。Phase 2 會自己產生並 push 本次的 sync commit（bump plugin.json / 鏡像 marketplace.json），那些變更在 0.5 這個時間點**還不存在**——所以「樹乾淨、0 既有未推送」是最乾淨的起始狀態，不是「沒事可做」。#19 之前 Case A 對這個狀態 abort 並建議「bypass plugin-update 直接跑 marketplace update」，在 marketplace.json 還沒 bump 時那是錯的指引（2026-08-31 che-apple-mail-mcp 3.0.0：30 天內改過 ∧ 樹乾淨，0.3 Case C「繼續」與 0.5 Case A「exit 0」同時成立）。0.3 看歷史（該不該 sync）、0.5 看當下（既有的髒東西怎麼辦），兩者判準正交，各自只回答自己的問題。
+
 ### Step 1: Read-only Preview Block
 
 ```bash
@@ -640,7 +642,7 @@ echo "(left = origin behind us; right = we ahead of origin; '0 0' = synced; '0 N
 | 3 | **Dirty + N unpushed** (Case D) | divergence `0 N` AND `git status --short` non-empty |
 | 4 | **Dirty + 0 unpushed** (Case C) | divergence `0 0` AND `git status --short` non-empty |
 | 5 | **Clean + N unpushed** (Case B) | divergence `0 N` AND `git status --short` empty |
-| 6 (lowest) | **Clean + 0 unpushed** (Case A) | divergence `0 0` AND `git status --short` empty |
+| 6 (lowest) | **Clean start** (Case A) — 通過，不 dispatch | divergence `0 0` AND `git status --short` empty：沒有既有變更需要裁決，Phase 2 會建立並 push 本次 sync commit |
 
 > **Why divergence wins** (priority 1-2 first):dirty + diverged 同時成立時,先處理 divergence(無法 push 在落後的 branch);user 可以 fetch + rebase 後再決定 dirty 怎麼處理。原 draft 把 dirty 跟 diverged 並列導致雙重匹配,新版用 priority order 消除歧義。
 >
@@ -695,20 +697,18 @@ cd "$MP_ROOT" || exit 1
 git push && echo "→ Phase 0.5: pushed $(git rev-parse --abbrev-ref HEAD) in $MP_ROOT"
 ```
 
-#### Case A: Clean + 0 unpushed
+#### Case A: Clean start — 通過
 
-不需要 dispatch,直接 abort（abort 就清 context，同本 Step 開頭的規定）:
+不需要 dispatch，也**不是 abort**（#19）：樹上沒有任何既有的、需要裁決的變更；本次要推的 sync commit 由 Phase 2 自己產生並 push。印一行就進 Phase 1（context 保留，後面每個 fence 都要載它）：
 
 ```bash
 PLUGIN_NAME='<plugin-name>'
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
-case "$PLUGIN_NAME" in ''|'<plugin-name>'|.*|-*|*[!A-Za-z0-9._-]*) echo "✗ PLUGIN_NAME 未代入或不合法" >&2; exit 1 ;; esac
-echo "✗ Nothing to push — working tree is clean and 0 unpushed commits."
-echo "  If you intended to update the marketplace anyway (e.g. just trigger 'claude plugin marketplace update' on origin),"
-echo "  bypass plugin-update and run that command directly."
-remove_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")"
-exit 0
+load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
+echo "→ Phase 0.5: clean tree, 0 pre-existing unpushed commits — nothing to gate; Phase 2 will create and push the sync commit"
 ```
+
+> #19 之前這裡 `exit 0` 並建議「bypass plugin-update 直接跑 `claude plugin marketplace update`」——marketplace.json 還沒 bump 時，那條指令抓到的仍是舊版本。
 
 #### Case B: Clean + N unpushed → AskUserQuestion
 
@@ -790,13 +790,14 @@ git fetch && git "$MODE" '@{u}' && echo "→ Phase 0.5: $MODE onto upstream done
 當 plugin-update 在 `idd-all` orchestrator 下被 invoke(env var or args detect,e.g. `IDD_ALL_UNATTENDED=1`):
 
 1. 仍跑 Step 1 preview block(printed for audit)
-2. **Auto-abort** with structured error:
+2. **Case A（clean start）同樣通過**（#19）：沒有需要人裁決的東西，unattended 下也不該卡；common-release-flow 的自動鏈（release 完自動 `/plugin-update`）正是在乾淨樹上跑的
+3. **Case B–E → Auto-abort** with structured error:
    ```
    ✗ plugin-update Phase 0.5 cannot prompt under unattended mode.
      Detected state: $STATE.
      User must run /plugin-update <name> manually after IDD chain completes.
    ```
-3. Return exit code non-zero(e.g. 75 = "abort by gate")so `idd-all` 在 final report 標 "plugin-update skipped under unattended mode"
+4. Return exit code non-zero(e.g. 75 = "abort by gate")so `idd-all` 在 final report 標 "plugin-update skipped under unattended mode"
 
 設計同 `idd-diagnose` Step 3.4 F unattended-mode pattern:auto-default to safe path + audit trail entry。**Plan tier 的 EnterPlanMode + plugin-update 的 Phase 0.5 都是 user-attendance-required gates**,unattended mode 統一走 abort + audit。
 
@@ -1176,6 +1177,8 @@ case "$BINARY_NAME" in ''|'<binary-name-from-step-3>'|.*|-*|*[!A-Za-z0-9._-]*) e
 
 `marketplace.json` 位於 `$MP_ROOT/.claude-plugin/marketplace.json`，是 marketplace 的 plugin index。
 **如果這個檔案沒更新，`claude plugin marketplace update` 不會看到新版本。**
+
+> **本 phase 產生的 commit 由本 phase 自己 commit + push**（Step 4 的 fence）；Phase 0.5 只 gate 樹上**既有**的變更，不預期這裡的 commit（#19）。
 
 ### Step 1: 列出 marketplace 中所有 plugin 版本
 
