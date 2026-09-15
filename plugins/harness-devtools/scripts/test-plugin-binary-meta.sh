@@ -127,9 +127,44 @@ export PLUGIN_BIN_DIR="$T/bin"
 cat > "$T/gh-stub" <<'SH'
 #!/bin/sh
 [ -n "${PBM_STUB_FAIL:-}" ] && exit 1
-case "$*" in *"--repo NoV/plain"*) echo "9.9.9" ;; *) echo "v9.9.9" ;; esac
+case "$*" in *"--json assets"*) printf 'XMCP\nweird name\nche-keychain\n' ;; *"--repo NoV/plain"*) echo "9.9.9" ;; *) echo "v9.9.9" ;; esac
 SH
 chmod +x "$T/gh-stub"
+
+# R2 fixtures (#22 verify R1):
+# docslink: a docs link BEFORE the assignment — the assignment must win, the link must not even be a candidate
+mkdir -p "$T/docslink/bin"
+printf '#!/bin/sh\n# Based on https://github.com/upstream/template — see docs\nGITHUB_REPO="PsychQuant/real-thing"\ncurl "https://api.github.com/repos/$GITHUB_REPO/releases/latest"\n' > "$T/docslink/bin/w.sh"
+# dyn: assignment with a variable expansion → not a literal repo → rc 1 (never a truncated prefix)
+mkdir -p "$T/dyn/bin"
+printf 'REPO="owner/tool${FLAVOR}"\ncurl "https://api.github.com/repos/$REPO/releases/latest"\n' > "$T/dyn/bin/w.sh"
+# indented: assignment inside a function + `export` form
+mkdir -p "$T/indented/bin"
+printf 'main() {\n  export REPO="PsychQuant/che-keychain"\n  curl -sL "https://api.github.com/repos/$REPO/releases/latest"\n}\nmain\n' > "$T/indented/bin/w"
+# ghapi: `gh api repos/o/r/releases/latest` form (idd-close parity)
+mkdir -p "$T/ghapi/bin"
+printf '#!/bin/sh\ngh api repos/PsychQuant/ghapi/releases/latest\n' > "$T/ghapi/bin/fetch.sh"
+# badfirst: an invalid BINARY_NAME in an alphabetically-earlier file must not blank out the real one
+mkdir -p "$T/badfirst/bin"
+printf 'BINARY_NAME="$binary_name"\ncurl https://api.github.com/repos/a/b/releases/latest\n' > "$T/badfirst/bin/aa-test.sh"
+printf 'BINARY_NAME="RealBin"\nGITHUB_REPO="a/b"\ncurl https://api.github.com/repos/a/b/releases/latest\n' > "$T/badfirst/bin/zz-wrapper.sh"
+# two: two wrappers, two binaries, one repo (che-telegram-mcp shape) + a test stub that is not a wrapper
+mkdir -p "$T/two/bin"
+printf 'BINARY_NAME="AllMCP"\nGITHUB_REPO="PsychQuant/msg"\ncurl https://api.github.com/repos/$GITHUB_REPO/releases/latest\n# docs: https://github.com/PsychQuant/psychquant-claude-plugins/blob/main/README.md\n' > "$T/two/bin/all-wrapper.sh"
+printf 'BINARY_NAME="BotMCP"\nGITHUB_REPO="PsychQuant/msg"\ncurl https://api.github.com/repos/$GITHUB_REPO/releases/latest\n' > "$T/two/bin/bot-wrapper.sh"
+printf 'echo "helper, not a wrapper"\n' > "$T/two/bin/setup.sh"
+printf 'BINARY_NAME="stubborn-binary.sh"\necho "test stub: declares a name, downloads nothing"\n' > "$T/two/bin/test-wrapper-pid.sh"
+printf '1.0.0\n' > "$T/bin/.AllMCP.version"; printf '0.9.0\n' > "$T/bin/.BotMCP.version"
+# split: asset name != install name (che-mcps full form)
+mkdir -p "$T/split/bin"
+printf 'BINARY_NAME="CheKeychainMCP"\nINSTALL_NAME="che-keychain"\nREPO="PsychQuant/che-keychain"\ncurl https://api.github.com/repos/$REPO/releases/latest\n' > "$T/split/bin/w"
+# verfb: no explicit pin, `version` is what the wrapper downloads (che-apple-notes-mcp shape)
+mkdir -p "$T/verfb/.claude-plugin" "$T/verfb/bin"
+printf '{ "name": "verfb", "version": "0.2.1" }\n' > "$T/verfb/.claude-plugin/plugin.json"
+printf 'BINARY_NAME="NotesMCP"\nREPO="PsychQuant/notes"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$V\n' > "$T/verfb/bin/w.sh"
+# unsafe: wrapper whose FILENAME is shell-significant — must never be echoed
+mkdir -p "$T/unsafe/bin"
+printf 'curl https://api.github.com/repos/a/b/releases/latest\n' > "$T/unsafe/bin/kc; rm -rf x"
 
 # ---------------------------------------------------------------------------
 echo
@@ -158,6 +193,7 @@ assert_eq "hookonly: hook curl is a hit"             "hook:session-start.sh" "$(
 assert_eq "pure: prose ~/bin/ is NOT a signal"       "" "$(plugin_is_binary_backed "$T/pure" "$T/pure/.claude-plugin/plugin.json")"
 assert_rc "pure: rc 1"                               1 plugin_is_binary_backed "$T/pure" "$T/pure/.claude-plugin/plugin.json"
 assert_eq "ghdl: gh release download counts"         "bin:fetch" "$(plugin_is_binary_backed "$T/ghdl")"
+assert_eq "ghapi: gh api …/releases counts (idd-close parity)" "bin:fetch.sh" "$(plugin_is_binary_backed "$T/ghapi")"
 assert_eq "manifest arg optional (kc without manifest → bin only)" "bin:kc" "$(plugin_is_binary_backed "$T/kc")"
 assert_rc "missing dir → rc 1"                       1 plugin_is_binary_backed "$T/nope"
 
@@ -169,7 +205,15 @@ assert_eq "hookonly: GFH_REPO= in hooks/"            "PsychQuant/GiftHub" "$(plu
 assert_eq "ghdl: from gh release download --repo / URL literal" "PsychQuant/ghdl" "$(plugin_binary_repo "$T/ghdl")"
 assert_rc "pure: rc 1"                               1 plugin_binary_repo "$T/pure"
 assert_eq "tworepos: first one printed"              "a/one" "$(plugin_binary_repo "$T/tworepos")"
-assert_rc "tworepos: rc 2"                           2 plugin_binary_repo "$T/tworepos"
+assert_rc "tworepos: two ASSIGNMENTS → rc 2"         2 plugin_binary_repo "$T/tworepos"
+assert_eq "docslink: assignment beats an earlier docs link" "PsychQuant/real-thing" "$(plugin_binary_repo "$T/docslink")"
+assert_rc "docslink: the docs link is not a candidate → rc 0, not 2" 0 plugin_binary_repo "$T/docslink"
+assert_rc "dyn: REPO=\"owner/tool\${FLAVOR}\" → rc 1 (no truncated prefix)" 1 plugin_binary_repo "$T/dyn"
+assert_eq "dyn: prints empty"                        "" "$(plugin_binary_repo "$T/dyn")"
+assert_eq "indented: assignment inside a function / export form" "PsychQuant/che-keychain" "$(plugin_binary_repo "$T/indented")"
+assert_eq "ghapi: repo from gh api repos/o/r/releases" "PsychQuant/ghapi" "$(plugin_binary_repo "$T/ghapi")"
+assert_eq "two: same repo in both wrappers, docs link ignored → one value" "PsychQuant/msg" "$(plugin_binary_repo "$T/two")"
+assert_rc "two: rc 0 (not a spurious multi-repo warning)" 0 plugin_binary_repo "$T/two"
 assert_rc "badrepo: traversal segment rejected → rc 1" 1 plugin_binary_repo "$T/badrepo"
 assert_eq "badrepo: prints empty"                    "" "$(plugin_binary_repo "$T/badrepo")"
 
@@ -179,6 +223,22 @@ assert_eq "mcp: BINARY_NAME="                        "XMCP" "$(plugin_binary_nam
 assert_eq "kc: INSTALL_NAME="                        "che-keychain" "$(plugin_binary_name "$T/kc")"
 assert_eq "hookonly: \$HOME/bin/<name> in hook"      "gfh" "$(plugin_binary_name "$T/hookonly")"
 assert_rc "pure: rc 1"                               1 plugin_binary_name "$T/pure"
+assert_eq "badfirst: invalid BINARY_NAME in an earlier file is skipped, real one found" "RealBin" "$(plugin_binary_name "$T/badfirst")"
+assert_eq "split: asset name is BINARY_NAME"          "CheKeychainMCP" "$(plugin_binary_name "$T/split")"
+key=SENTINEL; plugin_binary_name "$T/mcp" >/dev/null; assert_eq "plugin_binary_name leaves no \$key behind" "SENTINEL" "$key"
+
+echo
+echo "plugin_install_names / plugin_binary_wrappers:"
+assert_eq "split: install name is INSTALL_NAME (sidecar key)" "che-keychain" "$(plugin_install_names "$T/split")"
+assert_eq "two: both binaries listed, stub excluded"  "AllMCP
+BotMCP" "$(plugin_install_names "$T/two")"
+assert_eq "two: one row per wrapper file, file|asset|install|repo" "all-wrapper.sh|AllMCP|AllMCP|PsychQuant/msg
+bot-wrapper.sh|BotMCP|BotMCP|PsychQuant/msg" "$(plugin_binary_wrappers "$T/two")"
+assert_eq "kc: row with INSTALL_NAME as both names"   "kc|che-keychain|che-keychain|PsychQuant/che-keychain" "$(plugin_binary_wrappers "$T/kc")"
+assert_eq "hookonly: hook row"                        "session-start.sh|gfh|gfh|PsychQuant/GiftHub" "$(plugin_binary_wrappers "$T/hookonly")"
+assert_rc "pure: no wrappers → rc 1"                  1 plugin_binary_wrappers "$T/pure"
+assert_eq "unsafe: shell-significant filename is printed as ?" "?|||a/b" "$(plugin_binary_wrappers "$T/unsafe")"
+assert_eq "unsafe: hit list shows bin:? not the raw name" "bin:?" "$(plugin_is_binary_backed "$T/unsafe")"
 
 echo
 echo "plugin_installed_binary_version:"
@@ -186,6 +246,17 @@ assert_eq "kc: reads \$PLUGIN_BIN_DIR/.che-keychain.version" "0.2.0" "$(plugin_i
 assert_eq "mcp: reads .XMCP.version"                 "1.2.0" "$(plugin_installed_binary_version "$T/mcp")"
 assert_rc "hookonly: name known, sidecar missing → rc 1" 1 plugin_installed_binary_version "$T/hookonly"
 assert_rc "pure: no name → rc 2 (UNKNOWN, not 'not installed')" 2 plugin_installed_binary_version "$T/pure"
+assert_eq "two: explicit name reads that binary's sidecar" "0.9.0" "$(plugin_installed_binary_version "$T/two" BotMCP)"
+assert_rc "explicit unsafe name → rc 2"               2 plugin_installed_binary_version "$T/two" 'x; rm'
+
+echo
+echo "plugin_binary_version_effective (value|key):"
+assert_eq "kc: explicit pin wins, key shown"          "0.2.0|binaryVersion" "$(plugin_binary_version_effective "$T/kc/.claude-plugin/plugin.json")"
+assert_eq "mcp: binary_version"                       "1.3.0|binary_version" "$(plugin_binary_version_effective "$T/mcp/.claude-plugin/plugin.json")"
+assert_eq "verfb: no pin → version, key says so"      "0.2.1|version" "$(plugin_binary_version_effective "$T/verfb/.claude-plugin/plugin.json")"
+assert_rc "verfb: rc 0"                               0 plugin_binary_version_effective "$T/verfb/.claude-plugin/plugin.json"
+assert_rc "bad: illegal explicit pin → rc 3 (does not silently fall back to version)" 3 plugin_binary_version_effective "$T/bad/.claude-plugin/plugin.json"
+assert_rc "unreadable → rc 4"                         4 plugin_binary_version_effective "$T/nope/plugin.json"
 
 echo
 echo "marketplace_entry_version:"
@@ -202,9 +273,15 @@ assert_eq "tag v9.9.9 → 9.9.9"                       "9.9.9" "$(PBM_GH="$T/gh-
 assert_eq "tag without v prefix passes through"      "9.9.9" "$(PBM_GH="$T/gh-stub" latest_release_version NoV/plain)"
 lrv_fail() { PBM_GH="$T/gh-stub" PBM_STUB_FAIL=1 latest_release_version "$@"; }   # `env` cannot run a shell function
 lrv_nogh() { PBM_GH=/nonexistent latest_release_version "$@"; }
+lrv_rel()  { PBM_GH=gh-stub latest_release_version "$@"; }   # relative PBM_GH must be refused, not searched on PATH
 assert_rc "gh failure → rc 1"                        1 lrv_fail PsychQuant/che-keychain
 assert_eq "gh failure → prints empty"                "" "$(lrv_fail PsychQuant/che-keychain)"
 assert_rc "malformed repo arg → rc 1 without calling gh" 1 lrv_nogh 'bad repo'
+assert_rc "relative PBM_GH → rc 1 (test seam takes absolute paths only)" 1 lrv_rel PsychQuant/che-keychain
+assert_eq "release_assets: allowlisted names only"   "XMCP
+che-keychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/x-mcp)"
+ra_fail() { PBM_GH="$T/gh-stub" PBM_STUB_FAIL=1 release_assets "$@"; }
+assert_rc "release_assets: gh failure → rc 1 (UNKNOWN, not 'missing')" 1 ra_fail PsychQuant/x-mcp
 
 echo
 echo "version_gt:"

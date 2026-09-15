@@ -55,9 +55,11 @@ Claude Code 開發工具鏈 — plugin / MCP server / CLI 的完整發布管道�
 
 怎麼判斷是不是 binary-backed（`scripts/plugin-binary-meta.sh` 的 `plugin_is_binary_backed`，#22）：
 `.mcp.json` 存在、或 `bin/` 底下**任何檔案**含 release URL（`gh release download` /
-`api.github.com/repos/…/releases` / `github.com/…/releases/(download|tags|latest)`——看 URL
-形狀，不看檔名後綴或變數名：`bin/che-keychain` 配 `REPO=` 也算）、或 `hooks/*.sh` 含同一
-pattern、或 `plugin.json` 有 `binary_version` / `binaryVersion`——四者任一即是。
+`gh api …/releases` / `api.github.com/…/releases` / `github.com/…/releases/(download|tags|latest)`
+——與 issue-driven-dev `idd-close` 的 `has_binary_wrapper` 逐字同一條；看 URL 形狀，不看檔名後綴或
+變數名：`bin/che-keychain` 配 `REPO=` 也算）、或 `hooks/*.sh` 含同一 pattern、或 `plugin.json` 有
+`binary_version` / `binaryVersion`——四者任一即是。一個 plugin 可以有多個 binary（che-telegram-mcp
+兩支 wrapper），Phase 1.5 與 Phase 5 逐 wrapper / 逐 sidecar 驗。
 
 ## Skills
 
