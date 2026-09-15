@@ -13,17 +13,25 @@
 #   plugin_binary_wrappers <dir> [manifest]     # one row per file that DOWNLOADS a release:
 #                                               #   "dir|file|asset|install|repo|pin|pinsrc"   dir ∈ bin|hooks; empty field = unknown
 #                                               #   pinsrc ∈ wrapper:<file> | binary_version | binaryVersion | version | none
-#   plugin_binary_pin <dir> <manifest>          # the pin the plugin's bin/ wrappers download, "value|pinsrc":
+#   plugin_binary_pin <dir> <manifest>          # the pin the plugin's DOWNLOADING wrappers use — bin/ rows when any exist, else
+#                                               #   hooks/ rows (hook-only layouts such as macdoc / gifthub) — "value|pinsrc[,pinsrc…]":
+#                                               #   every distinct source in row order (two wrappers sharing one literal pin → two sources);
 #                                               #   rc 0 every pinned wrapper agrees / 1 no wrapper has a pin / 2 wrappers disagree (first printed)
-#   plugin_binary_repo <dir>                    # owner/repo from WRAPPER files only, ranked: *_REPO= assignment > release-URL literal;
-#                                               #   rc 0 one / 1 none / 2 several IN THE SAME TIER (first printed)
-#   plugin_binary_name <dir>                    # first valid ASSET name: BINARY_NAME= → INSTALL_NAME= → $HOME/bin/<name>; rc 1 none
+#                                               #   / 4 a wrapper names a manifest key whose value cannot be read (missing / illegal / unreadable)
+#   plugin_binary_repo <dir>                    # owner/repo from the DOWNLOADING wrapper files (bin/ when any exist, else hooks/ — a
+#                                               #   check hook can never re-point a plugin that has a bin/ wrapper), ranked: *_REPO= assignment
+#                                               #   > release-URL literal; rc 0 one / 1 none / 2 several IN THE SAME TIER (first printed)
+#   plugin_binary_name <dir>                    # first DECLARED asset name: RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME=; rc 1 none
+#                                               #   (never guessed from the install name — a guess would turn into a false "asset missing")
 #   plugin_install_names <dir>                  # unique INSTALLED names (INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>), one/line
-#   plugin_installed_binary_version <dir> [name]  # ~/bin/.<name>.version; rc 1 no sidecar / 2 no name / 3 sidecar not a version
+#   plugin_installed_binary_version <dir> [name]  # <bin dir>/.<name>.version; rc 1 no sidecar / 2 no name / 3 sidecar not a version
+#   plugin_bin_dir                              # the sidecar directory (~/bin; PLUGIN_BIN_DIR under PBM_TEST=1)
 #   marketplace_entry_version <mp_root> <p>     # rc 0 (value, or EMPTY when the entry has no version) / 1 no entry / 3 illegal / 4 unreadable
 #   latest_release_version <owner/repo>         # gh release view … tagName, leading v stripped; rc 1 on failure
-#   release_assets <owner/repo> [tag]           # asset names of that release (latest when no tag), one per line; a name that fails
-#                                               #   the allowlist is printed as "?" so "absent" and "unprintable" stay distinguishable; rc 1 on failure
+#   release_assets <owner/repo> [x.y.z]         # asset names of that release (latest when no version), one per line; the release is
+#                                               #   looked up as tag v<x.y.z> first, bare <x.y.z> second (real tags are v-prefixed; pins are
+#                                               #   stored bare); a name that fails the allowlist is printed as "?" so "absent" and
+#                                               #   "unprintable" stay distinguishable; rc 1 on failure
 #   version_gt <a> <b>                          # rc 0 a>b / 1 not / 2 not comparable (non x.y.z)
 #
 # WHY THIS EXISTS
@@ -39,14 +47,21 @@
 #   it never prints a plausible default. Consumers turn rc 1/2/4 into "UNKNOWN" lines.
 #
 # WHERE THE PIN LIVES (#22 verify R1/R2 — both rounds guessed it from the manifest and were wrong)
-#   The pin is whatever the WRAPPER downloads, and only the wrapper knows. Surveying the 22 real
-#   wrappers/hooks on this machine: 4 carry a literal `DESIRED_VERSION="x.y.z"` and never read
-#   plugin.json (agent-cacher, che-latex-mcp, che-telegram-mcp ×2); 8 grep `"version"` out of
-#   plugin.json; 3 grep `binaryVersion`/`binary_version` first and fall back to `version`
-#   (che-keychain, che-apple-mail-mcp, rush); 1 reads nothing. So the pin is resolved PER WRAPPER
-#   from a closed list of three sources — (1) a literal DESIRED_VERSION= in the file, (2) the
-#   manifest key(s) the file names, in the order it names them, (3) none — and there is NO
-#   plugin-wide fallback to `version`: a wrapper that does not read it does not use it.
+#   The pin is whatever the WRAPPER downloads, and only the wrapper knows. Surveying the 26 real
+#   wrappers/hooks on this machine (psychquant-claude-plugins, the four self-hosted ./plugin
+#   marketplaces and the macdoc marketplace): 4 carry a literal `DESIRED_VERSION="x.y.z"` and never
+#   read plugin.json (agent-cacher, che-latex-mcp, che-telegram-mcp ×2); 8 grep `"version"` out of
+#   plugin.json; 6 grep `binaryVersion`/`binary_version` first and fall back to `version`
+#   (che-keychain, che-apple-mail-mcp, rush, che-word-mcp, che-pdf-mcp, che-pptx-mcp); 1 hook greps
+#   `binary_version` only and downloads itself (macdoc — a hook-only layout WITH a pin); 1 reads
+#   nothing (omlx); the remaining hooks are check scripts that read no version. So the pin is
+#   resolved PER WRAPPER from a closed list of three sources — (1) a literal DESIRED_VERSION= in the
+#   file, (2) the manifest key(s) the file names, in the order it names them, (3) none — and there
+#   is NO plugin-wide fallback to `version`: a wrapper that does not read it does not use it.
+#   "Names a key" is matched on NON-comment lines as `"<key>"` followed by anything up to a `:` —
+#   the macdoc family writes `'"binary_version"[[:space:]]*:'`, che-keychain writes
+#   `'"binaryVersion":[[:space:]]*"'`; a regex that demanded whitespace-or-colon right after the
+#   closing quote missed the first shape on four real plugins (#22 verify R3).
 #
 # CONTRACT
 #   - bash 3.2 (no arrays needed; no nameref, no associative arrays); zsh-safe when sourced
@@ -62,9 +77,15 @@
 #   - ONE binary per plugin is NOT assumed (che-telegram-mcp: two wrappers, two sidecars). A
 #     wrapper whose install name cannot be resolved (agent-cacher's `ensure_binary <name>` calls)
 #     is an UNRESOLVED row — consumers must count it, never report "all N verified" past it.
-#   - ASSET name ≠ INSTALL name. `BINARY_NAME=CheKeychainMCP` is the release asset;
-#     `INSTALL_NAME=che-keychain` is the file on disk and the sidecar `.che-keychain.version` is
-#     keyed by it. Signal 1 wants the former, Phase 5 the latter; each falls back to the other.
+#   - ASSET name ≠ INSTALL name. che-keychain's wrapper declares `RELEASE_ASSET="CheKeychain"` (the
+#     release asset) and `INSTALL_NAME="che-keychain"` (the file on disk; the sidecar
+#     `.che-keychain.version` is keyed by it). Signal 1 wants the former, Phase 5 the latter. The
+#     asset name is DECLARED or unknown (RELEASE_ASSET= / ASSET_NAME= / BINARY_NAME= — the four
+#     spellings in the real corpus); it is never guessed from the install name, because a guessed
+#     name that is not in the release reads as "asset missing → mcp-deploy", which is a false alarm
+#     (#22 verify R3). The install name may fall back to BINARY_NAME= / `$HOME/bin/<name>`.
+#   - Wrapper filenames are third-party content: every place that prints one runs it through the
+#     allowlist and prints `?` instead — including the `wrapper:<file>` pin source.
 #   - Field names are read in BOTH spellings; writers preserve the file's own key.
 #   - Detection pattern for "this file downloads a release" is, verbatim, the one idd-close's
 #     has_binary_wrapper uses (references/distribution-detection.md). Detection is URL shape only;
@@ -117,6 +138,7 @@ _pbm_gh() {
 _pbm_bin_dir() {
   if [ -n "${PLUGIN_BIN_DIR:-}" ] && [ "${PBM_TEST:-}" = 1 ]; then printf '%s\n' "$PLUGIN_BIN_DIR"; else printf '%s\n' "$HOME/bin"; fi
 }
+plugin_bin_dir() { _pbm_bin_dir; }   # public — consumers print it; the underscore form is internal
 
 # _pbm_scan_files <dir> → regular files under bin/ and hooks/ (depth 1), one per line, sorted
 _pbm_scan_files() {
@@ -125,8 +147,8 @@ _pbm_scan_files() {
     [ -d "$dir/hooks" ] && find "$dir/hooks" -maxdepth 1 -type f 2>/dev/null
   } | sort
 }
-# _pbm_file_is_wrapper <file>: DOWNLOADS a release
-_pbm_file_is_wrapper() { LC_ALL=C grep -qE "$_PBM_RELEASE_RE" "$1" 2>/dev/null; }
+# _pbm_file_is_wrapper <file>: DOWNLOADS a release — matched on non-comment lines (a docs link in a `#` line is not a download)
+_pbm_file_is_wrapper() { LC_ALL=C grep -vE '^[[:space:]]*#' "$1" 2>/dev/null | LC_ALL=C grep -qE "$_PBM_RELEASE_RE"; }
 # _pbm_wrapper_files <dir> → wrapper files only
 _pbm_wrapper_files() {
   local f
@@ -183,11 +205,12 @@ $(LC_ALL=C grep -oE '(\$HOME|~|\$INSTALL_DIR)/bin/[A-Za-z0-9_.-]+' "$file" 2>/de
 EOF
   return 1
 }
-_pbm_file_asset_name() {    # BINARY_NAME= → INSTALL_NAME= → $HOME/bin/<name>
+_pbm_file_asset_name() {    # DECLARED release asset only: RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME= (never guessed from the install name)
   local file="$1" v
-  v=$(_pbm_assign "$file" BINARY_NAME)  && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
-  v=$(_pbm_assign "$file" INSTALL_NAME) && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
-  _pbm_file_home_bin_name "$file"
+  v=$(_pbm_assign "$file" RELEASE_ASSET) && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
+  v=$(_pbm_assign "$file" ASSET_NAME)    && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
+  v=$(_pbm_assign "$file" BINARY_NAME)   && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
+  return 1
 }
 _pbm_file_install_name() {  # INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>
   local file="$1" v
@@ -202,14 +225,17 @@ _pbm_file_repo() {          # tier 1 else tier 2, first valid
 }
 
 # _pbm_file_pin <file> [manifest] → "value|pinsrc" — what THIS wrapper downloads (closed list of three sources)
-#   (1) literal DESIRED_VERSION="x.y.z" in the file          → value|wrapper:<basename>
-#   (2) the manifest key(s) the file greps, in file order   → value|<key>   (first key with a non-empty manifest value)
+#   (1) literal DESIRED_VERSION="x.y.z" in the file          → value|wrapper:<basename>   (basename through the allowlist, else ?)
+#   (2) the manifest key(s) the file names on non-comment lines, in file order
+#                                                           → value|<key>   (first key with a non-empty manifest value)
 #   (3) neither                                             → |none        rc 1
-#   manifest missing/unreadable while (2) applies           → |<first key> rc 4 (the file says which key; the value could not be read)
+#   (2) applies but no named key has a usable value          → |<first key> rc 4 (manifest missing / unreadable / key absent)
+#   (2) applies and the first present value is illegal       → |<key>       rc 3
 _pbm_file_pin() {
-  local file="$1" manifest="${2:-}" v key first=""
+  local file="$1" manifest="${2:-}" v key first="" base
+  base=${file##*/}; _pbm_name_ok "$base" || base='?'
   v=$(_pbm_assign "$file" DESIRED_VERSION)
-  if [ -n "$v" ] && _pbm_version_ok "$v"; then printf '%s|wrapper:%s\n' "$v" "${file##*/}"; return 0; fi
+  if [ -n "$v" ] && _pbm_version_ok "$v"; then printf '%s|wrapper:%s\n' "$v" "$base"; return 0; fi
   while IFS= read -r key; do
     [ -n "$key" ] || continue
     [ -n "$first" ] || first="$key"
@@ -220,9 +246,9 @@ _pbm_file_pin() {
       printf '%s|%s\n' "$v" "$key"; return 0
     fi
   done <<EOF
-$(LC_ALL=C grep -oE '"(binary_version|binaryVersion|version)"[[:space:]]*:' "$file" 2>/dev/null | tr -d '": ' | awk '!seen[$0]++')
+$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE '"(binary_version|binaryVersion|version)"[^"]*:' | sed -E 's/^"([A-Za-z_]+)".*$/\1/' | awk '!seen[$0]++')
 EOF
-  if [ -n "$first" ]; then [ -n "$manifest" ] && { printf '|none\n'; return 1; }; printf '|%s\n' "$first"; return 4; fi
+  if [ -n "$first" ]; then printf '|%s\n' "$first"; return 4; fi
   printf '|none\n'; return 1
 }
 
@@ -295,24 +321,42 @@ EOF
 }
 
 plugin_binary_pin() {
-  local dir="$1" manifest="$2" row where pin src first="" firstsrc="" n=0 seen="" total=0
-  while IFS='|' read -r where _ _ _ _ pin src; do
-    [ "$where" = bin ] || continue
-    total=$((total + 1))
-    [ -n "$pin" ] || continue
-    case "$seen" in *"|$pin|"*) continue ;; esac
-    seen="${seen:-|}$pin|"; n=$((n + 1)); [ -n "$first" ] || { first="$pin"; firstsrc="$src"; }
-  done <<EOF
-$(plugin_binary_wrappers "$dir" "$manifest")
+  local dir="$1" manifest="$2" rows eff=hooks where pin src first="" srcs="" n=0 seen="" unread=""
+  rows=$(plugin_binary_wrappers "$dir" "$manifest") || rows=""
+  # the DOWNLOADING rows: bin/ when the plugin has any (its hooks are check scripts), else hooks/ (hook-only layout: macdoc, gifthub)
+  while IFS='|' read -r where _; do [ "$where" = bin ] && { eff=bin; break; }; done <<EOF
+$rows
 EOF
-  [ "$n" -ge 1 ] || { printf '|none\n'; return 1; }
-  printf '%s|%s\n' "$first" "$firstsrc"
+  while IFS='|' read -r where _ _ _ _ pin src; do
+    [ "$where" = "$eff" ] || continue
+    [ "$src" = none ] || case ",$srcs," in *",$src,"*) ;; *) srcs="${srcs:+$srcs,}$src" ;; esac
+    if [ -z "$pin" ]; then [ "$src" = none ] || unread="${unread:-$src}"; continue; fi
+    case "$seen" in *"|$pin|"*) continue ;; esac
+    seen="${seen:-|}$pin|"; n=$((n + 1)); [ -n "$first" ] || first="$pin"
+  done <<EOF
+$rows
+EOF
+  if [ "$n" = 0 ]; then
+    [ -z "$unread" ] || { printf '|%s\n' "$srcs"; return 4; }
+    printf '|none\n'; return 1
+  fi
+  printf '%s|%s\n' "$first" "$srcs"
   [ "$n" = 1 ] || return 2
+  [ -z "$unread" ] || return 4
+  return 0
 }
 
 plugin_binary_repo() {
-  local dir="$1" f cand tier first="" n=0 seen=""
+  local dir="$1" f cand tier first="" n=0 seen="" files="" binfiles=""
   [ -d "$dir" ] || { printf '\n'; return 1; }
+  files=$(_pbm_wrapper_files "$dir")
+  # a plugin with a bin/ wrapper takes its repo from bin/ only — a hooks/ check script pointing at an old fork
+  # must not choose which remote's tags drive Case E (#22 verify R3); hook-only layouts use their hooks
+  while IFS= read -r f; do case "$f" in "$dir/bin/"*) binfiles="${binfiles:+$binfiles
+}$f" ;; esac; done <<EOF
+$files
+EOF
+  [ -z "$binfiles" ] || files="$binfiles"
   for tier in 1 2; do
     while IFS= read -r f; do
       [ -n "$f" ] || continue
@@ -324,7 +368,7 @@ plugin_binary_repo() {
 $(if [ "$tier" = 1 ]; then _pbm_file_repo_tier1 "$f"; else _pbm_file_repo_tier2 "$f"; fi)
 EOF2
     done <<EOF
-$(_pbm_wrapper_files "$dir")
+$files
 EOF
     [ "$n" -ge 1 ] && break
   done
@@ -414,9 +458,13 @@ latest_release_version() {
 release_assets() {
   local repo="$1" tag="${2:-}" gh out n
   _pbm_repo_ok "$repo" || return 1
-  if [ -n "$tag" ]; then _pbm_version_ok "$tag" || return 1; fi
   gh=$(_pbm_gh) || return 1
-  if [ -n "$tag" ]; then out=$("$gh" release view "$tag" --repo "$repo" --json assets -q '.assets[].name' 2>/dev/null) || return 1
+  if [ -n "$tag" ]; then
+    tag=${tag#v}; _pbm_version_ok "$tag" || return 1
+    # pins are stored bare (0.3.0) while every real release tag is v0.3.0 (the wrappers build `v$DESIRED_VERSION` themselves);
+    # try the v-prefixed tag first, the bare one second — a bare-only lookup made Signal 1 permanently "未核對" (#22 verify R3)
+    out=$("$gh" release view "v$tag" --repo "$repo" --json assets -q '.assets[].name' 2>/dev/null) \
+      || out=$("$gh" release view "$tag" --repo "$repo" --json assets -q '.assets[].name' 2>/dev/null) || return 1
   else out=$("$gh" release view --repo "$repo" --json assets -q '.assets[].name' 2>/dev/null) || return 1; fi
   while IFS= read -r n; do
     [ -n "$n" ] || continue

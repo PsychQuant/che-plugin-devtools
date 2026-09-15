@@ -178,7 +178,7 @@ NB=$(cd "$T/remote.git" && git branch --list renamed-local | grep -c .)
 if [ "$NB" = 0 ] && [ "$(cd "$T/dev/fx-mp" && git rev-parse '@{u}')" = "$(cd "$T/dev/fx-mp" && git rev-parse HEAD)" ]; then PASS=$((PASS+1)); echo "  ✓ no stray remote branch created; upstream == HEAD"; else FAIL=$((FAIL+1)); echo "  ✗ no stray remote branch created; upstream == HEAD (stray=$NB)"; fi
 echo
 echo "Phase 1.5 Step 3 (CLI, hook present but no \$HOME/bin/<name> line → must say so, not stay silent):"
-run_both "Step 3 reports what it could not extract" 'HOOK="$PLUGIN_DIR/hooks/$(printf' nobin "判定不出"
+run_both "Step 3 reports what it could not extract" 'hooks checked:' nobin "判定不出"
 echo
 echo "Phase 2.5 (README missing a component → stale; complete README → fresh; loops must iterate under zsh):"
 printf '# nobin\n\nv1.0.0 — `s`\n' > "$T/dev/fx-mp/plugins/nobin/README.md"   # mentions s, never t
@@ -195,15 +195,17 @@ echo "#22 — che-keychain-shaped plugin 'kc': bin/kc (no -wrapper.sh suffix, RE
 # The five silent misses of che-keychain 0.3.0, as one fixture. Each assertion is on a line the fence PRINTS.
 mkdir -p "$T/dev/fx-mp/plugins/kc/.claude-plugin" "$T/dev/fx-mp/plugins/kc/bin" "$T/dev/fx-mp/plugins/kc/hooks"
 printf '{ "name": "kc", "version": "0.3.0", "binaryVersion": "0.2.0" }\n' > "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json"
-printf '#!/bin/sh\nREPO="PsychQuant/che-keychain"\nINSTALL_NAME="che-keychain"\nINSTALL_DIR="$HOME/bin"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\n[ -n "$DESIRED_VERSION" ] || DESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/latest"\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" "'\"version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/kc/bin/kc"
+printf '#!/bin/sh\nREPO="PsychQuant/che-keychain"\nRELEASE_ASSET="CheKeychain"\nINSTALL_NAME="che-keychain"\nINSTALL_DIR="$HOME/bin"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\n[ -n "$DESIRED_VERSION" ] || DESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/latest"\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" "'\"version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/kc/bin/kc"
 printf '#!/bin/sh\nexec "$(dirname "$0")/../bin/kc" --prefetch\n' > "$T/dev/fx-mp/plugins/kc/hooks/session-start.sh"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PY'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"kc","source":"./plugins/kc"}); json.dump(d,open(p,'w'))   # NO version key
 PY
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm kc && git push -q 2>/dev/null )
-# gh stub for latest_release_version: v9.9.9, or rc 1 when PBM_STUB_FAIL is set; a sidecar dir for Phase 5
-printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\necho v9.9.9\n' > "$T/gh-stub"; chmod +x "$T/gh-stub"
+# gh stub: latest = v<1>; assets answered ONLY for tags v<1> and v0.2.0 of repo <2> (asset <3>); any other explicit tag → "release not found"
+# (rc 1). Tag-aware on purpose: a stub that answers any tag hid the bare-vs-v-prefixed tag bug for three rounds (#22 verify R3).
+gh_stub() { printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v%s --repo %s "*"--json assets"*|"release view v0.2.0 --repo %s "*"--json assets"*) echo %s ;; "release view "*"--json assets"*) exit 1 ;; *) echo v%s ;; esac\n' "$1" "$2" "$2" "$3" "$1" > "$T/gh-stub"; chmod +x "$T/gh-stub"; }
+gh_stub 9.9.9 PsychQuant/che-keychain CheKeychain
 mkdir -p "$T/bin"; export PBM_GH="$T/gh-stub" PLUGIN_BIN_DIR="$T/bin" PBM_TEST=1
 prep01 kc
 run_both "kc: Step 1 detects bin/kc + the binaryVersion pin (no *-wrapper.sh, no GITHUB_REPO=)" 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' kc "IS_BINARY_BACKED=true (bin:kc pin:binaryVersion)"
@@ -212,6 +214,7 @@ run_both "kc: Step 2 sees latest release v9.9.9 > pin 0.2.0 → Case E (release 
 run_both "kc: …and the decision line carries release_ahead=9.9.9 + pinsrc" 'BINARY_UNKNOWN_WHY' kc "binary=0.2.0 pinsrc=binaryVersion"
 run_both "kc: …release_ahead=9.9.9" 'BINARY_UNKNOWN_WHY' kc "release_ahead=9.9.9"
 run_both "kc: …and the missing marketplace version is named as missing, not as drift from ''" 'BINARY_UNKNOWN_WHY' kc "entry has no version"
+run_both "kc: Phase 1.5 Signal 1 queries tag v0.2.0 (pin is bare, tag is v-prefixed) and finds the DECLARED RELEASE_ASSET" 'for wrapper in' kc "✅ kc: CheKeychain present in PsychQuant/che-keychain release v0.2.0 (binaryVersion)"
 export PBM_STUB_FAIL=1; prep01 kc
 run_both "kc: gh failure → release_ahead=unknown (printed, not silent)" 'BINARY_UNKNOWN_WHY' kc "release_ahead=unknown"
 run_both "kc: gh failure → NOT Case E (falls through to Case C: recent commit)" 'BINARY_UNKNOWN_WHY' kc "→ Phase 0.3 sync intent: Case C"
@@ -229,8 +232,7 @@ run_both_ctx() {   # like run_both, but the fence ENDS the invocation (remove_pl
   if printf "%s" "$out_z" | grep -q "no matches found"; then FAIL=$((FAIL+1)); echo "  ✗ $1: a glob matched nothing under zsh (fatal in the Bash tool)"; else PASS=$((PASS+1)); echo "  ✓ $1: no unmatched glob under zsh"; fi
 }
 printf '0.2.0\n' > "$T/bin/.che-keychain.version"
-run_both_ctx "kc: sidecar 0.2.0 == pin 0.2.0 → ✅" 'plugin_binary_wrappers "$PLUGIN_DIR" "$PLUGIN_MANIFEST" | grep '"'"'^bin|'"'"' || true)
-    if [ -z "$ROWS" ]' kc "✅ Phase 5 Step 1.5: installed == pin for all 1 binary"
+run_both_ctx "kc: sidecar 0.2.0 == pin 0.2.0 → ✅" 'if [ -z "$ROWS" ]' kc "✅ Phase 5 Step 1.5: installed == pin for all 1 binary"
 run_both_ctx "kc: …per-binary line names the source" 'if [ -z "$ROWS" ]' kc "✅ che-keychain: installed v0.2.0 == pin v0.2.0 (binaryVersion)"
 printf '0.1.0\n' > "$T/bin/.che-keychain.version"
 run_both_ctx "kc: sidecar 0.1.0 != pin 0.2.0 → MISMATCH" 'if [ -z "$ROWS" ]' kc "MISMATCH che-keychain=v0.1.0≠v0.2.0"
@@ -242,7 +244,7 @@ echo "#22 R2 — Case E bump fence (the only code that writes the pin): key pres
 prep01 kc
 f=$(prep "AUTO_PUSH='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/" "$f"
 OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
-assert_contains "bump (pin only): prints old → new under the file's own key" "binaryVersion: 0.2.0 → 9.9.9; version: 0.3.0 (unchanged)" "$OUT"
+assert_contains "bump (pin only): prints old → new under the file's own key" "binaryVersion: 0.2.0 → 9.9.9 in plugins/kc/.claude-plugin/plugin.json; version: 0.3.0 (unchanged)" "$OUT"
 assert_contains "bump (pin only): single-line literal replacement, the one-line manifest stays one line" "1" "$(wc -l < "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json" | tr -d ' ')"
 assert_contains "bump (pin only): plugin.json keeps binaryVersion (not renamed) and version 0.3.0" '"version": "0.3.0"' "$(cat "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json")"
 assert_contains "bump (pin only): binaryVersion is 9.9.9 on disk" '"binaryVersion": "9.9.9"' "$(cat "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json")"
@@ -257,7 +259,7 @@ assert_contains "…and the manifest is untouched" '"binaryVersion": "0.2.0"' "$
 prep01 kc
 f=$(prep "AUTO_PUSH='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
-assert_contains "bump together upward writes both fields" "binaryVersion: 0.2.0 → 9.9.9; version: 9.9.9" "$OUT"
+assert_contains "bump together upward writes both fields" "binaryVersion: 0.2.0 → 9.9.9 in plugins/kc/.claude-plugin/plugin.json; version: 9.9.9" "$OUT"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/kc/.claude-plugin/plugin.json )
 echo
 echo "#22 R2 — unattended Case E does NOT abort: AUDIT line + shell-signal case"
@@ -274,14 +276,14 @@ assert_contains "E-auto: commit subject follows the chore(<plugin>) form" "chore
 prep01 kc
 run_both "E-auto: re-running Step 2 → release_ahead=no, Case C (recent commit), no further bump" 'BINARY_UNKNOWN_WHY' kc "release_ahead=no"
 ( cd "$T/dev/fx-mp" && printf '# scratch\n' >> plugins/kc/skills-scratch.md )
-printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\necho v10.0.0\n' > "$T/gh-stub"
+gh_stub 10.0.0 PsychQuant/che-keychain CheKeychain
 prep01 kc
 f=$(prep "AUTO_PUSH='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='10.0.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "E-auto bump fence: dirty tree → refused with AUDIT, nothing written" "AUDIT: Phase 0.3 Case E-auto refused — tree not clean" "$OUT"
 assert_contains "E-auto refused: manifest untouched" '"binaryVersion": "9.9.9"' "$(cat "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json")"
 ( cd "$T/dev/fx-mp" && rm -f plugins/kc/skills-scratch.md )
-printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\necho v9.9.9\n' > "$T/gh-stub"
+gh_stub 9.9.9 PsychQuant/che-keychain CheKeychain
 # ver: wrapper reads plugin.json `version` → the pin IS the published version → unattended never bumps it
 mkdir -p "$T/dev/fx-mp/plugins/ver/.claude-plugin" "$T/dev/fx-mp/plugins/ver/bin"
 printf '{ "name": "ver", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/ver/.claude-plugin/plugin.json"
@@ -296,7 +298,8 @@ run_both "unattended + pinsrc=version: not bumped, AUDIT says the pin is the pub
 run_both "unattended + pinsrc=version: …continues as Case C" 'BINARY_UNKNOWN_WHY' ver "→ Phase 0.3 sync intent: Case C"
 unset IDD_ALL_UNATTENDED
 prep01 ver
-run_both "attended + pinsrc=version: Case E names the source and the plugin version" 'BINARY_UNKNOWN_WHY' ver "(source: version; plugin version: 1.0.0) — Step 4 Case E asks"
+run_both "attended + pinsrc=version: Case E names the source and the plugin version" 'BINARY_UNKNOWN_WHY' ver "(source: version; plugin version: 1.0.0; shell_case=C) — Step 4 Case E asks"
+run_both "ver: Signal 1 against a tag the stub does not know → 未核對 (not ✅, not 'missing')" 'for wrapper in' ver "❓ ver-wrapper.sh: 取不到 PsychQuant/ver release v1.0.0 (version) 的 assets"
 echo
 echo "#22 R2 — multi-binary plugin 'two' (che-telegram-mcp shape): every wrapper is checked, counts are honest, sidecars per binary"
 mkdir -p "$T/dev/fx-mp/plugins/two/.claude-plugin" "$T/dev/fx-mp/plugins/two/bin"
@@ -309,9 +312,11 @@ import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"two","version":"1.3.2","source":"./plugins/two"}); json.dump(d,open(p,'w'))
 PYX
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm two && git push -q 2>/dev/null )
-printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in *"--json assets"*) printf "AllMCP\\nBotMCP\\n" ;; *) echo v1.0.0 ;; esac\n' > "$T/gh-stub"   # latest == the literal pin → release_ahead=no
+# two-stub <latest> <assets-of-v2.0.0…>: v1.0.0 always carries both assets; v2.0.0 carries what the caller says; other tags → not found
+two_stub() { local latest="$1"; shift; printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v1.0.0 --repo PsychQuant/msg "*"--json assets"*) printf "AllMCP\\nBotMCP\\n" ;; "release view v2.0.0 --repo PsychQuant/msg "*"--json assets"*) printf "%%s\\n" %s ;; "release view "*"--json assets"*) exit 1 ;; *) echo v%s ;; esac\n' "$*" "$latest" > "$T/gh-stub"; chmod +x "$T/gh-stub"; }
+two_stub 1.0.0 "AllMCP BotMCP"   # latest == the literal pin → release_ahead=no
 prep01 two
-run_both "two: Step 2 pin comes from the wrappers' literal DESIRED_VERSION, not from manifest version 1.3.2" 'BINARY_UNKNOWN_WHY' two "binary=1.0.0 pinsrc=wrapper:all-wrapper.sh"
+run_both "two: Step 2 pin comes from the wrappers' literal DESIRED_VERSION, not from manifest version 1.3.2 — BOTH sources listed" 'BINARY_UNKNOWN_WHY' two "binary=1.0.0 pinsrc=wrapper:all-wrapper.sh,wrapper:bot-wrapper.sh"
 run_both "two: Phase 1.5 Step 2 checks BOTH wrappers (2 of 2), stub excluded" 'for wrapper in' two "→ Phase 1.5 Step 2: wrappers checked: 2 of 2 bin/ wrapper(s) (bin/ files: 3; hook wrappers: 0 → Step 3)"
 run_both "two: Signal 1 ✅ for the second binary too, against ITS pin tag" 'for wrapper in' two "✅ bot-wrapper.sh: BotMCP present in PsychQuant/msg release v1.0.0 (wrapper:bot-wrapper.sh)"
 printf '1.0.0\n' > "$T/bin/.AllMCP.version"; printf '0.9.0\n' > "$T/bin/.BotMCP.version"
@@ -325,6 +330,102 @@ printf '#!/bin/sh\nGITHUB_REPO="PsychQuant/msg"\ncurl -sL "https://api.github.co
 run_both_ctx "two + an unresolvable third wrapper: never 'all N' — UNVERIFIED with the wrapper named" 'if [ -z "$ROWS" ]' two "UNVERIFIED — 2/3 verified; unresolved wrapper: c-wrapper.sh"
 run_both "two + unresolvable wrapper: Phase 1.5 counts it as unresolved, 2 of 3" 'for wrapper in' two "wrappers checked: 2 of 3 bin/ wrapper(s)"
 rm -f "$T/dev/fx-mp/plugins/two/bin/c-wrapper.sh"
+echo
+echo "#22 R4 — Case E on a plugin whose two wrappers share one literal pin: every source is rewritten, the asset is pre-checked, half-bumps cannot be committed"
+two_stub 2.0.0 "AllMCP"   # v2.0.0 released WITHOUT BotMCP
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
+assert_contains "two: bump to a release that lacks one wrapper's asset is REFUSED before writing" "✗ Case E: BotMCP not in PsychQuant/msg release v2.0.0" "$OUT"
+assert_contains "two: …and the other asset was checked too" "✅ Case E: AllMCP present in PsychQuant/msg release v2.0.0" "$OUT"
+assert_contains "two: …nothing written" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
+two_stub 2.0.0 "AllMCP BotMCP"
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "two: attended bump-together rewrites BOTH wrappers AND the manifest version (three files, literal pin + version live apart)" "DESIRED_VERSION: 1.0.0 → 2.0.0 in plugins/two/bin/all-wrapper.sh plugins/two/bin/bot-wrapper.sh plugins/two/.claude-plugin/plugin.json; version: 2.0.0" "$OUT"
+assert_contains "two: …all-wrapper.sh on disk"  'DESIRED_VERSION="2.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh")"
+assert_contains "two: …bot-wrapper.sh on disk"  'DESIRED_VERSION="2.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
+assert_contains "two: …manifest version on disk" '"version": "2.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/.claude-plugin/plugin.json")"
+assert_contains "two: …revert command lists every file" "git checkout -- plugins/two/bin/all-wrapper.sh plugins/two/bin/bot-wrapper.sh plugins/two/.claude-plugin/plugin.json" "$OUT"
+( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two )
+export IDD_ALL_UNATTENDED=1
+( cd "$T/dev/fx-mp" && git push -q origin HEAD:master 2>/dev/null )
+prep01 two
+run_both "two: unattended → Case E-auto (two wrapper literals, no version source)" 'BINARY_UNKNOWN_WHY' two "→ Phase 0.3 sync intent: Case E-auto"
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
+OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
+assert_contains "two: E-auto bumps both wrappers, commits and pushes (verified)" "AUDIT: Phase 0.3 Case E-auto — pin bumped to v2.0.0 (DESIRED_VERSION), committed and pushed to origin/" "$OUT"
+assert_contains "two: …the commit touches exactly the two wrapper files" "2" "$(cd "$T/dev/fx-mp" && git show --stat --format= HEAD | grep -c 'wrapper.sh')"
+assert_contains "two: …subject" "chore(two): bump binary pin to v2.0.0 (DESIRED_VERSION)" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
+prep01 two
+run_both "two: after E-auto, Step 2 reads 2.0.0 from both wrappers and release_ahead=no" 'BINARY_UNKNOWN_WHY' two "binary=2.0.0 pinsrc=wrapper:all-wrapper.sh,wrapper:bot-wrapper.sh"
+unset IDD_ALL_UNATTENDED
+echo
+echo "#22 R4 — Phase 5 must not dedupe by install name before comparing pins (two wrappers, one binary name, different pins)"
+mkdir -p "$T/dev/fx-mp/plugins/dup/.claude-plugin" "$T/dev/fx-mp/plugins/dup/bin"
+printf '{ "name": "dup", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/dup/.claude-plugin/plugin.json"
+printf '#!/bin/sh\nBINARY_NAME="SharedBin"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' > "$T/dev/fx-mp/plugins/dup/bin/a.sh"
+printf '#!/bin/sh\nBINARY_NAME="SharedBin"\nREPO="a/x"\nDESIRED_VERSION="2.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' > "$T/dev/fx-mp/plugins/dup/bin/b.sh"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"dup","version":"1.0.0","source":"./plugins/dup"}); json.dump(d,open(p,'w'))
+PYX
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm dup && git push -q origin HEAD:master 2>/dev/null )
+printf '1.0.0\n' > "$T/bin/.SharedBin.version"
+prep01 dup
+run_both "dup: Step 2 sees the two pins disagree → pin-conflict (unknown), not the first one" 'BINARY_UNKNOWN_WHY' dup "pinsrc=conflict unreleased=unknown why=pin-conflict"
+run_both_ctx "dup: Phase 5 compares the second wrapper against ITS pin — sidecar 1.0.0 satisfies a.sh but not b.sh → MISMATCH" 'if [ -z "$ROWS" ]' dup "MISMATCH SharedBin=v1.0.0≠v2.0.0"
+echo
+echo "#22 R4 — pin-unreadable: the wrapper names binaryVersion, the manifest lacks it → unknown (not no-pin)"
+mkdir -p "$T/dev/fx-mp/plugins/kl/.claude-plugin" "$T/dev/fx-mp/plugins/kl/bin"
+printf '{ "name": "kl", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/kl/.claude-plugin/plugin.json"
+printf '#!/bin/sh\nBINARY_NAME="KL"\nREPO="a/kl"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION"\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/kl/bin/kl-wrapper.sh"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"kl","version":"1.0.0","source":"./plugins/kl"}); json.dump(d,open(p,'w'))
+PYX
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm kl && git push -q origin HEAD:master 2>/dev/null )
+prep01 kl
+run_both "kl: Step 2 → why=pin-unreadable with the key named" 'BINARY_UNKNOWN_WHY' kl "pinsrc=unreadable:binaryVersion unreleased=unknown why=pin-unreadable"
+run_both "kl: …the ⚠ line says the key is named by the wrapper but has no value (not 'wrapper reads nothing')" 'BINARY_UNKNOWN_WHY' kl "wrapper 讀 plugin.json 的 binaryVersion，但"
+echo
+echo "#22 R4 — hook-only layout WITH a pin (macdoc shape): the hook is the downloader, so Case E / E-auto / Phase 5 / Step 3 all reach it"
+mkdir -p "$T/dev/fx-mp/plugins/hp/.claude-plugin" "$T/dev/fx-mp/plugins/hp/hooks"
+printf '{ "name": "hp", "version": "1.5.1", "binary_version": "0.7.0" }\n' > "$T/dev/fx-mp/plugins/hp/.claude-plugin/plugin.json"
+cat > "$T/dev/fx-mp/plugins/hp/hooks/session-start.sh" <<'SH'
+#!/bin/bash
+REPO="PsychQuant/macdoc"
+BINARY_NAME="hpbin"
+INSTALL_DIR="$HOME/bin"
+WANT=$(grep -oE '"binary_version"[[:space:]]*:[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+/usr/bin/curl -fsSL "https://github.com/$REPO/releases/download/v$WANT/$BINARY_NAME" -o "$INSTALL_DIR/$BINARY_NAME"
+SH
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"hp","version":"1.5.1","source":"./plugins/hp"}); json.dump(d,open(p,'w'))
+PYX
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm hp && git push -q origin HEAD:master 2>/dev/null )
+gh_stub 9.9.9 PsychQuant/macdoc hpbin
+prep01 hp
+run_both "hp: Step 1 sees the hook + the binary_version pin" 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' hp "IS_BINARY_BACKED=true (hook:session-start.sh pin:binary_version)"
+run_both "hp: Step 2 reads the pin from the hook (macdoc regex shape) → Case E, not no-pin" 'BINARY_UNKNOWN_WHY' hp "binary=0.7.0 pinsrc=binary_version"
+run_both "hp: …Case E" 'BINARY_UNKNOWN_WHY' hp "→ Phase 0.3 sync intent: Case E"
+run_both "hp: Step 3 compares the local CLI against the hook's PIN (latest is Case E's business) and counts 1 of 1" 'hooks checked:' hp "→ Phase 1.5 Step 3: hooks checked: 1 of 1 hook wrapper(s)"
+run_both "hp: …the comparison names the pin" 'hooks checked:' hp "pin (binary_version) v0.7.0"
+printf '0.7.0\n' > "$T/bin/.hpbin.version"
+run_both_ctx "hp: Phase 5 verifies the hook row against its pin and sidecar" 'if [ -z "$ROWS" ]' hp "✅ hpbin: installed v0.7.0 == pin v0.7.0 (binary_version)"
+run_both_ctx "hp: …and says it is a hook-only layout" 'if [ -z "$ROWS" ]' hp "hook-only 佈局"
+export IDD_ALL_UNATTENDED=1
+prep01 hp
+run_both "hp: unattended → Case E-auto (dedicated key)" 'BINARY_UNKNOWN_WHY' hp "→ Phase 0.3 sync intent: Case E-auto"
+prep01 hp
+f=$(prep "AUTO_PUSH='no'" hp); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "hp: E-auto bumps binary_version in the manifest, commits and pushes" "AUDIT: Phase 0.3 Case E-auto — pin bumped to v9.9.9 (binary_version), committed and pushed to origin/" "$OUT"
+assert_contains "hp: …manifest on disk" '"binary_version": "9.9.9"' "$(cat "$T/dev/fx-mp/plugins/hp/.claude-plugin/plugin.json")"
+unset IDD_ALL_UNATTENDED
 echo
 echo "#22 R3 — nopin: wrapper downloads latest and reads nothing → Case B no-pin (the version fallback is gone)"
 mkdir -p "$T/dev/fx-mp/plugins/nopin/.claude-plugin" "$T/dev/fx-mp/plugins/nopin/bin"
@@ -353,8 +454,8 @@ PYX
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm mixed && git push -q 2>/dev/null )
 prep01 mixed
 run_both "mixed: Step 2 counts the bin wrapper only and hands the hook to Step 3" 'for wrapper in' mixed "wrappers checked: 1 of 1 bin/ wrapper(s) (bin/ files: 1; hook wrappers: 1 → Step 3)"
-run_both "mixed: Step 3 is skipped for a plugin that has a bin/ wrapper (the hook is a check script, not a CLI)" 'HOOK="$PLUGIN_DIR/hooks/$(printf' mixed "Phase 1.5 Step 3: skipped"
-run_both "nobin (hook-only, no bin/ wrapper): Step 3 runs and reports what it cannot extract — the gate is the release URL, not the session-start.sh filename" 'HOOK="$PLUGIN_DIR/hooks/$(printf' nobin "判定不出"
+run_both "mixed: Step 3 is skipped for a plugin that has a bin/ wrapper (the hook is a check script, not a CLI)" 'hooks checked:' mixed "Phase 1.5 Step 3: skipped"
+run_both "nobin (hook-only, no bin/ wrapper): Step 3 runs and reports what it cannot extract — the gate is the release URL, not the session-start.sh filename" 'hooks checked:' nobin "判定不出"
 run_both_ctx "mixed: Phase 5 verifies the bin wrapper against the binary_version pin" 'if [ -z "$ROWS" ]' mixed "✅ AllMCP: installed v1.0.0 == pin v1.0.0 (binary_version)"
 prep01 nobin
 run_both "nobin (hook-only): Phase 1.5 Step 2 says 0 of 0 and defers to Step 3 instead of checking a hook-derived name" 'for wrapper in' nobin "wrappers checked: 0 of 0 bin/ wrapper(s) (bin/ files: 0; hook wrappers: 1 → Step 3)"
@@ -365,7 +466,7 @@ printf '{ "name": "fx-self", "plugins": [ { "name": "selfp", "source": "./plugin
 printf '{ "name": "selfp", "version": "0.3.0", "binaryVersion": "0.2.0" }\n' > "$T/dev/fx-self/plugin/.claude-plugin/plugin.json"
 printf '#!/bin/sh\nREPO="PsychQuant/selfp"\nINSTALL_NAME="selfp"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION"\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-self/plugin/bin/selfp"
 git init -q --bare "$T/remote-self.git" && ( cd "$T/dev/fx-self" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm init && git remote add origin "$T/remote-self.git" && git push -q -u origin HEAD 2>/dev/null )
-printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\necho v9.9.9\n' > "$T/gh-stub"
+gh_stub 9.9.9 PsychQuant/selfp selfp
 prep01 selfp
 run_both "selfp: Step 0.1 resolves the ./plugin layout" 'plugin_holders "$PLUGIN_NAME" "$WANT_MP"' selfp "→ Step 0.1 OK: marketplace=fx-self"
 run_both "selfp: Step 1 sees bin/selfp + binaryVersion" 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' selfp "IS_BINARY_BACKED=true (bin:selfp pin:binaryVersion)"

@@ -57,11 +57,13 @@ Claude Code 開發工具鏈 — plugin / MCP server / CLI 的完整發布管道�
 `.mcp.json` 存在、或 `bin/` 底下**任何檔案**含 release URL（`gh release download` /
 `gh api …/releases` / `api.github.com/…/releases` / `github.com/…/releases/(download|tags|latest)`
 ——與 issue-driven-dev `idd-close` 的 `has_binary_wrapper` 逐字同一條；看 URL 形狀，不看檔名後綴或
-變數名：`bin/che-keychain` 配 `REPO=` 也算）、或 `hooks/*.sh` 含同一 pattern、或 `plugin.json` 有
+變數名：`bin/che-keychain` 配 `REPO=` 也算；只算非註解行）、或 `hooks/` 底下**任何檔案**含同一 pattern、或 `plugin.json` 有
 `binary_version` / `binaryVersion`——四者任一即是（`.mcp.json` 要 `mcpServers` 非空才算）。一個 plugin 可以有多個
 binary（che-telegram-mcp 兩支 wrapper），Phase 1.5 與 Phase 5 逐 wrapper / 逐 sidecar 驗。**binary 的 pin 是 wrapper 自己
 決定的**：wrapper 內字面 `DESIRED_VERSION="x.y.z"`、或 wrapper 用 grep 讀的那個 plugin.json key、或都沒有（no-pin）——
-不從 manifest 猜。
+不從 manifest 猜。「會下載的 wrapper」有 bin/ 時是 bin/（hooks/ 是 check script），沒有 bin/ 時是 hooks/（macdoc：hook 讀
+`binary_version` 再自己下載）；兩支 wrapper 共用同一 pin 時 Case E 兩支都改。asset 名只認 wrapper 宣告的（`RELEASE_ASSET=` /
+`ASSET_NAME=` / `BINARY_NAME=`），release 以 `v<pin>` tag 查。
 
 ## Skills
 

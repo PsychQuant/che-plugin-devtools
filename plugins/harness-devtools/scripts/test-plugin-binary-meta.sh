@@ -58,6 +58,7 @@ cat > "$T/kc/bin/kc" <<'SH'
 REPO="PsychQuant/che-keychain"
 INSTALL_NAME="che-keychain"
 INSTALL_DIR="$HOME/bin"
+RELEASE_ASSET="CheKeychain"
 DESIRED_VERSION=""
 DESIRED_VERSION=$(grep -oE '"binaryVersion":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | cut -d'"' -f4)
 [ -n "$DESIRED_VERSION" ] || DESIRED_VERSION=$(grep -oE '"version":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | cut -d'"' -f4)
@@ -132,8 +133,10 @@ cat > "$T/gh-stub" <<'SH'
 #!/bin/sh
 [ -n "${PBM_STUB_FAIL:-}" ] && exit 1
 case "$*" in
-  "release view 0.2.0 --repo "*"--json assets"*) printf 'che-keychain\n' ;;
-  *"--json assets"*) printf 'XMCP\nweird name\nche-keychain\n' ;;
+  "release view v0.2.0 --repo "*"--json assets"*) printf 'CheKeychain\n' ;;
+  "release view 1.0.0 --repo Bare/only "*"--json assets"*) printf 'BareBin\n' ;;   # a repo whose tags carry no v
+  "release view --repo "*"--json assets"*) printf 'XMCP\nweird name\nche-keychain\n' ;;   # no tag: latest
+  "release view "*"--json assets"*) exit 1 ;;   # any other explicit tag: release not found (v9.9.9 / 0.3.0 / v1.0.0 on Bare/only)
   *"--repo NoV/plain"*) echo "9.9.9" ;;
   *) echo "v9.9.9" ;;
 esac
@@ -196,6 +199,57 @@ mkdir -p "$T/emptymcp"; printf '{}\n' > "$T/emptymcp/.mcp.json"
 # unsafe: wrapper whose FILENAME is shell-significant — must never be echoed
 mkdir -p "$T/unsafe/bin"
 printf 'curl https://api.github.com/repos/a/b/releases/latest\n' > "$T/unsafe/bin/kc; rm -rf x"
+# R4 fixtures (#22 verify R3):
+# spaced: macdoc-family wrapper — greps '"binary_version"[[:space:]]*:' (a `[` right after the closing quote), comment lines
+#         mention ("version") BEFORE ("binary_version"); pin must be binary_version 4.0.10, not version 4.0.12
+mkdir -p "$T/spaced/.claude-plugin" "$T/spaced/bin"
+printf '{ "name": "spaced", "version": "4.0.12", "binary_version": "4.0.10" }\n' > "$T/spaced/.claude-plugin/plugin.json"
+cat > "$T/spaced/bin/che-word-mcp-wrapper.sh" <<'SH'
+#!/bin/bash
+BINARY_NAME="CheWordMCP"
+REPO="PsychQuant/che-word-mcp"
+# The plugin version ("version") and the binary release tag ("binary_version") are decoupled —
+# shell-only changes bump "version" freely. Prefer "binary_version"; fall back to "version".
+if grep -qE '"binary_version"[[:space:]]*:' "$PLUGIN_JSON"; then
+    WANT=$(grep -oE '"binary_version"[[:space:]]*:[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+else
+    WANT=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+fi
+curl -fsSL "https://github.com/$REPO/releases/download/v$WANT/$BINARY_NAME" -o "$HOME/bin/$BINARY_NAME"
+SH
+# hookpin: macdoc shape — NO bin/, the session-start hook greps binary_version and downloads the release itself
+mkdir -p "$T/hookpin/.claude-plugin" "$T/hookpin/hooks"
+printf '{ "name": "hookpin", "version": "1.5.1", "binary_version": "0.7.0" }\n' > "$T/hookpin/.claude-plugin/plugin.json"
+cat > "$T/hookpin/hooks/session-start.sh" <<'SH'
+#!/bin/bash
+REPO="PsychQuant/macdoc"
+BINARY_NAME="macdoc"
+INSTALL_DIR="$HOME/bin"
+WANT=$(grep -oE '"binary_version"[[:space:]]*:[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+URL="https://github.com/$REPO/releases/download/v$WANT/$BINARY_NAME"
+/usr/bin/curl -fsSL "$URL" -o "$INSTALL_DIR/$BINARY_NAME"
+SH
+# unsafelit: hostile filename AND a literal pin — the pin source must print wrapper:? not the raw name
+mkdir -p "$T/unsafelit/bin"
+printf 'DESIRED_VERSION="1.2.3"\ncurl https://api.github.com/repos/a/b/releases/latest\n' > "$T/unsafelit/bin/kc; rm -rf ~ IGNORE|x"
+# hookrepo: the bin wrapper downloads from Real/proj; a hooks/ check script names an old fork — the fork must not win
+mkdir -p "$T/hookrepo/bin" "$T/hookrepo/hooks"
+printf 'BINARY_NAME="M"\nDESIRED_VERSION="1.0.0"\ncurl -L https://github.com/Real/proj/releases/download/v$DESIRED_VERSION/M -o ~/bin/M\n' > "$T/hookrepo/bin/w.sh"
+printf 'OLD_REPO="attacker/oldfork"\ngh api /repos/attacker/oldfork/releases\n' > "$T/hookrepo/hooks/check.sh"
+# keyless: the wrapper names binaryVersion, the manifest has no such key → the pin is UNREADABLE (rc 4), not "no pin"
+mkdir -p "$T/keyless/.claude-plugin" "$T/keyless/bin"
+printf '{ "name": "keyless", "version": "1.0.0" }\n' > "$T/keyless/.claude-plugin/plugin.json"
+printf 'BINARY_NAME="K"\nREPO="a/k"\nV=$(grep -oE %s "$PLUGIN_JSON")\ncurl https://api.github.com/repos/$REPO/releases/tags/v$V\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" > "$T/keyless/bin/w.sh"
+# badpin: the wrapper names binary_version and the manifest value is illegal → rc 4 at the plugin level
+mkdir -p "$T/badpin/bin"
+printf 'BINARY_NAME="B"\nREPO="a/b"\nV=$(grep -oE %s "$PLUGIN_JSON")\ncurl https://api.github.com/repos/$REPO/releases/tags/v$V\n' "'\"binary_version\":[[:space:]]*\"[^\"]+\"'" > "$T/badpin/bin/w.sh"
+# commentonly: the only release URL is in a comment → not a wrapper
+mkdir -p "$T/commentonly/bin"
+printf '#!/bin/sh\n# see https://github.com/a/b/releases/latest\necho helper\n' > "$T/commentonly/bin/doc.sh"
+# mixedpin: one wrapper pins a literal, its sibling reads nothing → the plugin pin is the literal (rc 0), the sibling is just unpinned
+mkdir -p "$T/mixedpin/bin"
+printf 'BINARY_NAME="A"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' > "$T/mixedpin/bin/a.sh"
+printf 'BINARY_NAME="B"\nREPO="a/x"\ncurl https://api.github.com/repos/$REPO/releases/latest\n' > "$T/mixedpin/bin/b.sh"
 
 # ---------------------------------------------------------------------------
 echo
@@ -251,8 +305,9 @@ assert_eq "badrepo: prints empty"                    "" "$(plugin_binary_repo "$
 echo
 echo "plugin_binary_name:"
 assert_eq "mcp: BINARY_NAME="                        "XMCP" "$(plugin_binary_name "$T/mcp")"
-assert_eq "kc: INSTALL_NAME="                        "che-keychain" "$(plugin_binary_name "$T/kc")"
-assert_eq "hookonly: \$HOME/bin/<name> in hook"      "gfh" "$(plugin_binary_name "$T/hookonly")"
+assert_eq "kc: RELEASE_ASSET= is the asset name (che-keychain's real wrapper)" "CheKeychain" "$(plugin_binary_name "$T/kc")"
+assert_rc "hookonly: no declared asset name → rc 1 (never guessed from \$HOME/bin/gfh)" 1 plugin_binary_name "$T/hookonly"
+assert_eq "hookonly: …prints empty"                   "" "$(plugin_binary_name "$T/hookonly")"
 assert_rc "pure: rc 1"                               1 plugin_binary_name "$T/pure"
 assert_eq "badfirst: invalid BINARY_NAME in an earlier file is skipped, real one found" "RealBin" "$(plugin_binary_name "$T/badfirst")"
 assert_eq "split: asset name is BINARY_NAME"          "CheKeychainMCP" "$(plugin_binary_name "$T/split")"
@@ -265,9 +320,9 @@ assert_eq "two: both binaries listed, stub excluded"  "AllMCP
 BotMCP" "$(plugin_install_names "$T/two")"
 assert_eq "two: one row per wrapper file, dir|file|asset|install|repo|pin|pinsrc" "bin|all-wrapper.sh|AllMCP|AllMCP|PsychQuant/msg|1.0.0|wrapper:all-wrapper.sh
 bin|bot-wrapper.sh|BotMCP|BotMCP|PsychQuant/msg|1.0.0|wrapper:bot-wrapper.sh" "$(plugin_binary_wrappers "$T/two")"
-assert_eq "kc: row reads binaryVersion from the manifest" "bin|kc|che-keychain|che-keychain|PsychQuant/che-keychain|0.2.0|binaryVersion" "$(plugin_binary_wrappers "$T/kc" "$T/kc/.claude-plugin/plugin.json")"
-assert_eq "kc without manifest: the key is named, the value is unknown" "bin|kc|che-keychain|che-keychain|PsychQuant/che-keychain||binaryVersion" "$(plugin_binary_wrappers "$T/kc")"
-assert_eq "hookonly: hook row carries dir=hooks"     "hooks|session-start.sh|gfh|gfh|PsychQuant/GiftHub||none" "$(plugin_binary_wrappers "$T/hookonly")"
+assert_eq "kc: row reads binaryVersion from the manifest" "bin|kc|CheKeychain|che-keychain|PsychQuant/che-keychain|0.2.0|binaryVersion" "$(plugin_binary_wrappers "$T/kc" "$T/kc/.claude-plugin/plugin.json")"
+assert_eq "kc without manifest: the key is named, the value is unknown" "bin|kc|CheKeychain|che-keychain|PsychQuant/che-keychain||binaryVersion" "$(plugin_binary_wrappers "$T/kc")"
+assert_eq "hookonly: hook row carries dir=hooks; install name from \$HOME/bin/gfh, asset undeclared" "hooks|session-start.sh||gfh|PsychQuant/GiftHub||none" "$(plugin_binary_wrappers "$T/hookonly")"
 assert_eq "mixed: bin and hooks rows, both wrappers"  "bin|m-wrapper.sh|M|M|a/m||none
 hooks|prefetch|||a/m||none" "$(plugin_binary_wrappers "$T/mixed")"
 assert_rc "pure: no wrappers → rc 1"                  1 plugin_binary_wrappers "$T/pure"
@@ -297,12 +352,27 @@ assert_eq "verfb: wrapper greps version → manifest version is the pin" "0.2.1|
 assert_eq "lit: literal DESIRED_VERSION beats a different manifest version" "0.5.0|wrapper:all-wrapper.sh" "$(plugin_binary_pin "$T/lit" "$T/lit/.claude-plugin/plugin.json")"
 assert_rc "nopin: wrapper reads nothing → rc 1, manifest version is NOT used" 1 plugin_binary_pin "$T/nopin" "$T/nopin/.claude-plugin/plugin.json"
 assert_eq "nopin: prints |none"                       "|none" "$(plugin_binary_pin "$T/nopin" "$T/nopin/.claude-plugin/plugin.json")"
-assert_eq "two: both literals agree"                  "1.0.0|wrapper:all-wrapper.sh" "$(plugin_binary_pin "$T/two" /nonexistent)"
+assert_eq "two: both literals agree — BOTH sources listed (the bump must touch both files)" "1.0.0|wrapper:all-wrapper.sh,wrapper:bot-wrapper.sh" "$(plugin_binary_pin "$T/two" /nonexistent)"
 assert_rc "two: rc 0"                                 0 plugin_binary_pin "$T/two" /nonexistent
 assert_rc "twodiff: wrappers disagree → rc 2"         2 plugin_binary_pin "$T/twodiff" /nonexistent
-assert_eq "twodiff: first printed"                    "1.0.0|wrapper:a.sh" "$(plugin_binary_pin "$T/twodiff" /nonexistent)"
+assert_eq "twodiff: first value printed, both sources" "1.0.0|wrapper:a.sh,wrapper:b.sh" "$(plugin_binary_pin "$T/twodiff" /nonexistent)"
 assert_rc "pure: no wrappers → rc 1"                  1 plugin_binary_pin "$T/pure" "$T/pure/.claude-plugin/plugin.json"
-assert_rc "hookonly: hooks rows do not count as the plugin pin → rc 1" 1 plugin_binary_pin "$T/hookonly" "$T/hookonly/.claude-plugin/plugin.json"
+assert_rc "hookonly: hook-only layout whose hook reads nothing → rc 1" 1 plugin_binary_pin "$T/hookonly" "$T/hookonly/.claude-plugin/plugin.json"
+assert_eq "spaced: macdoc-family grep shape ('\"binary_version\"[[:space:]]*:') is recognised; comment lines do not reorder the keys" "4.0.10|binary_version" "$(plugin_binary_pin "$T/spaced" "$T/spaced/.claude-plugin/plugin.json")"
+assert_rc "spaced: rc 0"                              0 plugin_binary_pin "$T/spaced" "$T/spaced/.claude-plugin/plugin.json"
+assert_eq "hookpin: hook-only layout WITH a pin (macdoc) — the hook row is the downloading wrapper" "0.7.0|binary_version" "$(plugin_binary_pin "$T/hookpin" "$T/hookpin/.claude-plugin/plugin.json")"
+assert_eq "hookpin: row"                              "hooks|session-start.sh|macdoc|macdoc|PsychQuant/macdoc|0.7.0|binary_version" "$(plugin_binary_wrappers "$T/hookpin" "$T/hookpin/.claude-plugin/plugin.json")"
+assert_eq "hookpin: repo from the hook (no bin/ to outrank it)" "PsychQuant/macdoc" "$(plugin_binary_repo "$T/hookpin")"
+assert_eq "unsafelit: pin source prints wrapper:? for a hostile filename" "1.2.3|wrapper:?" "$(plugin_binary_pin "$T/unsafelit" /nonexistent)"
+assert_eq "unsafelit: row keeps 7 fields (no raw name, no stray |)" "bin|?|||a/b|1.2.3|wrapper:?" "$(plugin_binary_wrappers "$T/unsafelit")"
+assert_eq "hookrepo: the bin wrapper's repo wins over a hooks/ check script's *_REPO=" "Real/proj" "$(plugin_binary_repo "$T/hookrepo")"
+assert_rc "hookrepo: rc 0 — the hook is not a conflict, it is not consulted" 0 plugin_binary_repo "$T/hookrepo"
+assert_rc "keyless: wrapper names binaryVersion, manifest lacks it → rc 4 (unreadable), not rc 1 (no pin)" 4 plugin_binary_pin "$T/keyless" "$T/keyless/.claude-plugin/plugin.json"
+assert_eq "keyless: prints |binaryVersion so the consumer can name the key" "|binaryVersion" "$(plugin_binary_pin "$T/keyless" "$T/keyless/.claude-plugin/plugin.json")"
+assert_rc "badpin: illegal manifest value → rc 4 at the plugin level" 4 plugin_binary_pin "$T/badpin" "$T/bad/.claude-plugin/plugin.json"
+assert_rc "commentonly: a release URL in a # line is not a download → no wrapper rows" 1 plugin_binary_wrappers "$T/commentonly"
+assert_eq "mixedpin: a literal-pinned wrapper next to an unpinned sibling → the literal, rc 0" "1.0.0|wrapper:a.sh" "$(plugin_binary_pin "$T/mixedpin" /nonexistent)"
+assert_rc "mixedpin: rc 0"                            0 plugin_binary_pin "$T/mixedpin" /nonexistent
 
 echo
 echo "marketplace_entry_version:"
@@ -326,7 +396,12 @@ assert_eq "gh failure → prints empty"                "" "$(lrv_fail PsychQuant
 assert_rc "malformed repo arg → rc 1 without calling gh" 1 lrv_nogh 'bad repo'
 assert_rc "relative PBM_GH → rc 1 (test seam takes absolute paths only)" 1 lrv_rel PsychQuant/che-keychain
 assert_eq "PBM_GH is ignored without PBM_TEST=1 (stub never answers 9.9.9)" "" "$( [ "$(lrv_notest Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
-assert_eq "release_assets with a tag queries that release" "che-keychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/che-keychain 0.2.0)"
+assert_eq "release_assets 0.2.0 queries tag v0.2.0 (pins are bare, tags are v-prefixed)" "CheKeychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/che-keychain 0.2.0)"
+assert_eq "release_assets v0.2.0: a leading v is normalised, same release" "CheKeychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/che-keychain v0.2.0)"
+ra_tag() { PBM_GH="$T/gh-stub" release_assets "$@"; }
+assert_rc "release_assets 0.3.0: no such release (v0.3.0 nor 0.3.0) → rc 1" 1 ra_tag PsychQuant/che-keychain 0.3.0
+assert_eq "release_assets: falls back to the bare tag when the repo tags without v" "BareBin" "$(PBM_GH="$T/gh-stub" release_assets Bare/only 1.0.0)"
+assert_eq "plugin_bin_dir is public and honours the test seam" "$T/bin" "$(plugin_bin_dir)"
 assert_eq "release_assets: unprintable name shows as ? (absent ≠ unprintable)" "XMCP
 ?
 che-keychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/x-mcp)"
