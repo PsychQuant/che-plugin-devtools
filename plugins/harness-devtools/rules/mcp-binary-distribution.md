@@ -186,7 +186,9 @@ MCP source repo (e.g. che-msg)              Plugin marketplace repo
 `plugin-tools:plugin-deploy` 的 **Step 2.5 MCP Binary Check** 會：
 
 1. 偵測 plugin 是否含 `.mcp.json`
-2. 掃 `bin/*-wrapper.sh` 抓 `BINARY_NAME` + `GITHUB_REPO`
+2. 掃 `bin/*-wrapper.sh` 抓 `BINARY_NAME` + `GITHUB_REPO`（`plugin-update` 的 Phase 0.3 / 1.5 已改走
+   `scripts/plugin-binary-meta.sh`：`bin/` 下任何檔案的 release URL 形狀、`*_REPO=` / `INSTALL_NAME=` 都認，#22；
+   `plugin-deploy` 這一步的掃描仍是 `*-wrapper.sh` + `GITHUB_REPO=`，收斂在 #23）
 3. 查該 repo 的 latest release 有沒有對應 asset
 4. **沒有 → 直接 block，要求先跑 `/harness-devtools:mcp-deploy`**
 5. **有 → AskUserQuestion 確認是最新 source code 的版本**

@@ -61,6 +61,38 @@ marketplace_candidates che-local-plugins              # 巢狀同名的子層是
 13/33 不同（`bestasr` 住在 `bestASR-project/bestASR`）。在此之前是兩份必須手動
 同步的硬編清單，各只有 4 筆，漏掉本機 33 個裡的 29 個。
 
+## Binary-backed plugin 的 metadata 解析（#22）
+
+**不要在 skill 裡用字面假設猜 binary metadata**（欄位叫 `binary_version`、wrapper 叫 `bin/*-wrapper.sh`、
+變數叫 `GITHUB_REPO=`、entry 一定有 `version`）。che-keychain 0.3.0 五個 phase 全部靜默失效就是這樣來的。
+用 `scripts/plugin-binary-meta.sh`（與 resolver 並列、不互相 source；bash 3.2、zsh-safe、查詢零 stderr）：
+
+```bash
+source "$CLAUDE_PLUGIN_ROOT/scripts/plugin-binary-meta.sh"
+
+plugin_binary_version "$PLUGIN_MANIFEST"        # binary_version → binaryVersion → 空；**不**回退 version（那是 shell 版本）
+                                                #   rc 0（值或空）/ 3 值不合法（[A-Za-z0-9.+-]）/ 4 manifest 讀不動
+plugin_binary_version_key "$PLUGIN_MANIFEST"    # 檔案實際用的 key；寫回時保留它（che-keychain 的 wrapper 自己讀 binaryVersion）
+                                                #   rc 1 沒有 / 2 兩個都有（印 binary_version）
+plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # rc 0 + 命中清單 "mcp.json bin:<f> hook:<f> pin:<key>" / rc 1 空
+                                                #   判準：.mcp.json ∨ bin/ 任何一般檔案含 release URL ∨ hooks/*.sh 含同 pattern ∨ manifest pin
+                                                #   URL 形狀與 idd-close 的 has_binary_wrapper 同一條；不掃 skills/ 散文
+plugin_binary_repo "$PLUGIN_DIR"                # owner/repo（URL 字面或 <任何>_REPO= / REPO= 賦值，兩段過 allowlist）
+                                                #   rc 0 恰一 / 1 沒有 / 2 多個（印第一個——消費端要把它印出來）
+plugin_binary_name "$PLUGIN_DIR"                # BINARY_NAME= → INSTALL_NAME= → $HOME/bin/<name> 字面；rc 1 沒有
+plugin_installed_binary_version "$PLUGIN_DIR"   # ${PLUGIN_BIN_DIR:-$HOME/bin}/.<name>.version（wrapper 寫的 sidecar）
+                                                #   rc 1 沒有 sidecar（wrapper 從未觸發）/ 2 抽不到名字（UNKNOWN，不是「沒裝」）
+marketplace_entry_version "$MP_ROOT" "$PLUGIN_NAME"   # rc 0（值；entry 缺 version 時印**空**）/ 1 沒有 entry / 4 讀不動——不 KeyError
+latest_release_version owner/repo               # ${PBM_GH:-gh} release view … tagName，去 v；rc 1 失敗（測試用 PBM_GH 注入 stub）
+version_gt 0.3.0 0.2.0                          # rc 0 大於 / 1 否 / 2 不可比（非 x.y.z；BSD sort 沒有 -V，所以用 awk）
+```
+
+**規則**：答不出來回 distinct rc、印空——**不印看起來合理的預設值**。消費端把 rc 1 / 2 / 4 印成 UNKNOWN，
+不把「查不到」當「沒有」。`plugin-update` Phase 0.3（Step 1 / Step 2 (a)(b)(d)(e)、Case E bump fence）、
+Phase 1.5 Step 2 / 3、Phase 2 Step 1 / 4、Phase 5 Step 1.5 全部只消費這裡的輸出。測試：
+`scripts/test-plugin-binary-meta.sh`（fixture 覆蓋兩種 key、無副檔名 wrapper、hook-only、多 repo、缺 version 的 entry、
+sidecar 三態、stub gh）。
+
 ## MCP 專案路徑解析（同理）
 
 **永遠不要在 skill 裡硬編碼 MCP 專案路徑。** 用 `scripts/resolve-mcp-project.sh`：

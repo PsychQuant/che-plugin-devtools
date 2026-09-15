@@ -53,8 +53,11 @@ Claude Code 開發工具鏈 — plugin / MCP server / CLI 的完整發布管道�
 ③ plugin-update 之後每次改 plugin shell 都跑這個
 ```
 
-怎麼判斷是不是 binary-backed：`plugin.json` 有 `mcpServers`、或 `bin/` 底下有
-wrapper script、或 hook 會去 curl GitHub Release——三者任一即是。
+怎麼判斷是不是 binary-backed（`scripts/plugin-binary-meta.sh` 的 `plugin_is_binary_backed`，#22）：
+`.mcp.json` 存在、或 `bin/` 底下**任何檔案**含 release URL（`gh release download` /
+`api.github.com/repos/…/releases` / `github.com/…/releases/(download|tags|latest)`——看 URL
+形狀，不看檔名後綴或變數名：`bin/che-keychain` 配 `REPO=` 也算）、或 `hooks/*.sh` 含同一
+pattern、或 `plugin.json` 有 `binary_version` / `binaryVersion`——四者任一即是。
 
 ## Skills
 

@@ -128,11 +128,11 @@ run_both "Phase 0.3 Step 2 on a branch without upstream aborts instead of assert
 if [ -f "$T/state/harness-devtools/plugin-update-ctx-pure" ]; then PASS=$((PASS+1)); echo "  ✓ Case A keeps the context file"; else FAIL=$((FAIL+1)); echo "  ✗ Case A keeps the context file"; fi
 echo
 echo "Phase 2 Step 4 (version verified; mirror commit only when marketplace.json changed):"
-run_both "Phase 2 Step 4 with an in-sync marketplace.json prints the skip line instead of failing" 'MP_NOW=$(python3 -c' nobin "無需 push；繼續 Phase 3"
+run_both "Phase 2 Step 4 with an in-sync marketplace.json prints the skip line instead of failing" 'MP_NOW=$(marketplace_entry_version' nobin "無需 push；繼續 Phase 3"
 printf '{ "name": "pure", "version": "1.0.2" }\n' > "$T/dev/fx-mp/plugins/pure/.claude-plugin/plugin.json"
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm pure-bump ) 2>/dev/null
 prep01 pure
-run_both "Phase 2 Step 4 with drift but the Edit NOT applied aborts instead of claiming sync" 'MP_NOW=$(python3 -c' pure "的 Edit 沒落地"
+run_both "Phase 2 Step 4 with drift but the Edit NOT applied aborts instead of claiming sync" 'MP_NOW=$(marketplace_entry_version' pure "的 Edit 沒落地"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PY'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p))
@@ -140,7 +140,7 @@ for e in d['plugins']:
     if e['name']=='pure': e['version']='1.0.2'
 json.dump(d,open(p,'w'))
 PY
-f=$(prep 'MP_NOW=$(python3 -c' pure)
+f=$(prep 'MP_NOW=$(marketplace_entry_version' pure)
 OUT=$(cd "$T" && bash "$f" 2>&1); [ -n "${FENCE_DEBUG:-}" ] && printf '%s\n' "$OUT" | sed 's/^/      dbg| /'
 assert_contains "Phase 2 Step 4 with the Edit applied commits and pushes to the upstream" "pushed — origin/" "$OUT"
 assert_contains "…and lists the extra commit that appeared after Phase 0.5 (pure-bump)" "pure-bump" "$OUT"
@@ -190,6 +190,52 @@ printf '# nobin\n\nv1.0.0 — `s` `t`\n' > "$T/dev/fx-mp/plugins/nobin/README.md
 run_both "README mentioning every component and the version is FRESH (with the unevaluated signals named)" 'GIT_OK=true' nobin "✅ Phase 2.5: README fresh（已評估的信號通過；未評估： 3(無 CHANGELOG.md) 5(無 tool count 可比) 6(無 Version History 或無 git)）"
 rm "$T/dev/fx-mp/plugins/nobin/README.md"
 run_both "missing README is reported as its own state" 'GIT_OK=true' nobin "沒有 README.md"
+echo
+echo "#22 — che-keychain-shaped plugin 'kc': bin/kc (no -wrapper.sh suffix, REPO= not GITHUB_REPO=), binaryVersion, entry without version, hook delegates"
+# The five silent misses of che-keychain 0.3.0, as one fixture. Each assertion is on a line the fence PRINTS.
+mkdir -p "$T/dev/fx-mp/plugins/kc/.claude-plugin" "$T/dev/fx-mp/plugins/kc/bin" "$T/dev/fx-mp/plugins/kc/hooks"
+printf '{ "name": "kc", "version": "0.3.0", "binaryVersion": "0.2.0" }\n' > "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json"
+printf '#!/bin/sh\nREPO="PsychQuant/che-keychain"\nINSTALL_NAME="che-keychain"\nINSTALL_DIR="$HOME/bin"\ncurl -sL "https://api.github.com/repos/$REPO/releases/latest"\n' > "$T/dev/fx-mp/plugins/kc/bin/kc"
+printf '#!/bin/sh\nexec "$(dirname "$0")/../bin/kc" --prefetch\n' > "$T/dev/fx-mp/plugins/kc/hooks/session-start.sh"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"kc","source":"./plugins/kc"}); json.dump(d,open(p,'w'))   # NO version key
+PY
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm kc && git push -q 2>/dev/null )
+# gh stub for latest_release_version: v9.9.9, or rc 1 when PBM_STUB_FAIL is set; a sidecar dir for Phase 5
+printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\necho v9.9.9\n' > "$T/gh-stub"; chmod +x "$T/gh-stub"
+mkdir -p "$T/bin"; export PBM_GH="$T/gh-stub" PLUGIN_BIN_DIR="$T/bin"
+prep01 kc
+run_both "kc: Step 1 detects bin/kc + the binaryVersion pin (no *-wrapper.sh, no GITHUB_REPO=)" 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' kc "IS_BINARY_BACKED=true (bin:kc pin:binaryVersion)"
+prep01 kc
+run_both "kc: Step 2 sees latest release v9.9.9 > pin 0.2.0 → Case E (release ahead of pin), before Case C" 'BINARY_UNKNOWN_WHY' kc "→ Phase 0.3 sync intent: Case E"
+run_both "kc: …and the decision line carries release_ahead=9.9.9" 'BINARY_UNKNOWN_WHY' kc "release_ahead=9.9.9"
+run_both "kc: …and the missing marketplace version is named as missing, not as drift from ''" 'BINARY_UNKNOWN_WHY' kc "entry has no version"
+export PBM_STUB_FAIL=1; prep01 kc
+run_both "kc: gh failure → release_ahead=unknown (printed, not silent)" 'BINARY_UNKNOWN_WHY' kc "release_ahead=unknown"
+run_both "kc: gh failure → NOT Case E (falls through to Case C: recent commit)" 'BINARY_UNKNOWN_WHY' kc "→ Phase 0.3 sync intent: Case C"
+unset PBM_STUB_FAIL
+echo
+echo "#22 — Phase 2 Step 1 must not KeyError on an entry without version:"
+prep01 kc
+run_both "kc: Phase 2 Step 1 lists the entry as missing its version" 'will be set from plugin.json' kc "kc: (missing — will be set from plugin.json)"
+echo
+echo "#22 — Phase 5 Step 1.5 (binary-backed verification against the ~/bin sidecar):"
+run_both_ctx() {   # like run_both, but the fence ENDS the invocation (remove_plugin_ctx) — re-arm Step 0.1 before each shell
+  local f; f=$(prep "$2" "$3"); local out_b out_z
+  prep01 "$3"; out_b=$(cd "$T" && bash "$f" 2>&1); prep01 "$3"; out_z=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
+  assert_contains "$1 (bash)" "$4" "$out_b"; assert_contains "$1 (zsh)" "$4" "$out_z"
+  if printf "%s" "$out_z" | grep -q "no matches found"; then FAIL=$((FAIL+1)); echo "  ✗ $1: a glob matched nothing under zsh (fatal in the Bash tool)"; else PASS=$((PASS+1)); echo "  ✓ $1: no unmatched glob under zsh"; fi
+}
+printf '0.2.0\n' > "$T/bin/.che-keychain.version"
+run_both_ctx "kc: sidecar 0.2.0 == pin 0.2.0 → ✅" 'plugin_installed_binary_version' kc "✅ Phase 5 Step 1.5: installed v0.2.0 == pin v0.2.0"
+printf '0.1.0\n' > "$T/bin/.che-keychain.version"
+run_both_ctx "kc: sidecar 0.1.0 != pin 0.2.0 → MISMATCH" 'plugin_installed_binary_version' kc "MISMATCH installed v0.1.0 pin v0.2.0"
+rm -f "$T/bin/.che-keychain.version"
+run_both_ctx "kc: no sidecar → UNVERIFIED (never ✅)" 'plugin_installed_binary_version' kc "UNVERIFIED (no sidecar"
+run_both_ctx "pure: Phase 5 Step 1.5 says n/a for a non-binary plugin" 'plugin_installed_binary_version' pure "Phase 5 Step 1.5: n/a"
+unset PBM_GH PLUGIN_BIN_DIR
+
 echo
 echo "plugin-debug version query (root-level manifest lookup):"
 SKILL="$PLUGIN_ROOT/skills/plugin-debug/SKILL.md"
