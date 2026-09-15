@@ -70,34 +70,39 @@ marketplace_candidates che-local-plugins              # 巢狀同名的子層是
 ```bash
 source "$CLAUDE_PLUGIN_ROOT/scripts/plugin-binary-meta.sh"
 
-plugin_binary_version "$PLUGIN_MANIFEST"        # 明確 pin：binary_version → binaryVersion → 空；rc 0（值或空）/ 3 值不合法 / 4 讀不動
+plugin_binary_version "$PLUGIN_MANIFEST"        # 明確 manifest pin：binary_version → binaryVersion → 空；rc 0（值或空）/ 3 值不合法 / 4 讀不動
 plugin_binary_version_key "$PLUGIN_MANIFEST"    # 明確 pin 的 key；rc 1 沒有 / 2 兩個都有（印 binary_version）
-plugin_binary_version_effective "$PLUGIN_MANIFEST"   # 「wrapper 實際會下載的版本」= binary_version → binaryVersion → **version**，印 value|key
-                                                #   （#77 之前的 wrapper 與 che-keychain 的 fallback 都讀 version；本機 13/13 binary-backed plugin 只有 version）
-                                                #   消費端一律把 key 印出來——來自 version 的值對 che-apple-notes-mcp 是真比對、對 shell/binary
-                                                #   各自版號的 plugin 是「該補 pin」的提醒；純 shell plugin 不得拿它當 pin（先過 plugin_is_binary_backed）
-plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # rc 0 + 命中清單 "mcp.json bin:<f> hook:<f> pin:<key>" / rc 1 空（檔名不合法印 ?）
-                                                #   判準：.mcp.json ∨ bin/ 任何一般檔案含 release URL ∨ hooks/*.sh 含同 pattern ∨ manifest pin
+plugin_binary_wrappers "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # **逐 wrapper**：每個真的會下載 release 的檔案一列
+                                                #   dir|file|asset|install|repo|pin|pinsrc（dir ∈ bin|hooks；空欄 = 該檔沒宣告；檔名不合法印 ?）
+                                                #   pin 由**該 wrapper 自己**決定，三種來源封閉列舉：(1) 檔內字面 DESIRED_VERSION="x.y.z" → pinsrc=wrapper:<file>；
+                                                #   (2) 檔內 grep 的 plugin.json key（binary_version / binaryVersion / version，依它自己的順序）→ pinsrc=<key>；
+                                                #   (3) 都沒有 → pin 空、pinsrc=none。**沒有** manifest 層的全域回退——本機 22 支 wrapper：4 支字面、8 支讀 version、
+                                                #   3 支讀 binaryVersion/binary_version 再 version、1 支不讀；R1 不回退、R2 回退 version 都對其中一半是錯的
+plugin_binary_pin "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # plugin 層的 pin = bin/ wrapper 們的 pin：印 value|pinsrc；rc 0 一致 / 1 沒有任何 wrapper 有 pin
+                                                #   （no-pin，Case B 會問）/ 2 各 wrapper 不一致（印第一個，消費端列出各列）
+plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # rc 0 + 命中清單 "mcp.json bin:<f> hook:<f> pin:<key>" / rc 1 空
+                                                #   判準：.mcp.json（mcpServers 非空才算）∨ bin/ 任何一般檔案含 release URL ∨ hooks/ 任何檔案含同 pattern ∨ manifest pin
                                                 #   URL 形狀**逐字**是 idd-close has_binary_wrapper 的那一條（含 gh api …/releases）；不掃 skills/ 散文
-plugin_binary_wrappers "$PLUGIN_DIR"            # **逐 wrapper**：每個真的會下載 release 的檔案一列 file|asset|install|repo（空欄 = 該檔沒宣告）
-                                                #   Signal 1 / Phase 5 要用這個迭代——che-telegram-mcp 兩支 wrapper 兩個 binary，單值 getter 會漏第二個
-plugin_binary_repo "$PLUGIN_DIR"                # owner/repo，分級：*_REPO= 賦值（含縮排 / export）> release URL 字面；bare github.com/o/r 文件連結不是候選
-                                                #   賦值必須是完整字面（REPO="o/r${X}" 不算）；rc 0 恰一 / 1 沒有 / 2 **同一級**多值（印第一個——消費端要印出來）
-plugin_binary_name "$PLUGIN_DIR"                # 第一個合法 ASSET 名：BINARY_NAME= → INSTALL_NAME= → $HOME/bin/<name>；逐候選驗證，壞的跳過；rc 1 沒有
-plugin_install_names "$PLUGIN_DIR"              # 所有 INSTALL 名（INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>），一行一個——sidecar 用這個 key
-plugin_installed_binary_version "$PLUGIN_DIR" [name]   # ${PLUGIN_BIN_DIR:-$HOME/bin}/.<name>.version；rc 1 沒有 sidecar（wrapper 從未觸發）/ 2 抽不到名字（UNKNOWN）
+plugin_binary_repo "$PLUGIN_DIR"                # owner/repo，只看**會下載 release 的 wrapper 檔**（輔助檔的 REPO= 不算）；分級：*_REPO= 賦值（含縮排 / export）
+                                                #   > release URL 字面；bare github.com/o/r 文件連結不是候選；賦值必須是完整字面（REPO="o/r${X}" 不算）
+                                                #   rc 0 恰一 / 1 沒有 / 2 **同一級**多值（印第一個——消費端要印出來；che-things-mcp / che-zotero-mcp 的 hook 指舊 fork 是真陽性）
+plugin_binary_name "$PLUGIN_DIR"                # 第一個合法 ASSET 名：BINARY_NAME= → INSTALL_NAME= → $HOME/bin/<name>；逐候選驗證；rc 1 沒有
+plugin_install_names "$PLUGIN_DIR"              # 所有 INSTALL 名（INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>），一行一個——sidecar 用這個 key；
+                                                #   一支 wrapper 抽不到名字 → 它不在這裡（消費端用 plugin_binary_wrappers 的空欄計「未解析」，不得報 all N）
+plugin_installed_binary_version "$PLUGIN_DIR" [name]   # ~/bin/.<name>.version；rc 1 沒有 sidecar（wrapper 從未觸發）/ 2 抽不到名字（UNKNOWN）/ 3 內容不是版本
 marketplace_entry_version "$MP_ROOT" "$PLUGIN_NAME"   # rc 0（值；entry 缺 version 時印**空**）/ 1 沒有 entry / 3 值不合法 / 4 讀不動——不 KeyError
-latest_release_version owner/repo               # ${PBM_GH:-gh} release view … tagName，去 v；rc 1 失敗
-release_assets owner/repo                       # latest release 的 asset 名，一行一個（allowlisted）；rc 1 失敗 → 消費端說 UNKNOWN，不說「缺」
+latest_release_version owner/repo               # gh release view … tagName，去 v；rc 1 失敗
+release_assets owner/repo [tag]                 # 該 release（無 tag = latest）的 asset 名，一行一個；不合 allowlist 的名字印 ?（「缺」與「印不出」分得開）；rc 1 失敗
 version_gt 0.3.0 0.2.0                          # rc 0 大於 / 1 否 / 2 不可比（非 x.y.z；BSD sort 沒有 -V，所以用 awk）
 ```
 
 **規則**：答不出來回 distinct rc、印空——**不印看起來合理的預設值**。消費端把 rc 1 / 2 / 4 印成 UNKNOWN，
 不把「查不到」當「沒有」。`plugin-update` Phase 0.3（Step 1 / Step 2 (a)(b)(d)(e)、Case E bump fence）、
 Phase 1.5 Step 2 / 3、Phase 2 Step 1 / 4、Phase 5 Step 1.5 全部只消費這裡的輸出。`PBM_GH` / `PLUGIN_BIN_DIR` 是**測試座標**
-（stub gh、sidecar 目錄）；`PBM_GH` 只接受絕對路徑的可執行檔。測試：`scripts/test-plugin-binary-meta.sh`（92 斷言：兩種 key、
-version 回退、無副檔名 wrapper、hook-only、文件連結 vs 賦值、`${X}` 賦值、縮排 / export、`gh api` 形、多 binary、asset ≠ install 名、
-缺 version 的 entry、sidecar 三態、不安全檔名、stub gh）。
+（stub gh、sidecar 目錄），只在 `PBM_TEST=1` 時生效，且 `PBM_GH` 只接受絕對路徑的可執行檔。測試：`scripts/test-plugin-binary-meta.sh`
+（107 斷言：兩種 key、四種 pin 來源、wrapper 不一致、無副檔名 wrapper、hook-only、bin+hooks 混合、文件連結 vs 賦值、非 wrapper 的 REPO=、
+`${X}` 賦值、縮排 / export、`gh api` 形、多 binary、asset ≠ install 名、缺 version 的 entry、`.mcp.json` `{}`、sidecar 三態、不安全檔名、
+帶 tag 的 assets、stub gh 與 PBM_TEST 守門）。
 
 ## MCP 專案路徑解析（同理）
 

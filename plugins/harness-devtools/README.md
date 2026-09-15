@@ -58,8 +58,10 @@ Claude Code 開發工具鏈 — plugin / MCP server / CLI 的完整發布管道�
 `gh api …/releases` / `api.github.com/…/releases` / `github.com/…/releases/(download|tags|latest)`
 ——與 issue-driven-dev `idd-close` 的 `has_binary_wrapper` 逐字同一條；看 URL 形狀，不看檔名後綴或
 變數名：`bin/che-keychain` 配 `REPO=` 也算）、或 `hooks/*.sh` 含同一 pattern、或 `plugin.json` 有
-`binary_version` / `binaryVersion`——四者任一即是。一個 plugin 可以有多個 binary（che-telegram-mcp
-兩支 wrapper），Phase 1.5 與 Phase 5 逐 wrapper / 逐 sidecar 驗。
+`binary_version` / `binaryVersion`——四者任一即是（`.mcp.json` 要 `mcpServers` 非空才算）。一個 plugin 可以有多個
+binary（che-telegram-mcp 兩支 wrapper），Phase 1.5 與 Phase 5 逐 wrapper / 逐 sidecar 驗。**binary 的 pin 是 wrapper 自己
+決定的**：wrapper 內字面 `DESIRED_VERSION="x.y.z"`、或 wrapper 用 grep 讀的那個 plugin.json key、或都沒有（no-pin）——
+不從 manifest 猜。
 
 ## Skills
 

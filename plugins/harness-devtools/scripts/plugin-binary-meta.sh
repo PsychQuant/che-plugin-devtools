@@ -5,22 +5,25 @@
 # consumers source both):
 #   source "$CLAUDE_PLUGIN_ROOT/scripts/plugin-binary-meta.sh"
 #
-#   plugin_binary_version <manifest>            # binary_version → binaryVersion → "" ; does NOT fall back to `version`
+#   plugin_binary_version <manifest>            # explicit manifest pin: binary_version → binaryVersion → "" (never `version`)
 #                                               # rc 0 (value or empty) / 3 illegal value / 4 manifest unreadable
-#   plugin_binary_version_key <manifest>        # which pin key the file uses; rc 1 none / 2 both (binary_version printed) / 4
-#   plugin_binary_version_effective <manifest>  # "value|key" with key ∈ binary_version|binaryVersion|version — the value a
-#                                               # wrapper would actually download (che-keychain reads binaryVersion-or-version,
-#                                               # che-apple-notes-mcp reads version); rc 1 none / 3 illegal / 4 unreadable
+#   plugin_binary_version_key <manifest>        # which explicit pin key the file uses; rc 1 none / 2 both (binary_version printed) / 4
 #   plugin_is_binary_backed <dir> [manifest]    # rc 0 + hit list "mcp.json bin:<f> hook:<f> pin:<key>" / rc 1 empty
-#   plugin_binary_wrappers <dir>                # one row per wrapper FILE: "file|asset|install|repo" (empty field = unknown)
-#   plugin_binary_repo <dir>                    # owner/repo, ranked: *_REPO= assignment > release-URL literal; rc 0 one /
-#                                               # 1 none / 2 several IN THE SAME TIER (first printed)
+#                                               #   .mcp.json counts only when its mcpServers object is non-empty
+#   plugin_binary_wrappers <dir> [manifest]     # one row per file that DOWNLOADS a release:
+#                                               #   "dir|file|asset|install|repo|pin|pinsrc"   dir ∈ bin|hooks; empty field = unknown
+#                                               #   pinsrc ∈ wrapper:<file> | binary_version | binaryVersion | version | none
+#   plugin_binary_pin <dir> <manifest>          # the pin the plugin's bin/ wrappers download, "value|pinsrc":
+#                                               #   rc 0 every pinned wrapper agrees / 1 no wrapper has a pin / 2 wrappers disagree (first printed)
+#   plugin_binary_repo <dir>                    # owner/repo from WRAPPER files only, ranked: *_REPO= assignment > release-URL literal;
+#                                               #   rc 0 one / 1 none / 2 several IN THE SAME TIER (first printed)
 #   plugin_binary_name <dir>                    # first valid ASSET name: BINARY_NAME= → INSTALL_NAME= → $HOME/bin/<name>; rc 1 none
 #   plugin_install_names <dir>                  # unique INSTALLED names (INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>), one/line
-#   plugin_installed_binary_version <dir> [name]  # ${PLUGIN_BIN_DIR:-$HOME/bin}/.<name>.version; rc 1 no sidecar / 2 no name
+#   plugin_installed_binary_version <dir> [name]  # ~/bin/.<name>.version; rc 1 no sidecar / 2 no name / 3 sidecar not a version
 #   marketplace_entry_version <mp_root> <p>     # rc 0 (value, or EMPTY when the entry has no version) / 1 no entry / 3 illegal / 4 unreadable
-#   latest_release_version <owner/repo>         # ${PBM_GH:-gh} release view … tagName, leading v stripped; rc 1 on failure
-#   release_assets <owner/repo>                 # latest release asset names, one per line (allowlisted); rc 1 on failure
+#   latest_release_version <owner/repo>         # gh release view … tagName, leading v stripped; rc 1 on failure
+#   release_assets <owner/repo> [tag]           # asset names of that release (latest when no tag), one per line; a name that fails
+#                                               #   the allowlist is printed as "?" so "absent" and "unprintable" stay distinguishable; rc 1 on failure
 #   version_gt <a> <b>                          # rc 0 a>b / 1 not / 2 not comparable (non x.y.z)
 #
 # WHY THIS EXISTS
@@ -35,6 +38,16 @@
 #   The rule here: a lookup that cannot answer returns a DISTINCT rc and prints nothing —
 #   it never prints a plausible default. Consumers turn rc 1/2/4 into "UNKNOWN" lines.
 #
+# WHERE THE PIN LIVES (#22 verify R1/R2 — both rounds guessed it from the manifest and were wrong)
+#   The pin is whatever the WRAPPER downloads, and only the wrapper knows. Surveying the 22 real
+#   wrappers/hooks on this machine: 4 carry a literal `DESIRED_VERSION="x.y.z"` and never read
+#   plugin.json (agent-cacher, che-latex-mcp, che-telegram-mcp ×2); 8 grep `"version"` out of
+#   plugin.json; 3 grep `binaryVersion`/`binary_version` first and fall back to `version`
+#   (che-keychain, che-apple-mail-mcp, rush); 1 reads nothing. So the pin is resolved PER WRAPPER
+#   from a closed list of three sources — (1) a literal DESIRED_VERSION= in the file, (2) the
+#   manifest key(s) the file names, in the order it names them, (3) none — and there is NO
+#   plugin-wide fallback to `version`: a wrapper that does not read it does not use it.
+#
 # CONTRACT
 #   - bash 3.2 (no arrays needed; no nameref, no associative arrays); zsh-safe when sourced
 #     (no unquoted `$VAR` word-splitting, no globs — `find` only; nomatch would abort a fence).
@@ -43,25 +56,22 @@
 #   - Values that will be echoed / used in URLs / used as paths pass an allowlist before being
 #     printed — including the basenames of wrapper files (a file called `kc; rm -rf ~` must not
 #     reach an agent-facing line).
-#   - Field names are read in BOTH spellings; writers must preserve the file's own key
-#     (plugin_binary_version_key) — che-keychain / che-transport-mcp wrappers read
-#     `binaryVersion` themselves, so renaming the field would break them.
-#   - ONE binary per plugin is NOT assumed. che-telegram-mcp ships two wrappers / two binaries /
-#     two sidecars; agent-cacher installs two from one wrapper. Consumers that verify assets or
-#     sidecars iterate plugin_binary_wrappers / plugin_install_names — the single-value getters
-#     (plugin_binary_name / plugin_binary_repo) are for the "which repo does this plugin's
-#     release live in" question only.
-#   - ASSET name ≠ INSTALL name. `BINARY_NAME=CheKeychainMCP` is what the release asset is
-#     called; `INSTALL_NAME=che-keychain` is the file on disk and the sidecar
-#     `.che-keychain.version` is keyed by it. Signal 1 (asset present?) wants the former,
-#     Phase 5 (sidecar == pin?) the latter. Each getter falls back to the other when only one
-#     variable is declared.
+#   - Only files that actually download a release are wrappers. Names, repos and pins are read
+#     from wrapper files only — a helper script that merely assigns `REPO=` cannot re-point the
+#     plugin, and a test stub that declares `BINARY_NAME=` is not a third binary.
+#   - ONE binary per plugin is NOT assumed (che-telegram-mcp: two wrappers, two sidecars). A
+#     wrapper whose install name cannot be resolved (agent-cacher's `ensure_binary <name>` calls)
+#     is an UNRESOLVED row — consumers must count it, never report "all N verified" past it.
+#   - ASSET name ≠ INSTALL name. `BINARY_NAME=CheKeychainMCP` is the release asset;
+#     `INSTALL_NAME=che-keychain` is the file on disk and the sidecar `.che-keychain.version` is
+#     keyed by it. Signal 1 wants the former, Phase 5 the latter; each falls back to the other.
+#   - Field names are read in BOTH spellings; writers preserve the file's own key.
 #   - Detection pattern for "this file downloads a release" is, verbatim, the one idd-close's
-#     has_binary_wrapper uses (references/distribution-detection.md). The owner/repo segment
-#     is usually a VARIABLE in real wrappers (`…/repos/$REPO/releases/latest`), so detection is
-#     URL shape only; the literal owner/repo is plugin_binary_repo's job, with its own allowlist
-#     and ranking (an assignment beats a URL; a bare `github.com/o/r` docs link is never a
-#     candidate — it must be a release URL).
+#     has_binary_wrapper uses (references/distribution-detection.md). Detection is URL shape only;
+#     the literal owner/repo is plugin_binary_repo's job (assignment beats URL; a bare
+#     `github.com/o/r` docs link is never a candidate).
+#   - PBM_GH / PLUGIN_BIN_DIR are TEST seams and are honoured only when PBM_TEST=1 is also set;
+#     the production path has exactly one way to reach gh and one sidecar directory.
 
 _PBM_RELEASE_RE='gh release download|gh api[[:space:]]+.*/releases|api\.github\.com/.*/releases|github\.com/.*/releases/(download|tags|latest)'
 
@@ -86,36 +96,48 @@ print(v if isinstance(v, str) else "")
   printf '%s\n' "$out"
 }
 
-# _pbm_version_ok <value>: [A-Za-z0-9.+-], non-empty, no leading . or -
-_pbm_version_ok() {
-  case "$1" in ''|.*|-*|*[!A-Za-z0-9.+-]*) return 1 ;; esac
-  return 0
-}
-
-# _pbm_repo_ok <owner/repo>: both segments alnum-leading, [A-Za-z0-9._-] only, exactly one slash
+_pbm_version_ok() { case "$1" in ''|.*|-*|*[!A-Za-z0-9.+-]*) return 1 ;; esac; return 0; }
 _pbm_repo_ok() {
   case "$1" in
     [A-Za-z0-9]*/[A-Za-z0-9]*) case "$1" in *[!A-Za-z0-9._/-]*|*/*/*) return 1 ;; esac; return 0 ;;
     *) return 1 ;;
   esac
 }
+_pbm_name_ok() { case "$1" in ''|.*|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac; return 0; }
 
-# _pbm_name_ok <name>: [A-Za-z0-9._-], not leading . or -, not empty  (binary names AND wrapper basenames)
-_pbm_name_ok() {
-  case "$1" in ''|.*|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac
-  return 0
+# _pbm_gh → the gh to run: PBM_GH only under PBM_TEST=1 and only as an absolute executable; rc 1 refuses
+_pbm_gh() {
+  if [ -n "${PBM_GH:-}" ] && [ "${PBM_TEST:-}" = 1 ]; then
+    case "$PBM_GH" in /*) [ -x "$PBM_GH" ] && { printf '%s\n' "$PBM_GH"; return 0; } ;; esac
+    return 1
+  fi
+  printf 'gh\n'
+}
+# _pbm_bin_dir → sidecar directory: PLUGIN_BIN_DIR only under PBM_TEST=1
+_pbm_bin_dir() {
+  if [ -n "${PLUGIN_BIN_DIR:-}" ] && [ "${PBM_TEST:-}" = 1 ]; then printf '%s\n' "$PLUGIN_BIN_DIR"; else printf '%s\n' "$HOME/bin"; fi
 }
 
-# _pbm_scan_files <dir> → regular files under bin/ (depth 1) and hooks/*.sh, one per line, sorted
+# _pbm_scan_files <dir> → regular files under bin/ and hooks/ (depth 1), one per line, sorted
 _pbm_scan_files() {
   local dir="$1"
   { [ -d "$dir/bin" ]   && find "$dir/bin"   -maxdepth 1 -type f 2>/dev/null
-    [ -d "$dir/hooks" ] && find "$dir/hooks" -maxdepth 1 -type f -name '*.sh' 2>/dev/null
+    [ -d "$dir/hooks" ] && find "$dir/hooks" -maxdepth 1 -type f 2>/dev/null
   } | sort
 }
+# _pbm_file_is_wrapper <file>: DOWNLOADS a release
+_pbm_file_is_wrapper() { LC_ALL=C grep -qE "$_PBM_RELEASE_RE" "$1" 2>/dev/null; }
+# _pbm_wrapper_files <dir> → wrapper files only
+_pbm_wrapper_files() {
+  local f
+  while IFS= read -r f; do [ -n "$f" ] && _pbm_file_is_wrapper "$f" && printf '%s\n' "$f"; done <<EOF
+$(_pbm_scan_files "$1")
+EOF
+  return 0
+}
 
-# _pbm_assign <file> <VAR> → first VALID quoted-or-bare value of `VAR=…` in the file (indented / `export` / `local` OK);
-# the value must end at a quote, whitespace, `;` or EOL — `VAR="a/b${X}"` does not qualify (no partial matches).
+# _pbm_assign <file> <VAR> → first VALID literal value of `VAR=…` (indented / export / local OK); the value must end at a
+# quote, whitespace, `;` or EOL — `VAR="a/b${X}"` and `VAR=""` do not qualify
 _pbm_assign() {
   local file="$1" var="$2" v
   while IFS= read -r v; do
@@ -123,13 +145,12 @@ _pbm_assign() {
     [ -n "$v" ] || continue
     printf '%s\n' "$v"; return 0
   done <<EOF
-$(LC_ALL=C grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?${var}=[\"']?[A-Za-z0-9][A-Za-z0-9_./-]*[\"']?([[:space:]]*(;|#).*)?[[:space:]]*\$" "$file" 2>/dev/null)
+$(LC_ALL=C grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?${var}=[\"']?[A-Za-z0-9][A-Za-z0-9_./+-]*[\"']?([[:space:]]*(;|#).*)?[[:space:]]*\$" "$file" 2>/dev/null)
 EOF
   return 1
 }
 
-# _pbm_file_repo_tier1 <file> → repo from `<X>_REPO=` / `REPO=` assignments (validated), one per line
-_pbm_file_repo_tier1() {
+_pbm_file_repo_tier1() {   # `<X>_REPO=` / `REPO=` assignments (validated), one per line
   local file="$1" line v
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -138,10 +159,9 @@ _pbm_file_repo_tier1() {
   done <<EOF
 $(LC_ALL=C grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?[A-Z_]*REPO=[\"']?[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*[\"']?([[:space:]]*(;|#).*)?[[:space:]]*\$" "$file" 2>/dev/null)
 EOF
+  return 0
 }
-
-# _pbm_file_repo_tier2 <file> → repo from RELEASE URLs / `gh … --repo o/r` (validated), one per line
-_pbm_file_repo_tier2() {
+_pbm_file_repo_tier2() {   # RELEASE URLs / `gh … --repo o/r` / `gh api …repos/o/r/releases` (validated), one per line
   local file="$1" cand v
   while IFS= read -r cand; do
     [ -n "$cand" ] || continue
@@ -150,10 +170,9 @@ _pbm_file_repo_tier2() {
   done <<EOF
 $(LC_ALL=C grep -oE '(--repo[[:space:]]+[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*|gh api[[:space:]]+/?repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases|api\.github\.com/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases|github\.com/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases/(download|tags|latest))' "$file" 2>/dev/null)
 EOF
+  return 0
 }
-
-# _pbm_file_home_bin_name <file> → first `$HOME/bin/<name>` / `~/bin/<name>` / `$INSTALL_DIR/<name>` literal (validated)
-_pbm_file_home_bin_name() {
+_pbm_file_home_bin_name() {   # first `$HOME/bin/<name>` / `~/bin/<name>` / `$INSTALL_DIR/<name>` literal (validated)
   local file="$1" v
   while IFS= read -r v; do
     [ -n "$v" ] || continue
@@ -164,27 +183,47 @@ $(LC_ALL=C grep -oE '(\$HOME|~|\$INSTALL_DIR)/bin/[A-Za-z0-9_.-]+' "$file" 2>/de
 EOF
   return 1
 }
-
-# _pbm_file_asset_name <file>: BINARY_NAME= → INSTALL_NAME= → $HOME/bin/<name>   (release-asset name)
-_pbm_file_asset_name() {
+_pbm_file_asset_name() {    # BINARY_NAME= → INSTALL_NAME= → $HOME/bin/<name>
   local file="$1" v
   v=$(_pbm_assign "$file" BINARY_NAME)  && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
   v=$(_pbm_assign "$file" INSTALL_NAME) && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
   _pbm_file_home_bin_name "$file"
 }
-
-# _pbm_file_install_name <file>: INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>   (on-disk / sidecar name)
-_pbm_file_install_name() {
+_pbm_file_install_name() {  # INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>
   local file="$1" v
   v=$(_pbm_assign "$file" INSTALL_NAME) && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
   v=$(_pbm_assign "$file" BINARY_NAME)  && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
   _pbm_file_home_bin_name "$file"
 }
+_pbm_file_repo() {          # tier 1 else tier 2, first valid
+  local file="$1" v
+  v=$(_pbm_file_repo_tier1 "$file" | head -1); [ -n "$v" ] || v=$(_pbm_file_repo_tier2 "$file" | head -1)
+  printf '%s\n' "$v"
+}
 
-# _pbm_file_is_wrapper <file>: DOWNLOADS a release. Declaring BINARY_NAME= alone is not enough —
-# che-telegram-mcp/bin/test-wrapper-pid.sh declares one for a test stub and must not count as a third binary.
-_pbm_file_is_wrapper() {
-  LC_ALL=C grep -qE "$_PBM_RELEASE_RE" "$1" 2>/dev/null
+# _pbm_file_pin <file> [manifest] → "value|pinsrc" — what THIS wrapper downloads (closed list of three sources)
+#   (1) literal DESIRED_VERSION="x.y.z" in the file          → value|wrapper:<basename>
+#   (2) the manifest key(s) the file greps, in file order   → value|<key>   (first key with a non-empty manifest value)
+#   (3) neither                                             → |none        rc 1
+#   manifest missing/unreadable while (2) applies           → |<first key> rc 4 (the file says which key; the value could not be read)
+_pbm_file_pin() {
+  local file="$1" manifest="${2:-}" v key first=""
+  v=$(_pbm_assign "$file" DESIRED_VERSION)
+  if [ -n "$v" ] && _pbm_version_ok "$v"; then printf '%s|wrapper:%s\n' "$v" "${file##*/}"; return 0; fi
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    [ -n "$first" ] || first="$key"
+    [ -n "$manifest" ] || continue
+    v=$(_pbm_json_field "$manifest" "$key") || { printf '|%s\n' "$first"; return 4; }
+    if [ -n "$v" ]; then
+      _pbm_version_ok "$v" || { printf '|%s\n' "$key"; return 3; }
+      printf '%s|%s\n' "$v" "$key"; return 0
+    fi
+  done <<EOF
+$(LC_ALL=C grep -oE '"(binary_version|binaryVersion|version)"[[:space:]]*:' "$file" 2>/dev/null | tr -d '": ' | awk '!seen[$0]++')
+EOF
+  if [ -n "$first" ]; then [ -n "$manifest" ] && { printf '|none\n'; return 1; }; printf '|%s\n' "$first"; return 4; fi
+  printf '|none\n'; return 1
 }
 
 # ---- manifest -----------------------------------------------------------------
@@ -208,38 +247,26 @@ plugin_binary_version_key() {
   printf '\n'; return 1
 }
 
-# The pin a wrapper would actually download: explicit pin first, else the plugin `version` (the
-# #77-era wrappers and che-keychain's fallback branch both read it). Prints "value|key" so the
-# consumer can SAY which field it is comparing against — a value that came from `version` is a
-# real comparison for che-apple-notes-mcp and a shell-vs-binary mix-up for a plugin whose two
-# version numbers are independent; only the reader can tell, so the key is always shown.
-plugin_binary_version_effective() {
-  local manifest="$1" v key rc
-  v=$(plugin_binary_version "$manifest"); rc=$?
-  [ "$rc" = 4 ] && { printf '\n'; return 4; }
-  [ "$rc" = 3 ] && { printf '\n'; return 3; }
-  if [ -n "$v" ]; then
-    key=$(plugin_binary_version_key "$manifest" 2>/dev/null); printf '%s|%s\n' "$v" "$key"; return 0
-  fi
-  v=$(_pbm_json_field "$manifest" version) || { printf '\n'; return 4; }
-  [ -n "$v" ] || { printf '\n'; return 1; }
-  _pbm_version_ok "$v" || { printf '\n'; return 3; }
-  printf '%s|version\n' "$v"
-}
-
 # ---- structure ----------------------------------------------------------------
 
 plugin_is_binary_backed() {
   local dir="$1" manifest="${2:-}" hits="" f base key
   [ -d "$dir" ] || { printf '\n'; return 1; }
-  [ -f "$dir/.mcp.json" ] && hits="mcp.json"
+  if [ -f "$dir/.mcp.json" ] && python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+s = d.get("mcpServers") if isinstance(d, dict) else None
+sys.exit(0 if isinstance(s, dict) and len(s) > 0 else 1)
+' "$dir/.mcp.json" 2>/dev/null; then hits="mcp.json"; fi
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    LC_ALL=C grep -qE "$_PBM_RELEASE_RE" "$f" 2>/dev/null || continue
-    base=${f##*/}; _pbm_name_ok "$base" || base='?'     # unsafe filename never reaches an agent-facing line
+    base=${f##*/}; _pbm_name_ok "$base" || base='?'
     case "$f" in "$dir/bin/"*) hits="${hits:+$hits }bin:$base" ;; *) hits="${hits:+$hits }hook:$base" ;; esac
   done <<EOF
-$(_pbm_scan_files "$dir")
+$(_pbm_wrapper_files "$dir")
 EOF
   if [ -n "$manifest" ]; then
     key=$(plugin_binary_version_key "$manifest" 2>/dev/null)
@@ -249,31 +276,43 @@ EOF
   [ -n "$hits" ]
 }
 
-# One row per wrapper file — "file|asset|install|repo". `file` is the basename ('?' when it fails the
-# allowlist), the other three are empty when that file does not declare them. Files that neither
-# download a release nor declare a binary name are not wrappers and are not listed.
 plugin_binary_wrappers() {
-  local dir="$1" f base asset inst repo n=0
+  local dir="$1" manifest="${2:-}" f base where asset inst repo pin n=0
   [ -d "$dir" ] || return 1
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    _pbm_file_is_wrapper "$f" || continue
     base=${f##*/}; _pbm_name_ok "$base" || base='?'
+    case "$f" in "$dir/bin/"*) where=bin ;; *) where=hooks ;; esac
     asset=$(_pbm_file_asset_name "$f") || asset=""
     inst=$(_pbm_file_install_name "$f") || inst=""
-    repo=$(_pbm_file_repo_tier1 "$f" | head -1); [ -n "$repo" ] || repo=$(_pbm_file_repo_tier2 "$f" | head -1)
-    printf '%s|%s|%s|%s\n' "$base" "$asset" "$inst" "$repo"; n=$((n + 1))
+    repo=$(_pbm_file_repo "$f")
+    pin=$(_pbm_file_pin "$f" "$manifest") || pin="${pin:-|none}"
+    printf '%s|%s|%s|%s|%s|%s\n' "$where" "$base" "$asset" "$inst" "$repo" "$pin"; n=$((n + 1))
   done <<EOF
-$(_pbm_scan_files "$dir")
+$(_pbm_wrapper_files "$dir")
 EOF
   [ "$n" -ge 1 ]
 }
 
+plugin_binary_pin() {
+  local dir="$1" manifest="$2" row where pin src first="" firstsrc="" n=0 seen="" total=0
+  while IFS='|' read -r where _ _ _ _ pin src; do
+    [ "$where" = bin ] || continue
+    total=$((total + 1))
+    [ -n "$pin" ] || continue
+    case "$seen" in *"|$pin|"*) continue ;; esac
+    seen="${seen:-|}$pin|"; n=$((n + 1)); [ -n "$first" ] || { first="$pin"; firstsrc="$src"; }
+  done <<EOF
+$(plugin_binary_wrappers "$dir" "$manifest")
+EOF
+  [ "$n" -ge 1 ] || { printf '|none\n'; return 1; }
+  printf '%s|%s\n' "$first" "$firstsrc"
+  [ "$n" = 1 ] || return 2
+}
+
 plugin_binary_repo() {
-  local dir="$1" f cand tier="" first="" n=0 seen=""
+  local dir="$1" f cand tier first="" n=0 seen=""
   [ -d "$dir" ] || { printf '\n'; return 1; }
-  # tier 1 = assignments across all files; only if none, tier 2 = release URLs. Multi-valued
-  # within the tier that answered → rc 2 (a docs link can never outvote an assignment).
   for tier in 1 2; do
     while IFS= read -r f; do
       [ -n "$f" ] || continue
@@ -282,10 +321,10 @@ plugin_binary_repo() {
         case "$seen" in *"|$cand|"*) continue ;; esac
         seen="${seen:-|}$cand|"; n=$((n + 1)); [ -n "$first" ] || first="$cand"
       done <<EOF2
-$( [ "$tier" = 1 ] && _pbm_file_repo_tier1 "$f" || _pbm_file_repo_tier2 "$f" )
+$(if [ "$tier" = 1 ]; then _pbm_file_repo_tier1 "$f"; else _pbm_file_repo_tier2 "$f"; fi)
 EOF2
     done <<EOF
-$(_pbm_scan_files "$dir")
+$(_pbm_wrapper_files "$dir")
 EOF
     [ "$n" -ge 1 ] && break
   done
@@ -299,10 +338,9 @@ plugin_binary_name() {
   [ -d "$dir" ] || { printf '\n'; return 1; }
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    _pbm_file_is_wrapper "$f" || continue
-    v=$(_pbm_file_asset_name "$f") && { printf '%s\n' "$v"; return 0; }   # each candidate validated; a bad one is skipped
+    v=$(_pbm_file_asset_name "$f") && { printf '%s\n' "$v"; return 0; }
   done <<EOF
-$(_pbm_scan_files "$dir")
+$(_pbm_wrapper_files "$dir")
 EOF
   printf '\n'; return 1
 }
@@ -312,12 +350,11 @@ plugin_install_names() {
   [ -d "$dir" ] || return 1
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    _pbm_file_is_wrapper "$f" || continue
     v=$(_pbm_file_install_name "$f") || continue
     case "$seen" in *"|$v|"*) continue ;; esac
     seen="${seen:-|}$v|"; printf '%s\n' "$v"; n=$((n + 1))
   done <<EOF
-$(_pbm_scan_files "$dir")
+$(_pbm_wrapper_files "$dir")
 EOF
   [ "$n" -ge 1 ]
 }
@@ -327,7 +364,7 @@ plugin_installed_binary_version() {
   if [ -z "$name" ]; then name=$(plugin_install_names "$dir" | head -1); fi
   [ -n "$name" ] || { printf '\n'; return 2; }
   _pbm_name_ok "$name" || { printf '\n'; return 2; }
-  side="${PLUGIN_BIN_DIR:-$HOME/bin}/.$name.version"
+  side="$(_pbm_bin_dir)/.$name.version"
   [ -f "$side" ] || { printf '\n'; return 1; }
   v=$(head -1 "$side" 2>/dev/null | tr -d '[:space:]')
   _pbm_version_ok "$v" || { printf '\n'; return 3; }
@@ -364,26 +401,29 @@ sys.exit(1)
 
 # ---- release ------------------------------------------------------------------
 
-# PBM_GH is a TEST seam (the suites inject a stub so nothing touches the network). When set it must
-# be an absolute path to an existing executable — a bare command name from the environment is refused.
 latest_release_version() {
-  local repo="$1" gh="${PBM_GH:-gh}" tag
+  local repo="$1" gh tag
   _pbm_repo_ok "$repo" || { printf '\n'; return 1; }
-  if [ -n "${PBM_GH:-}" ]; then case "$gh" in /*) [ -x "$gh" ] || { printf '\n'; return 1; } ;; *) printf '\n'; return 1 ;; esac; fi
+  gh=$(_pbm_gh) || { printf '\n'; return 1; }
   tag=$("$gh" release view --repo "$repo" --json tagName -q .tagName 2>/dev/null) || { printf '\n'; return 1; }
   tag=$(printf '%s' "$tag" | head -1 | tr -d '[:space:]'); tag=${tag#v}
   _pbm_version_ok "$tag" || { printf '\n'; return 1; }
   printf '%s\n' "$tag"
 }
 
-# release_assets <owner/repo> → asset names of the latest release, one per line; rc 1 when gh fails
-# (network / auth / no release) — the caller must say UNKNOWN, not "asset missing". Same PBM_GH seam.
 release_assets() {
-  local repo="$1" gh="${PBM_GH:-gh}" out
+  local repo="$1" tag="${2:-}" gh out n
   _pbm_repo_ok "$repo" || return 1
-  if [ -n "${PBM_GH:-}" ]; then case "$gh" in /*) [ -x "$gh" ] || return 1 ;; *) return 1 ;; esac; fi
-  out=$("$gh" release view --repo "$repo" --json assets -q '.assets[].name' 2>/dev/null) || return 1
-  printf '%s\n' "$out" | LC_ALL=C grep -E '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+  if [ -n "$tag" ]; then _pbm_version_ok "$tag" || return 1; fi
+  gh=$(_pbm_gh) || return 1
+  if [ -n "$tag" ]; then out=$("$gh" release view "$tag" --repo "$repo" --json assets -q '.assets[].name' 2>/dev/null) || return 1
+  else out=$("$gh" release view --repo "$repo" --json assets -q '.assets[].name' 2>/dev/null) || return 1; fi
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if _pbm_name_ok "$n"; then printf '%s\n' "$n"; else printf '?\n'; fi
+  done <<EOF
+$out
+EOF
   return 0
 }
 
