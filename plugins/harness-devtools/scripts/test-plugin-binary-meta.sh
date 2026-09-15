@@ -272,6 +272,16 @@ printf 'REPO="a/o"\nDESIRED_VERSION="1.0.0"\nDESIRED_VERSION="${PIN_OVERRIDE:-$D
 # dotname: BINARY_NAME with a dot must not match a URL where the dot is some other character
 mkdir -p "$T/dotname/bin"
 printf 'BINARY_NAME="a.b"\nREPO="a/d"\ncurl https://github.com/$REPO/releases/download/v1/axb\n' > "$T/dotname/bin/w.sh"
+# condover: a literal default overridden by a CONDITIONAL assignment later on the line — not readable → rc 4 (R6 MEDIUM)
+mkdir -p "$T/condover/bin"
+printf 'REPO="a/c"\nDESIRED_VERSION="1.0.0"\n[ -z "$PIN_OVERRIDE" ] || DESIRED_VERSION="$PIN_OVERRIDE"\ncurl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/Bin\n' > "$T/condover/bin/w.sh"
+# jqpin: the wrapper reads binaryVersion through jq (no `"key":` shape) → the key is named but not followable → rc 4, not none
+mkdir -p "$T/jqpin/.claude-plugin" "$T/jqpin/bin"
+printf '{ "name": "jqpin", "version": "1.0.0", "binaryVersion": "2.0.0" }\n' > "$T/jqpin/.claude-plugin/plugin.json"
+printf 'BINARY_NAME="J"\nREPO="a/j"\nV=$(jq -r .binaryVersion "$PLUGIN_JSON")\ncurl https://github.com/$REPO/releases/download/v$V/$BINARY_NAME\n' > "$T/jqpin/bin/j.sh"
+# movingref: DESIRED_VERSION="latest" is not a pin → rc 4 (never a value Phase 5 would compare against)
+mkdir -p "$T/movingref/bin"
+printf 'BINARY_NAME="M"\nREPO="a/m"\nDESIRED_VERSION="latest"\ncurl https://github.com/$REPO/releases/download/$DESIRED_VERSION/$BINARY_NAME\n' > "$T/movingref/bin/w.sh"
 # mixedpin: one wrapper pins a literal, its sibling reads nothing → the plugin pin is the literal (rc 0), the sibling is just unpinned
 mkdir -p "$T/mixedpin/bin"
 printf 'BINARY_NAME="A"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/mixedpin/bin/a.sh"
@@ -413,6 +423,11 @@ assert_eq "override: literal default + manifest read → the manifest key is the
 assert_rc "overrideunk: literal default + unreadable override → rc 4, not the stale literal" 4 plugin_binary_pin "$T/overrideunk" /nonexistent
 assert_eq "overrideunk: names the wrapper as the (unreadable) source" "|wrapper:w.sh" "$(plugin_binary_pin "$T/overrideunk" /nonexistent)"
 assert_rc "dotname: BINARY_NAME=a.b vs URL …/axb → no declared asset (dot is not a wildcard)" 1 plugin_binary_name "$T/dotname"
+assert_rc "condover: literal default + conditional override on the same line → rc 4, not the stale literal" 4 plugin_binary_pin "$T/condover" /nonexistent
+assert_eq "condover: names the wrapper as the (unreadable) source" "|wrapper:w.sh" "$(plugin_binary_pin "$T/condover" /nonexistent)"
+assert_rc "jqpin: key read through jq (no \"key\": shape) → rc 4 with the key, not 'reads nothing'" 4 plugin_binary_pin "$T/jqpin" "$T/jqpin/.claude-plugin/plugin.json"
+assert_eq "jqpin: prints |binaryVersion"             "|binaryVersion" "$(plugin_binary_pin "$T/jqpin" "$T/jqpin/.claude-plugin/plugin.json")"
+assert_rc "movingref: DESIRED_VERSION=\"latest\" is not a pin → rc 4" 4 plugin_binary_pin "$T/movingref" /nonexistent
 
 echo
 echo "marketplace_entry_version:"
@@ -433,6 +448,8 @@ lrv_rel()  { PBM_GH=gh-stub latest_release_version "$@"; }   # relative PBM_GH m
 lrv_notest() { PBM_TEST= PBM_GH="$T/gh-stub" latest_release_version "$@"; }   # without PBM_TEST=1 the seam is ignored → real gh (unreachable repo → rc 1)
 lrv_noroot() { PBM_TEST_ROOT= PBM_GH="$T/gh-stub" latest_release_version "$@"; }   # PBM_TEST=1 alone is not enough
 lrv_outside() { ( cd / && PBM_GH="$T/gh-stub" latest_release_version "$@" ); }   # …nor is it when $PWD is outside the test root
+lrv_slashroot() { ( cd "$T" && PBM_TEST_ROOT=/ PBM_GH="$T/gh-stub" latest_release_version "$@" ); }   # PBM_TEST_ROOT=/ must not turn the prefix test into "everything"
+lrv_homeroot() { ( cd "$T" && PBM_TEST_ROOT="$HOME" PBM_GH="$T/gh-stub" latest_release_version "$@" ); }
 assert_rc "gh failure → rc 1"                        1 lrv_fail PsychQuant/che-keychain
 assert_eq "gh failure → prints empty"                "" "$(lrv_fail PsychQuant/che-keychain)"
 assert_rc "malformed repo arg → rc 1 without calling gh" 1 lrv_nogh 'bad repo'
@@ -440,6 +457,8 @@ assert_rc "relative PBM_GH → rc 1 (test seam takes absolute paths only)" 1 lrv
 assert_eq "PBM_GH is ignored without PBM_TEST=1 (stub never answers 9.9.9)" "" "$( [ "$(lrv_notest Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
 assert_eq "PBM_GH is ignored without PBM_TEST_ROOT" "" "$( [ "$(lrv_noroot Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
 assert_eq "PBM_GH is ignored when \$PWD is outside PBM_TEST_ROOT (a production fence cd's into the marketplace root)" "" "$( [ "$(lrv_outside Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
+assert_eq "PBM_TEST_ROOT=/ does not open the seam" "" "$( [ "$(lrv_slashroot Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
+assert_eq "PBM_TEST_ROOT=\$HOME does not open the seam (only system temp trees qualify)" "" "$( [ "$(lrv_homeroot Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
 assert_eq "release_assets 0.2.0 queries tag v0.2.0 (pins are bare, tags are v-prefixed)" "CheKeychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/che-keychain 0.2.0)"
 assert_eq "release_assets v0.2.0: a leading v is normalised, same release" "CheKeychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/che-keychain v0.2.0)"
 ra_tag() { PBM_GH="$T/gh-stub" release_assets "$@"; }

@@ -191,6 +191,13 @@ run_both "README mentioning every component and the version is FRESH (with the u
 rm "$T/dev/fx-mp/plugins/nobin/README.md"
 run_both "missing README is reported as its own state" 'GIT_OK=true' nobin "沒有 README.md"
 echo
+echo "#22 R7 — a missing helper fails CLOSED (never 'not binary-backed')"
+mkdir -p "$T/broken-root/scripts"; cp "$PLUGIN_ROOT/scripts/resolve-marketplace.sh" "$T/broken-root/scripts/"
+f=$(prep 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' nobin)
+OUT=$(cd "$T" && CLAUDE_PLUGIN_ROOT="$T/broken-root" bash "$f" 2>&1)
+assert_contains "Step 1 with no plugin-binary-meta.sh aborts loudly" "✗ 載不到 scripts/plugin-binary-meta.sh" "$OUT"
+assert_contains "…and never prints IS_BINARY_BACKED=false" "0" "$(printf '%s' "$OUT" | grep -c 'IS_BINARY_BACKED=false')"
+echo
 echo "#22 — che-keychain-shaped plugin 'kc': bin/kc (no -wrapper.sh suffix, REPO= not GITHUB_REPO=), binaryVersion, entry without version, hook delegates"
 # The five silent misses of che-keychain 0.3.0, as one fixture. Each assertion is on a line the fence PRINTS.
 mkdir -p "$T/dev/fx-mp/plugins/kc/.claude-plugin" "$T/dev/fx-mp/plugins/kc/bin" "$T/dev/fx-mp/plugins/kc/hooks"
@@ -223,6 +230,8 @@ echo
 echo "#22 — Phase 2 Step 1 must not KeyError on an entry without version:"
 prep01 kc
 run_both "kc: Phase 2 Step 1 lists the entry as missing its version" 'will be set from plugin.json' kc "kc: (missing — will be set from plugin.json)"
+prep01 kc
+run_both "kc: Phase 2 Step 4 refuses an entry without version with its own prescription (not the version-mismatch line)" 'MP_NOW=$(marketplace_entry_version' kc "entry 沒有 version — Step 2 的 Edit 沒落地"
 echo
 echo "#22 — Phase 5 Step 1.5 (binary-backed verification against the ~/bin sidecar):"
 run_both_ctx() {   # like run_both, but the fence ENDS the invocation (remove_plugin_ctx) — re-arm Step 0.1 before each shell
@@ -351,6 +360,25 @@ assert_contains "two: …bot-wrapper.sh on disk"  'DESIRED_VERSION="2.0.0"' "$(c
 assert_contains "two: …manifest version on disk" '"version": "2.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/.claude-plugin/plugin.json")"
 assert_contains "two: …revert command lists every file" "git checkout -- plugins/two/bin/all-wrapper.sh plugins/two/bin/bot-wrapper.sh plugins/two/.claude-plugin/plugin.json" "$OUT"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two )
+echo
+echo "#22 R7 — the writer preserves the wrapper's mode and cannot be redirected through a pre-placed temp-name symlink"
+chmod 755 "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh" "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh"
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm "two: exec bits" && git push -q origin HEAD:master 2>/dev/null )
+printf 'do not touch\n' > "$T/outside-target"; ln -s "$T/outside-target" "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh.pbm-tmp"
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "two: bump succeeded" "DESIRED_VERSION: 1.0.0 → 2.0.0" "$OUT"
+assert_contains "two: all-wrapper.sh is still executable after the bump" "755" "$(stat -f %Lp "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh")"
+assert_contains "two: bot-wrapper.sh is still executable after the bump" "755" "$(stat -f %Lp "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
+assert_contains "two: git sees a content change only, no mode change" "0" "$(cd "$T/dev/fx-mp" && git diff --summary -- plugins/two | grep -c 'mode change')"
+assert_contains "two: the symlink target outside the repo is untouched" "do not touch" "$(cat "$T/outside-target")"
+rm -f "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh.pbm-tmp"; ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two )
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='0.9.0'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "two: NEW_PIN older than the pin is refused (no silent rollback)" "✗ Case E: NEW_PIN v0.9.0 不比目前 pin v1.0.0 新 — 不做 rollback" "$OUT"
+assert_contains "two: …nothing written" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
 chmod 555 "$T/dev/fx-mp/plugins/two/.claude-plugin"   # the manifest's directory is read-only → the third write (manifest) fails after the two wrappers went through
 prep01 two
 f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
@@ -360,7 +388,15 @@ assert_contains "two: write-stage failure names the files that WERE written (no 
 assert_contains "two: …written= lists the wrappers" "written=['$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh', '$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh']" "$OUT"
 assert_contains "two: …the ✗ line says 已經改了 and gives the revert" "已經改了" "$OUT"
 assert_contains "two: …and the wrappers really are changed on disk" 'DESIRED_VERSION="2.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
-( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two && rm -f plugins/two/.claude-plugin/*.pbm-tmp )
+( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two && rm -f plugins/two/.claude-plugin/*.pbm-* )
+export IDD_ALL_UNATTENDED=1; chmod 555 "$T/dev/fx-mp/plugins/two/.claude-plugin"
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+chmod 755 "$T/dev/fx-mp/plugins/two/.claude-plugin"; unset IDD_ALL_UNATTENDED
+assert_contains "two: E-auto write-stage failure prints FAILED after write with the rewritten files (never 'left as is')" "AUDIT: Phase 0.3 Case E-auto FAILED after write — 寫入階段失敗" "$OUT"
+assert_contains "two: …names the rewritten files" "files rewritten: plugins/two/bin/all-wrapper.sh plugins/two/bin/bot-wrapper.sh" "$OUT"
+( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two && rm -f plugins/two/.claude-plugin/*.pbm-* )
 export IDD_ALL_UNATTENDED=1
 ( cd "$T/dev/fx-mp" && git push -q origin HEAD:master 2>/dev/null )
 prep01 two
@@ -555,6 +591,7 @@ import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"mixed","version":"1.0.0","source":"./plugins/mixed"}); json.dump(d,open(p,'w'))
 PYX
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm mixed && git push -q 2>/dev/null )
+two_stub 1.0.0 "AllMCP BotMCP"   # mixed pins 1.0.0 of PsychQuant/msg — Signal 1 must resolve for the row to count as checked
 prep01 mixed
 run_both "mixed: Step 2 counts the bin wrapper only and says the downloading hook is NOT checked (not '→ Step 3', which would skip)" 'for wrapper in' mixed "wrappers checked: 1 of 1 bin/ wrapper(s) (bin/ files: 1; hook wrappers: 1 — 有 bin/，視為 check script，其下載未核對)"
 run_both "mixed: Step 3 is skipped for a plugin that has a bin/ wrapper (the hook is a check script, not a CLI)" 'hooks checked:' mixed "Phase 1.5 Step 3: skipped"

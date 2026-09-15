@@ -96,9 +96,10 @@
 #     has_binary_wrapper uses (references/distribution-detection.md). Detection is URL shape only;
 #     the literal owner/repo is plugin_binary_repo's job (assignment beats URL; a bare
 #     `github.com/o/r` docs link is never a candidate).
-#   - PBM_GH / PLUGIN_BIN_DIR are TEST seams and are honoured only when PBM_TEST=1 AND PBM_TEST_ROOT is set AND $PWD is
-#     under PBM_TEST_ROOT (production fences cd into the marketplace root, never a test root — an ambient env cannot
-#     substitute the gh that drives Case E-auto);
+#   - PBM_GH / PLUGIN_BIN_DIR are TEST seams and are honoured only when PBM_TEST=1 AND PBM_TEST_ROOT is a real directory under
+#     a system temp tree (never / or $HOME) AND the real $PWD is under it (production fences cd into the marketplace root, which
+#     is not under a temp tree). This makes an ambient env unable to redirect gh for a normally-placed marketplace; a marketplace
+#     checked out under /tmp is not protected by it;
 #     the production path has exactly one way to reach gh and one sidecar directory.
 
 _PBM_RELEASE_RE='gh release download|gh api[[:space:]]+.*/releases|api\.github\.com/.*/releases|github\.com/.*/releases/(download|tags|latest)'
@@ -125,6 +126,7 @@ print(v if isinstance(v, str) else "")
 }
 
 _pbm_version_ok() { case "$1" in ''|.*|-*|*[!A-Za-z0-9.+-]*) return 1 ;; esac; return 0; }
+_pbm_pin_ok() { _pbm_version_ok "$1" && case "$1" in [0-9]*) return 0 ;; esac; return 1; }   # a PIN starts with a digit: `latest` / `main` are moving refs, not pins (#22 verify R6)
 _pbm_repo_ok() {
   case "$1" in
     [A-Za-z0-9]*/[A-Za-z0-9]*) case "$1" in *[!A-Za-z0-9._/-]*|*/*/*) return 1 ;; esac; return 0 ;;
@@ -133,12 +135,23 @@ _pbm_repo_ok() {
 }
 _pbm_name_ok() { case "$1" in ''|.*|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac; return 0; }
 
-# _pbm_test_on → the test seam is live only when PBM_TEST=1 AND PBM_TEST_ROOT is set AND the current directory is under it.
-# Production fences `cd "$MP_ROOT"`, which is never under a test root, so an ambient PBM_TEST/PBM_GH in the environment
-# (settings.json env, direnv, a parent process) cannot substitute the gh whose output drives Case E-auto (#22 verify R5)
+# _pbm_test_on → the test seam is live only when PBM_TEST=1 AND PBM_TEST_ROOT names a real directory under a system temp tree
+# (/tmp, /private/tmp, /var/folders, $TMPDIR — what mktemp -d hands out; never / or $HOME) AND the real current directory is
+# under it. Production fences `cd "$MP_ROOT"`, which is never under a temp tree, so an ambient PBM_TEST/PBM_GH/PBM_TEST_ROOT
+# in the environment (settings.json env, direnv, a parent process) cannot substitute the gh whose output drives Case E-auto.
+# This narrows the seam; it is not a sandbox — a marketplace checked out under /tmp would be inside the allowed tree (#22 R5/R6)
 _pbm_test_on() {
+  local root here
   [ "${PBM_TEST:-}" = 1 ] && [ -n "${PBM_TEST_ROOT:-}" ] || return 1
-  case "$PWD/" in "${PBM_TEST_ROOT%/}/"*) return 0 ;; esac
+  root=$(cd "$PBM_TEST_ROOT" 2>/dev/null && pwd -P) || return 1
+  # `PBM_TEST_ROOT=/` (or $HOME, or any ancestor of the marketplace) would make the prefix test match every production cwd
+  # (#22 verify R6): the root must be a directory under one of the system temp trees mktemp -d uses, compared by real path
+  case "$root" in
+    /tmp/?*|/private/tmp/?*|/var/folders/?*|/private/var/folders/?*) ;;
+    *) [ -n "${TMPDIR:-}" ] && case "$root" in "$(cd "$TMPDIR" 2>/dev/null && pwd -P)"/?*) ;; *) return 1 ;; esac || return 1 ;;
+  esac
+  here=$(pwd -P 2>/dev/null) || return 1
+  case "$here/" in "$root"/*) return 0 ;; esac
   return 1
 }
 # _pbm_gh → the gh to run: PBM_GH only when the test seam is live and only as an absolute executable; rc 1 refuses
@@ -262,19 +275,21 @@ _pbm_file_repo() {          # tier 1 else tier 2, first valid
 #   (3) neither                                             → |none        rc 1
 #   (2) applies but no named key has a usable value          → |<first key> rc 4 (manifest missing / unreadable / key absent)
 #   (2) applies and the first present value is illegal       → |<key>       rc 3
-#   DESIRED_VERSION= assigned but the last assignment is not a literal and no key is named
-#                                                           → |wrapper:<basename> rc 4 (source known, value not)
+#   DESIRED_VERSION= assigned (anywhere on a line) but the last assignment is not a readable literal, or the literal is not a
+#   version (`latest`), and no key is named               → |wrapper:<basename> rc 4 (source known, value not)
+#   a pin key mentioned without the `"key"…:` shape (jq / python readers)
+#                                                           → |<key>       rc 4 (the wrapper reads it in a way this helper cannot follow)
 _pbm_file_pin() {
-  local file="$1" manifest="${2:-}" v key first="" base last
+  local file="$1" manifest="${2:-}" v key first="" base last mention
   base=${file##*/}; _pbm_name_ok "$base" || base='?'
-  # the literal counts only when it is the LAST non-comment assignment to DESIRED_VERSION: `DESIRED_VERSION="1.0.0"` followed by
-  # `DESIRED_VERSION=$(grep … "$PLUGIN_JSON" …)` is a default that the manifest overrides, and the pin is what the manifest says
-  # (#22 verify R5). An overriding assignment we cannot read (not a literal, no manifest key named) → the source is known, the
-  # value is not: `|wrapper:<file>` rc 4, never the stale default.
-  last=$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -E '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?DESIRED_VERSION=' | tail -1)
+  # the literal counts only when it is the LAST assignment to DESIRED_VERSION in the file — assignments ANYWHERE on a non-comment
+  # line count (`[ -z "$X" ] || DESIRED_VERSION="$X"` is an override too, #22 verify R6), and only a plain line-start literal
+  # qualifies as readable. A last assignment we cannot read → `|wrapper:<file>` rc 4, never the stale default (#22 verify R5).
+  last=$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -E '(^|[^A-Za-z0-9_])DESIRED_VERSION=' | tail -1)
   if printf '%s\n' "$last" | LC_ALL=C grep -qE "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?DESIRED_VERSION=[\"']?[A-Za-z0-9][A-Za-z0-9_./+-]*[\"']?([[:space:]]*(;|#).*)?[[:space:]]*\$"; then
     v=$(printf '%s' "$last" | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?DESIRED_VERSION=["'"'"']?//; s/["'"'"']?[[:space:]]*(;.*|#.*)?$//')
-    if [ -n "$v" ] && _pbm_version_ok "$v"; then printf '%s|wrapper:%s\n' "$v" "$base"; return 0; fi
+    if [ -n "$v" ] && _pbm_pin_ok "$v"; then printf '%s|wrapper:%s\n' "$v" "$base"; return 0; fi
+    printf '|wrapper:%s\n' "$base"; return 4    # a literal that is not a version (`latest`, `main`) — source known, value not a pin
   fi
   while IFS= read -r key; do
     [ -n "$key" ] || continue
@@ -282,7 +297,7 @@ _pbm_file_pin() {
     [ -n "$manifest" ] || continue
     v=$(_pbm_json_field "$manifest" "$key") || { printf '|%s\n' "$first"; return 4; }
     if [ -n "$v" ]; then
-      _pbm_version_ok "$v" || { printf '|%s\n' "$key"; return 3; }
+      _pbm_pin_ok "$v" || { printf '|%s\n' "$key"; return 3; }
       printf '%s|%s\n' "$v" "$key"; return 0
     fi
   done <<EOF
@@ -290,6 +305,10 @@ $(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE '"(
 EOF
   if [ -n "$first" ]; then printf '|%s\n' "$first"; return 4; fi
   if [ -n "$last" ]; then printf '|wrapper:%s\n' "$base"; return 4; fi   # DESIRED_VERSION is assigned but not readably (no literal last, no key)
+  # the file names a binary pin key WITHOUT the `"key"…:` shape (jq -r .binaryVersion, python json[...]) — a reader we cannot
+  # follow, not "reads nothing": rc 4 with the key (#22 verify R6)
+  mention=$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE '(^|[^A-Za-z0-9_])(binary_version|binaryVersion)([^A-Za-z0-9_]|$)' | head -1 | LC_ALL=C grep -oE 'binary_version|binaryVersion')
+  if [ -n "$mention" ]; then printf '|%s\n' "$mention"; return 4; fi
   printf '|none\n'; return 1
 }
 

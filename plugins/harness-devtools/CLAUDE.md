@@ -99,7 +99,7 @@ plugin_binary_name "$PLUGIN_DIR"                # 第一個**宣告**的 ASSET �
 plugin_install_names "$PLUGIN_DIR"              # 所有 INSTALL 名（INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>），一行一個——sidecar 用這個 key；
                                                 #   一支 wrapper 抽不到名字 → 它不在這裡（消費端用 plugin_binary_wrappers 的空欄計「未解析」，不得報 all N）
 plugin_installed_binary_version "$PLUGIN_DIR" [name]   # <bin dir>/.<name>.version；rc 1 沒有 sidecar（wrapper 沒在本機寫過——從未觸發，或它不寫這個檔）/ 2 抽不到名字 / 3 內容不是版本
-plugin_bin_dir                                  # sidecar 目錄（~/bin；PBM_TEST=1 時 PLUGIN_BIN_DIR）——消費端印路徑用這個，不碰底線函式
+plugin_bin_dir                                  # sidecar 目錄（~/bin；測試座標三條件成立時 PLUGIN_BIN_DIR，見下）——消費端印路徑用這個，不碰底線函式
 marketplace_entry_version "$MP_ROOT" "$PLUGIN_NAME"   # rc 0（值；entry 缺 version 時印**空**）/ 1 沒有 entry / 3 值不合法 / 4 讀不動——不 KeyError
 latest_release_version owner/repo               # gh release view … tagName，去 v；rc 1 失敗
 release_assets owner/repo [x.y.z]               # 該 release（無版本 = latest）的 asset 名，一行一個；**先查 tag v<x.y.z> 再查裸值**（pin 存裸值、真實 tag 全是 v 前綴——
@@ -109,9 +109,9 @@ version_gt 0.3.0 0.2.0                          # rc 0 大於 / 1 否 / 2 不可
 
 **規則**：答不出來回 distinct rc、印空——**不印看起來合理的預設值**。消費端把 rc 1 / 2 / 4 印成 UNKNOWN，
 不把「查不到」當「沒有」。`plugin-update` Phase 0.3（Step 1 / Step 2 (a)(b)(d)(e)、Case E bump fence）、
-Phase 1.5 Step 2 / 3、Phase 2 Step 1 / 4、Phase 5 Step 1.5 全部只消費這裡的輸出。`PBM_GH` / `PLUGIN_BIN_DIR` 是**測試座標**
-（stub gh、sidecar 目錄），只在 `PBM_TEST=1` **且** `PBM_TEST_ROOT` 已設 **且** `$PWD` 在其下時生效（production fence `cd "$MP_ROOT"`，永遠不在測試根下），且 `PBM_GH` 只接受絕對路徑的可執行檔。測試：`scripts/test-plugin-binary-meta.sh`
-（143 斷言：逐檔 repo 合併、沒被用的 *_REPO= 不算、字面 pin 須為最後一個賦值、seam 三條件、asset 名的 `.` 不是萬用字元、註解行的 release URL / $HOME/bin/<name> 不算、只當 install 目標的 BINARY_NAME 不是 asset、兩種 key、四種 pin 來源、macdoc 家族的 grep 寫法、hook-only 有 pin、wrapper 不一致、共用 pin 的兩個來源、點名 key 無值 rc 4、
+Phase 1.5 Step 2 / 3、Phase 2 Step 4、Phase 5 Step 1.5 全部只消費這裡的輸出（Phase 2 Step 1 列全表用 inline python `.get('version')`，helper 只查單一 entry——那段不是 binary metadata）。`PBM_GH` / `PLUGIN_BIN_DIR` 是**測試座標**
+（stub gh、sidecar 目錄），只在 `PBM_TEST=1` **且** `PBM_TEST_ROOT` 是系統 temp 樹（/tmp、/var/folders、$TMPDIR）下的真實目錄（`/`、`$HOME` 不算）**且** 實體 `$PWD` 在其下時生效（production fence `cd "$MP_ROOT"`，正常放置的 marketplace 不在 temp 樹下；checkout 在 /tmp 的不受此保護），且 `PBM_GH` 只接受絕對路徑的可執行檔。測試：`scripts/test-plugin-binary-meta.sh`
+（150 斷言：行內覆寫 rc 4、jq 讀 key rc 4、`latest` 非 pin、`PBM_TEST_ROOT=/` / `$HOME` 不開座標、逐檔 repo 合併、沒被用的 *_REPO= 不算、字面 pin 須為最後一個賦值、seam 三條件、asset 名的 `.` 不是萬用字元、註解行的 release URL / $HOME/bin/<name> 不算、只當 install 目標的 BINARY_NAME 不是 asset、兩種 key、四種 pin 來源、macdoc 家族的 grep 寫法、hook-only 有 pin、wrapper 不一致、共用 pin 的兩個來源、點名 key 無值 rc 4、
 無副檔名 wrapper、bin+hooks 混合、hooks 的 REPO= 不蓋 bin、文件連結 vs 賦值、註解行的 URL 不算下載、非 wrapper 的 REPO=、`${X}` 賦值、縮排 / export、
 `gh api` 形、多 binary、asset ≠ install 名、RELEASE_ASSET=、缺 version 的 entry、`.mcp.json` `{}`、sidecar 三態、不安全檔名（含帶字面 pin 的）、
 v 前綴 tag 與裸 tag 回退、stub gh 與 PBM_TEST 守門）。
