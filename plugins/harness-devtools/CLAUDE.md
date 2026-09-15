@@ -71,6 +71,8 @@ marketplace_candidates che-local-plugins              # 巢狀同名的子層是
 source "$CLAUDE_PLUGIN_ROOT/scripts/plugin-binary-meta.sh"
 
 plugin_binary_version "$PLUGIN_MANIFEST"        # 明確 manifest pin：binary_version → binaryVersion → 空；rc 0（值或空）/ 3 值不合法 / 4 讀不動
+                                                #   **detection-only**（與 _key 一起給 plugin_is_binary_backed 用）：phase 消費的 pin 來自 plugin_binary_pin——
+                                                #   讀的是 wrapper 點名的那個 key，不做跨拼法 alias（wrapper 自己也讀不到另一種拼法；#22 第 1 點，verify R4 定案）
 plugin_binary_version_key "$PLUGIN_MANIFEST"    # 明確 pin 的 key；rc 1 沒有 / 2 兩個都有（印 binary_version）
 plugin_binary_wrappers "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # **逐 wrapper**：每個真的會下載 release 的檔案一列
                                                 #   dir|file|asset|install|repo|pin|pinsrc（dir ∈ bin|hooks；空欄 = 該檔沒宣告；檔名不合法印 ?）
@@ -91,7 +93,8 @@ plugin_binary_repo "$PLUGIN_DIR"                # owner/repo，只看**會下載
                                                 #   hooks/ 的 check script 指向舊 fork（che-things-mcp / che-zotero-mcp）不能決定 Case E-auto 追哪個 remote 的 tag；
                                                 #   hook-only 佈局才看 hooks/。分級：*_REPO= 賦值（含縮排 / export）> release URL 字面；bare github.com/o/r 文件連結不是候選；
                                                 #   賦值必須是完整字面（REPO="o/r${X}" 不算）。rc 0 恰一 / 1 沒有 / 2 **同一級**多值（印第一個——消費端印 file|repo）
-plugin_binary_name "$PLUGIN_DIR"                # 第一個**宣告**的 ASSET 名：RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME=（che-keychain 用 RELEASE_ASSET）；不從 install 名猜；rc 1 沒有
+plugin_binary_name "$PLUGIN_DIR"                # 第一個**宣告**的 ASSET 名：RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME=（後者只在非註解行用它下載時算：
+                                                #   releases/download/…/$BINARY_NAME、--pattern、browser_download_url；只當 install 目標的不算）；不從 install 名猜；rc 1 沒有
 plugin_install_names "$PLUGIN_DIR"              # 所有 INSTALL 名（INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>），一行一個——sidecar 用這個 key；
                                                 #   一支 wrapper 抽不到名字 → 它不在這裡（消費端用 plugin_binary_wrappers 的空欄計「未解析」，不得報 all N）
 plugin_installed_binary_version "$PLUGIN_DIR" [name]   # <bin dir>/.<name>.version；rc 1 沒有 sidecar（wrapper 沒在本機寫過——從未觸發，或它不寫這個檔）/ 2 抽不到名字 / 3 內容不是版本
@@ -107,7 +110,7 @@ version_gt 0.3.0 0.2.0                          # rc 0 大於 / 1 否 / 2 不可
 不把「查不到」當「沒有」。`plugin-update` Phase 0.3（Step 1 / Step 2 (a)(b)(d)(e)、Case E bump fence）、
 Phase 1.5 Step 2 / 3、Phase 2 Step 1 / 4、Phase 5 Step 1.5 全部只消費這裡的輸出。`PBM_GH` / `PLUGIN_BIN_DIR` 是**測試座標**
 （stub gh、sidecar 目錄），只在 `PBM_TEST=1` 時生效，且 `PBM_GH` 只接受絕對路徑的可執行檔。測試：`scripts/test-plugin-binary-meta.sh`
-（127 斷言：兩種 key、四種 pin 來源、macdoc 家族的 grep 寫法、hook-only 有 pin、wrapper 不一致、共用 pin 的兩個來源、點名 key 無值 rc 4、
+（133 斷言：註解行的 release URL / $HOME/bin/<name> 不算、只當 install 目標的 BINARY_NAME 不是 asset、兩種 key、四種 pin 來源、macdoc 家族的 grep 寫法、hook-only 有 pin、wrapper 不一致、共用 pin 的兩個來源、點名 key 無值 rc 4、
 無副檔名 wrapper、bin+hooks 混合、hooks 的 REPO= 不蓋 bin、文件連結 vs 賦值、註解行的 URL 不算下載、非 wrapper 的 REPO=、`${X}` 賦值、縮排 / export、
 `gh api` 形、多 binary、asset ≠ install 名、RELEASE_ASSET=、缺 version 的 entry、`.mcp.json` `{}`、sidecar 三態、不安全檔名（含帶字面 pin 的）、
 v 前綴 tag 與裸 tag 回退、stub gh 與 PBM_TEST 守門）。

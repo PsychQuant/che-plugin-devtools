@@ -235,7 +235,9 @@ printf '0.2.0\n' > "$T/bin/.che-keychain.version"
 run_both_ctx "kc: sidecar 0.2.0 == pin 0.2.0 → ✅" 'if [ -z "$ROWS" ]' kc "✅ Phase 5 Step 1.5: installed == pin for all 1 binary"
 run_both_ctx "kc: …per-binary line names the source" 'if [ -z "$ROWS" ]' kc "✅ che-keychain: installed v0.2.0 == pin v0.2.0 (binaryVersion)"
 printf '0.1.0\n' > "$T/bin/.che-keychain.version"
-run_both_ctx "kc: sidecar 0.1.0 != pin 0.2.0 → MISMATCH" 'if [ -z "$ROWS" ]' kc "MISMATCH che-keychain=v0.1.0≠v0.2.0"
+run_both_ctx "kc: sidecar 0.1.0 < pin 0.2.0 → PENDING-FETCH (the wrapper has not fetched yet — the state right after a Case E bump)" 'if [ -z "$ROWS" ]' kc "PENDING-FETCH che-keychain=v0.1.0<v0.2.0"
+printf '0.9.0\n' > "$T/bin/.che-keychain.version"
+run_both_ctx "kc: sidecar 0.9.0 > pin 0.2.0 → MISMATCH (installed is not what the pin says and a fetch would not fix it)" 'if [ -z "$ROWS" ]' kc "MISMATCH che-keychain=v0.9.0≠v0.2.0"
 rm -f "$T/bin/.che-keychain.version"
 run_both_ctx "kc: no sidecar → UNVERIFIED (never ✅)" 'if [ -z "$ROWS" ]' kc "UNVERIFIED — 0/1 verified; no sidecar: che-keychain"
 run_both_ctx "pure: Phase 5 Step 1.5 says n/a for a non-binary plugin" 'if [ -z "$ROWS" ]' pure "Phase 5 Step 1.5: n/a"
@@ -287,7 +289,7 @@ gh_stub 9.9.9 PsychQuant/che-keychain CheKeychain
 # ver: wrapper reads plugin.json `version` → the pin IS the published version → unattended never bumps it
 mkdir -p "$T/dev/fx-mp/plugins/ver/.claude-plugin" "$T/dev/fx-mp/plugins/ver/bin"
 printf '{ "name": "ver", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/ver/.claude-plugin/plugin.json"
-printf '#!/bin/sh\nBINARY_NAME="VerMCP"\nREPO="PsychQuant/ver"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION"\n' "'\"version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/ver/bin/ver-wrapper.sh"
+printf '#!/bin/sh\nBINARY_NAME="VerMCP"\nREPO="PsychQuant/ver"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION" | grep browser_download_url | grep "$BINARY_NAME"\n' "'\"version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/ver/bin/ver-wrapper.sh"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"ver","version":"1.0.0","source":"./plugins/ver"}); json.dump(d,open(p,'w'))
@@ -304,8 +306,8 @@ echo
 echo "#22 R2 — multi-binary plugin 'two' (che-telegram-mcp shape): every wrapper is checked, counts are honest, sidecars per binary"
 mkdir -p "$T/dev/fx-mp/plugins/two/.claude-plugin" "$T/dev/fx-mp/plugins/two/bin"
 printf '{ "name": "two", "version": "1.3.2" }\n' > "$T/dev/fx-mp/plugins/two/.claude-plugin/plugin.json"   # manifest version is NOT the pin: both wrappers carry a literal DESIRED_VERSION (che-telegram-mcp shape)
-printf '#!/bin/sh\nBINARY_NAME="AllMCP"\nGITHUB_REPO="PsychQuant/msg"\nDESIRED_VERSION="1.0.0"\ncurl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v$DESIRED_VERSION"\n# docs: https://github.com/PsychQuant/psychquant-claude-plugins\n' > "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh"
-printf '#!/bin/sh\nBINARY_NAME="BotMCP"\nGITHUB_REPO="PsychQuant/msg"\nDESIRED_VERSION="1.0.0"\ncurl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v$DESIRED_VERSION"\n' > "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh"
+printf '#!/bin/sh\nBINARY_NAME="AllMCP"\nGITHUB_REPO="PsychQuant/msg"\nDESIRED_VERSION="1.0.0"\ncurl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v$DESIRED_VERSION" | grep browser_download_url | grep "$BINARY_NAME"\n# docs: https://github.com/PsychQuant/psychquant-claude-plugins\n' > "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh"
+printf '#!/bin/sh\nBINARY_NAME="BotMCP"\nGITHUB_REPO="PsychQuant/msg"\nDESIRED_VERSION="1.0.0"\ncurl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v$DESIRED_VERSION" | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh"
 printf 'BINARY_NAME="stubborn-binary.sh"\necho test stub\n' > "$T/dev/fx-mp/plugins/two/bin/test-wrapper-pid.sh"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
 import json,sys
@@ -320,7 +322,7 @@ run_both "two: Step 2 pin comes from the wrappers' literal DESIRED_VERSION, not 
 run_both "two: Phase 1.5 Step 2 checks BOTH wrappers (2 of 2), stub excluded" 'for wrapper in' two "→ Phase 1.5 Step 2: wrappers checked: 2 of 2 bin/ wrapper(s) (bin/ files: 3; hook wrappers: 0 → Step 3)"
 run_both "two: Signal 1 ✅ for the second binary too, against ITS pin tag" 'for wrapper in' two "✅ bot-wrapper.sh: BotMCP present in PsychQuant/msg release v1.0.0 (wrapper:bot-wrapper.sh)"
 printf '1.0.0\n' > "$T/bin/.AllMCP.version"; printf '0.9.0\n' > "$T/bin/.BotMCP.version"
-run_both_ctx "two: Phase 5 reads each sidecar against that wrapper's pin — one MISMATCH is enough to flag" 'if [ -z "$ROWS" ]' two "MISMATCH BotMCP=v0.9.0≠v1.0.0"
+run_both_ctx "two: Phase 5 reads each sidecar against that wrapper's pin — one lagging binary is enough to flag" 'if [ -z "$ROWS" ]' two "PENDING-FETCH BotMCP=v0.9.0<v1.0.0"
 printf '1.0.0\n' > "$T/bin/.BotMCP.version"
 run_both_ctx "two: both sidecars match the literal pins (manifest version 1.3.2 is irrelevant) → ✅ for all 2" 'if [ -z "$ROWS" ]' two "✅ Phase 5 Step 1.5: installed == pin for all 2 binaries"
 rm -f "$T/bin/.BotMCP.version"
@@ -366,8 +368,8 @@ echo
 echo "#22 R4 — Phase 5 must not dedupe by install name before comparing pins (two wrappers, one binary name, different pins)"
 mkdir -p "$T/dev/fx-mp/plugins/dup/.claude-plugin" "$T/dev/fx-mp/plugins/dup/bin"
 printf '{ "name": "dup", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/dup/.claude-plugin/plugin.json"
-printf '#!/bin/sh\nBINARY_NAME="SharedBin"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' > "$T/dev/fx-mp/plugins/dup/bin/a.sh"
-printf '#!/bin/sh\nBINARY_NAME="SharedBin"\nREPO="a/x"\nDESIRED_VERSION="2.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' > "$T/dev/fx-mp/plugins/dup/bin/b.sh"
+printf '#!/bin/sh\nBINARY_NAME="SharedBin"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/dev/fx-mp/plugins/dup/bin/a.sh"
+printf '#!/bin/sh\nBINARY_NAME="SharedBin"\nREPO="a/x"\nDESIRED_VERSION="2.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/dev/fx-mp/plugins/dup/bin/b.sh"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"dup","version":"1.0.0","source":"./plugins/dup"}); json.dump(d,open(p,'w'))
@@ -376,12 +378,12 @@ PYX
 printf '1.0.0\n' > "$T/bin/.SharedBin.version"
 prep01 dup
 run_both "dup: Step 2 sees the two pins disagree → pin-conflict (unknown), not the first one" 'BINARY_UNKNOWN_WHY' dup "pinsrc=conflict unreleased=unknown why=pin-conflict"
-run_both_ctx "dup: Phase 5 compares the second wrapper against ITS pin — sidecar 1.0.0 satisfies a.sh but not b.sh → MISMATCH" 'if [ -z "$ROWS" ]' dup "MISMATCH SharedBin=v1.0.0≠v2.0.0"
+run_both_ctx "dup: Phase 5 compares the second wrapper against ITS pin — sidecar 1.0.0 satisfies a.sh but not b.sh → flagged" 'if [ -z "$ROWS" ]' dup "PENDING-FETCH SharedBin=v1.0.0<v2.0.0"
 echo
 echo "#22 R4 — pin-unreadable: the wrapper names binaryVersion, the manifest lacks it → unknown (not no-pin)"
 mkdir -p "$T/dev/fx-mp/plugins/kl/.claude-plugin" "$T/dev/fx-mp/plugins/kl/bin"
 printf '{ "name": "kl", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/kl/.claude-plugin/plugin.json"
-printf '#!/bin/sh\nBINARY_NAME="KL"\nREPO="a/kl"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION"\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/kl/bin/kl-wrapper.sh"
+printf '#!/bin/sh\nBINARY_NAME="KL"\nREPO="a/kl"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION" | grep browser_download_url | grep "$BINARY_NAME"\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/kl/bin/kl-wrapper.sh"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"kl","version":"1.0.0","source":"./plugins/kl"}); json.dump(d,open(p,'w'))
@@ -414,6 +416,8 @@ run_both "hp: Step 2 reads the pin from the hook (macdoc regex shape) → Case E
 run_both "hp: …Case E" 'BINARY_UNKNOWN_WHY' hp "→ Phase 0.3 sync intent: Case E"
 run_both "hp: Step 3 compares the local CLI against the hook's PIN (latest is Case E's business) and counts 1 of 1" 'hooks checked:' hp "→ Phase 1.5 Step 3: hooks checked: 1 of 1 hook wrapper(s)"
 run_both "hp: …the comparison names the pin" 'hooks checked:' hp "pin (binary_version) v0.7.0"
+printf '#!/bin/sh\necho "hpbin 0.7.0"\n' > "$T/bin/hpbin"; chmod +x "$T/bin/hpbin"
+run_both "hp: Step 3 runs the local CLI from plugin_bin_dir (test seam) and compares it to the PIN" 'hooks checked:' hp "✅ hpbin local v0.7.0 == pin (binary_version) v0.7.0（PsychQuant/macdoc）; latest v9.9.9 ≠ pin — Phase 0.3 Case E 管 bump"
 printf '0.7.0\n' > "$T/bin/.hpbin.version"
 run_both_ctx "hp: Phase 5 verifies the hook row against its pin and sidecar" 'if [ -z "$ROWS" ]' hp "✅ hpbin: installed v0.7.0 == pin v0.7.0 (binary_version)"
 run_both_ctx "hp: …and says it is a hook-only layout" 'if [ -z "$ROWS" ]' hp "hook-only 佈局"
@@ -427,10 +431,88 @@ assert_contains "hp: E-auto bumps binary_version in the manifest, commits and pu
 assert_contains "hp: …manifest on disk" '"binary_version": "9.9.9"' "$(cat "$T/dev/fx-mp/plugins/hp/.claude-plugin/plugin.json")"
 unset IDD_ALL_UNATTENDED
 echo
+echo "#22 R5 — Case E asset pre-check is monotone: a known-missing asset is not overwritten by a later row that cannot be checked"
+mkdir -p "$T/dev/fx-mp/plugins/lat/.claude-plugin" "$T/dev/fx-mp/plugins/lat/bin"
+printf '{ "name": "lat", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/lat/.claude-plugin/plugin.json"
+printf '#!/bin/sh\nBINARY_NAME="BotMCP"\nGITHUB_REPO="PsychQuant/lat"\nDESIRED_VERSION="1.0.0"\ncurl -L https://github.com/$GITHUB_REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' > "$T/dev/fx-mp/plugins/lat/bin/bot-wrapper.sh"
+printf '#!/bin/sh\nGITHUB_REPO="PsychQuant/lat"\nDESIRED_VERSION="1.0.0"\ncurl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v$DESIRED_VERSION"\n' > "$T/dev/fx-mp/plugins/lat/bin/c-wrapper.sh"   # sorts AFTER bot-wrapper.sh, declares no asset → unknown
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"lat","version":"1.0.0","source":"./plugins/lat"}); json.dump(d,open(p,'w'))
+PYX
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm lat && git push -q origin HEAD:master 2>/dev/null )
+printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v2.0.0 --repo PsychQuant/lat "*"--json assets"*) echo AllMCP ;; "release view "*"--json assets"*) exit 1 ;; *) echo v2.0.0 ;; esac\n' > "$T/gh-stub"   # v2.0.0 exists but lacks BotMCP
+prep01 lat
+f=$(prep "AUTO_PUSH='no'" lat); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "lat: first row missing, second row unknown → still REFUSED (state does not downgrade)" "✗ Case E: release v2.0.0 缺至少一支 wrapper 宣告的 asset" "$OUT"
+assert_contains "lat: …the missing asset was named" "✗ Case E: BotMCP not in PsychQuant/lat release v2.0.0" "$OUT"
+assert_contains "lat: …nothing written" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/lat/bin/bot-wrapper.sh")"
+prep01 lat
+f=$(prep "AUTO_PUSH='no'" lat); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
+OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1); RC=$?
+assert_contains "lat: E-auto × missing asset → AUDIT refused line (not a bare exit 1)" "AUDIT: Phase 0.3 Case E-auto refused — release v2.0.0 缺至少一支 wrapper 宣告的 asset" "$OUT"
+assert_contains "lat: …exit 75" "75" "$RC"
+echo
+echo "#22 R5 — two wrappers naming two different manifest keys with the same value: both keys (and version) are rewritten in ONE manifest buffer"
+mkdir -p "$T/dev/fx-mp/plugins/tk/.claude-plugin" "$T/dev/fx-mp/plugins/tk/bin"
+printf '{ "name": "tk", "version": "1.0.0", "binary_version": "1.0.0", "binaryVersion": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/tk/.claude-plugin/plugin.json"
+printf '#!/bin/sh\nBINARY_NAME="TkA"\nREPO="PsychQuant/tk"\nV=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -L https://github.com/$REPO/releases/download/v$V/$BINARY_NAME\n' "'\"binary_version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/tk/bin/a.sh"
+printf '#!/bin/sh\nBINARY_NAME="TkB"\nREPO="PsychQuant/tk"\nV=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -L https://github.com/$REPO/releases/download/v$V/$BINARY_NAME\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/tk/bin/b.sh"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"tk","version":"1.0.0","source":"./plugins/tk"}); json.dump(d,open(p,'w'))
+PYX
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm tk && git push -q origin HEAD:master 2>/dev/null )
+printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v2.0.0 --repo PsychQuant/tk "*"--json assets"*) printf "TkA\\nTkB\\n" ;; "release view "*"--json assets"*) exit 1 ;; *) echo v2.0.0 ;; esac\n' > "$T/gh-stub"
+prep01 tk
+run_both "tk: Step 2 lists both keys as sources, one value" 'BINARY_UNKNOWN_WHY' tk "binary=1.0.0 pinsrc=binary_version,binaryVersion"
+prep01 tk
+f=$(prep "AUTO_PUSH='no'" tk); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "tk: both keys and version bumped, manifest named once" "binary_version+binaryVersion: 1.0.0 → 2.0.0 in plugins/tk/.claude-plugin/plugin.json; version: 2.0.0" "$OUT"
+assert_contains "tk: …binary_version on disk" '"binary_version": "2.0.0"' "$(cat "$T/dev/fx-mp/plugins/tk/.claude-plugin/plugin.json")"
+assert_contains "tk: …binaryVersion on disk (not undone by the second plan)" '"binaryVersion": "2.0.0"' "$(cat "$T/dev/fx-mp/plugins/tk/.claude-plugin/plugin.json")"
+assert_contains "tk: …version on disk" '"version": "2.0.0"' "$(cat "$T/dev/fx-mp/plugins/tk/.claude-plugin/plugin.json")"
+assert_contains "tk: …still one line" "1" "$(wc -l < "$T/dev/fx-mp/plugins/tk/.claude-plugin/plugin.json" | tr -d ' ')"
+( cd "$T/dev/fx-mp" && git checkout -q -- plugins/tk )
+echo
+echo "#22 R5 — wrappers pointing at two repos: release-ahead is unknown (not the first repo's tag) and the bump fence refuses"
+mkdir -p "$T/dev/fx-mp/plugins/mr/.claude-plugin" "$T/dev/fx-mp/plugins/mr/bin"
+printf '{ "name": "mr", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/mr/.claude-plugin/plugin.json"
+printf '#!/bin/sh\nBINARY_NAME="MrA"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl -L https://github.com/$REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' > "$T/dev/fx-mp/plugins/mr/bin/a.sh"
+printf '#!/bin/sh\nBINARY_NAME="MrB"\nREPO="b/y"\nDESIRED_VERSION="1.0.0"\ncurl -L https://github.com/$REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' > "$T/dev/fx-mp/plugins/mr/bin/b.sh"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"mr","version":"1.0.0","source":"./plugins/mr"}); json.dump(d,open(p,'w'))
+PYX
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm mr && git push -q origin HEAD:master 2>/dev/null )
+prep01 mr
+run_both "mr: Step 2 → release_ahead=unknown with the multi-repo reason (never Case E off the first repo's tag)" 'BINARY_UNKNOWN_WHY' mr "wrapper 指向多個 repo — release-ahead 無法歸屬到單一 repo"
+run_both "mr: …decision line" 'BINARY_UNKNOWN_WHY' mr "release_ahead=unknown"
+prep01 mr
+f=$(prep "AUTO_PUSH='no'" mr); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "mr: the bump fence refuses a multi-repo plugin" "✗ Case E: wrapper 指向多個 repo（a/x|b/y）" "$OUT"
+assert_contains "mr: …nothing written" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/mr/bin/b.sh")"
+echo
+echo "#22 R5 — binary-backed by declaration only (manifest pin + .mcp.json, nothing downloads) → why=no-wrapper, not the false 'wrapper has no pin'"
+mkdir -p "$T/dev/fx-mp/plugins/nw/.claude-plugin"
+printf '{ "name": "nw", "version": "1.0.0", "binaryVersion": "0.1.0" }\n' > "$T/dev/fx-mp/plugins/nw/.claude-plugin/plugin.json"
+printf '{ "mcpServers": { "nw": { "command": "nw" } } }\n' > "$T/dev/fx-mp/plugins/nw/.mcp.json"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"nw","version":"1.0.0","source":"./plugins/nw"}); json.dump(d,open(p,'w'))
+PYX
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm nw && git push -q origin HEAD:master 2>/dev/null )
+prep01 nw
+run_both "nw: Step 2 → why=no-wrapper" 'BINARY_UNKNOWN_WHY' nw "unreleased=unknown why=no-wrapper"
+run_both "nw: …the ⚠ line says no file downloads, not 'wrapper has no pin'" 'BINARY_UNKNOWN_WHY' nw "bin/ 與 hooks/ 沒有任何檔案會下載 release — manifest 的 pin 沒有消費者"
+echo
 echo "#22 R3 — nopin: wrapper downloads latest and reads nothing → Case B no-pin (the version fallback is gone)"
 mkdir -p "$T/dev/fx-mp/plugins/nopin/.claude-plugin" "$T/dev/fx-mp/plugins/nopin/bin"
 printf '{ "name": "nopin", "version": "2.0.0" }\n' > "$T/dev/fx-mp/plugins/nopin/.claude-plugin/plugin.json"
-printf '#!/bin/sh\nBINARY_NAME="Fetch"\nREPO="a/fetch"\ncurl https://api.github.com/repos/$REPO/releases/latest\n' > "$T/dev/fx-mp/plugins/nopin/bin/fetch.sh"
+printf '#!/bin/sh\nBINARY_NAME="Fetch"\nREPO="a/fetch"\ncurl https://api.github.com/repos/$REPO/releases/latest | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/dev/fx-mp/plugins/nopin/bin/fetch.sh"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"nopin","version":"2.0.0","source":"./plugins/nopin"}); json.dump(d,open(p,'w'))
@@ -445,7 +527,7 @@ echo
 echo "#22 R3 — mixed: a bin wrapper AND a hook that curls releases → Step 2 counts bin only, Step 3 takes the hook (not session-start.sh)"
 mkdir -p "$T/dev/fx-mp/plugins/mixed/.claude-plugin" "$T/dev/fx-mp/plugins/mixed/bin" "$T/dev/fx-mp/plugins/mixed/hooks"
 printf '{ "name": "mixed", "version": "1.0.0", "binary_version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/mixed/.claude-plugin/plugin.json"
-printf '#!/bin/sh\nBINARY_NAME="AllMCP"\nREPO="PsychQuant/msg"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION"\n' "'\"binary_version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/mixed/bin/m-wrapper.sh"
+printf '#!/bin/sh\nBINARY_NAME="AllMCP"\nREPO="PsychQuant/msg"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION" | grep browser_download_url | grep "$BINARY_NAME"\n' "'\"binary_version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/mixed/bin/m-wrapper.sh"
 printf '#!/bin/sh\nREPO="PsychQuant/msg"\n[ -x "$HOME/bin/mcli" ] || curl -sL "https://api.github.com/repos/$REPO/releases/latest"\n' > "$T/dev/fx-mp/plugins/mixed/hooks/prefetch"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
 import json,sys
@@ -453,7 +535,7 @@ p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"mixed","versio
 PYX
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm mixed && git push -q 2>/dev/null )
 prep01 mixed
-run_both "mixed: Step 2 counts the bin wrapper only and hands the hook to Step 3" 'for wrapper in' mixed "wrappers checked: 1 of 1 bin/ wrapper(s) (bin/ files: 1; hook wrappers: 1 → Step 3)"
+run_both "mixed: Step 2 counts the bin wrapper only and says the downloading hook is NOT checked (not '→ Step 3', which would skip)" 'for wrapper in' mixed "wrappers checked: 1 of 1 bin/ wrapper(s) (bin/ files: 1; hook wrappers: 1 — 有 bin/，視為 check script，其下載未核對)"
 run_both "mixed: Step 3 is skipped for a plugin that has a bin/ wrapper (the hook is a check script, not a CLI)" 'hooks checked:' mixed "Phase 1.5 Step 3: skipped"
 run_both "nobin (hook-only, no bin/ wrapper): Step 3 runs and reports what it cannot extract — the gate is the release URL, not the session-start.sh filename" 'hooks checked:' nobin "判定不出"
 run_both_ctx "mixed: Phase 5 verifies the bin wrapper against the binary_version pin" 'if [ -z "$ROWS" ]' mixed "✅ AllMCP: installed v1.0.0 == pin v1.0.0 (binary_version)"

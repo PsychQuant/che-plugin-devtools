@@ -7,6 +7,9 @@
 #
 #   plugin_binary_version <manifest>            # explicit manifest pin: binary_version → binaryVersion → "" (never `version`)
 #                                               # rc 0 (value or empty) / 3 illegal value / 4 manifest unreadable
+#                                               # DETECTION-ONLY (with _key below): says whether the manifest declares a pin. The pin a phase
+#                                               # acts on comes from plugin_binary_pin — the key the WRAPPER names, no cross-spelling alias,
+#                                               # because the wrapper itself would not find the other spelling (#22 point 1; verify R4)
 #   plugin_binary_version_key <manifest>        # which explicit pin key the file uses; rc 1 none / 2 both (binary_version printed) / 4
 #   plugin_is_binary_backed <dir> [manifest]    # rc 0 + hit list "mcp.json bin:<f> hook:<f> pin:<key>" / rc 1 empty
 #                                               #   .mcp.json counts only when its mcpServers object is non-empty
@@ -21,8 +24,9 @@
 #   plugin_binary_repo <dir>                    # owner/repo from the DOWNLOADING wrapper files (bin/ when any exist, else hooks/ — a
 #                                               #   check hook can never re-point a plugin that has a bin/ wrapper), ranked: *_REPO= assignment
 #                                               #   > release-URL literal; rc 0 one / 1 none / 2 several IN THE SAME TIER (first printed)
-#   plugin_binary_name <dir>                    # first DECLARED asset name: RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME=; rc 1 none
-#                                               #   (never guessed from the install name — a guess would turn into a false "asset missing")
+#   plugin_binary_name <dir>                    # first DECLARED asset name: RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME= (the last only when a
+#                                               #   non-comment line downloads BY that name); rc 1 none — never guessed from the install name,
+#                                               #   a guess would turn into a false "asset missing" that now BLOCKS the Case E bump
 #   plugin_install_names <dir>                  # unique INSTALLED names (INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>), one/line
 #   plugin_installed_binary_version <dir> [name]  # <bin dir>/.<name>.version; rc 1 no sidecar / 2 no name / 3 sidecar not a version
 #   plugin_bin_dir                              # the sidecar directory (~/bin; PLUGIN_BIN_DIR under PBM_TEST=1)
@@ -183,14 +187,14 @@ $(LC_ALL=C grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?[A-Z_]*R
 EOF
   return 0
 }
-_pbm_file_repo_tier2() {   # RELEASE URLs / `gh … --repo o/r` / `gh api …repos/o/r/releases` (validated), one per line
+_pbm_file_repo_tier2() {   # RELEASE URLs / `gh … --repo o/r` / `gh api …repos/o/r/releases` (validated), one per line — non-comment lines only
   local file="$1" cand v
   while IFS= read -r cand; do
     [ -n "$cand" ] || continue
     v=$(printf '%s' "$cand" | sed -E 's/^--repo[[:space:]]+//; s#^gh api[[:space:]]+/?repos/##; s#^api\.github\.com/repos/##; s#^github\.com/##; s#/releases.*$##')
     _pbm_repo_ok "$v" && printf '%s\n' "$v"
   done <<EOF
-$(LC_ALL=C grep -oE '(--repo[[:space:]]+[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*|gh api[[:space:]]+/?repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases|api\.github\.com/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases|github\.com/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases/(download|tags|latest))' "$file" 2>/dev/null)
+$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE '(--repo[[:space:]]+[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*|gh api[[:space:]]+/?repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases|api\.github\.com/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases|github\.com/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases/(download|tags|latest))')
 EOF
   return 0
 }
@@ -201,15 +205,22 @@ _pbm_file_home_bin_name() {   # first `$HOME/bin/<name>` / `~/bin/<name>` / `$IN
     v=${v##*/}
     _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
   done <<EOF
-$(LC_ALL=C grep -oE '(\$HOME|~|\$INSTALL_DIR)/bin/[A-Za-z0-9_.-]+' "$file" 2>/dev/null)
+$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE '(\$HOME|~|\$INSTALL_DIR)/bin/[A-Za-z0-9_.-]+')
 EOF
   return 1
 }
-_pbm_file_asset_name() {    # DECLARED release asset only: RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME= (never guessed from the install name)
+_pbm_file_asset_name() {    # DECLARED release asset only: RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME= when the file downloads BY that name
   local file="$1" v
   v=$(_pbm_assign "$file" RELEASE_ASSET) && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
   v=$(_pbm_assign "$file" ASSET_NAME)    && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
-  v=$(_pbm_assign "$file" BINARY_NAME)   && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
+  # BINARY_NAME is also the install-name fallback; it is the ASSET only when a non-comment line fetches by it —
+  # `releases/download/<tag>/$BINARY_NAME` (or the literal value there), `gh release download … --pattern "$BINARY_NAME"`,
+  # or a browser_download_url match (every real wrapper that declares it does one of these). A wrapper that only installs
+  # TO $BINARY_NAME has no declared asset — a guessed asset would now BLOCK the Case E bump, not just warn (#22 verify R4).
+  if v=$(_pbm_assign "$file" BINARY_NAME) && _pbm_name_ok "$v" \
+     && LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -qE "releases/download/[^[:space:]]*(\\\$\\{?BINARY_NAME|/${v}([[:space:]\"']|\$))|(--pattern|-p)[[:space:]]+[\"']?\\\$\\{?BINARY_NAME|browser_download_url.*BINARY_NAME"; then
+    printf '%s\n' "$v"; return 0
+  fi
   return 1
 }
 _pbm_file_install_name() {  # INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>

@@ -77,7 +77,7 @@ cat > "$T/mcp/bin/x-wrapper.sh" <<'SH'
 GITHUB_REPO="PsychQuant/x-mcp"
 BINARY_NAME="XMCP"
 DESIRED_VERSION=$(grep -oE '"binary_version":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | cut -d'"' -f4)
-URL=$(curl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/latest")
+URL=$(curl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep browser_download_url | grep "$BINARY_NAME")
 SH
 
 # hookonly: gifthub shape — no bin/, hook curls releases, GFH_REPO=, $HOME/bin/gfh
@@ -158,41 +158,41 @@ mkdir -p "$T/ghapi/bin"
 printf '#!/bin/sh\ngh api repos/PsychQuant/ghapi/releases/latest\n' > "$T/ghapi/bin/fetch.sh"
 # badfirst: an invalid BINARY_NAME in an alphabetically-earlier file must not blank out the real one
 mkdir -p "$T/badfirst/bin"
-printf 'BINARY_NAME="$binary_name"\ncurl https://api.github.com/repos/a/b/releases/latest\n' > "$T/badfirst/bin/aa-test.sh"
-printf 'BINARY_NAME="RealBin"\nGITHUB_REPO="a/b"\ncurl https://api.github.com/repos/a/b/releases/latest\n' > "$T/badfirst/bin/zz-wrapper.sh"
+printf 'BINARY_NAME="$binary_name"\ncurl https://api.github.com/repos/a/b/releases/latest | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/badfirst/bin/aa-test.sh"
+printf 'BINARY_NAME="RealBin"\nGITHUB_REPO="a/b"\ncurl https://api.github.com/repos/a/b/releases/latest | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/badfirst/bin/zz-wrapper.sh"
 # two: two wrappers, two binaries, one repo (che-telegram-mcp shape) + a test stub that is not a wrapper
 mkdir -p "$T/two/bin"
-printf 'BINARY_NAME="AllMCP"\nGITHUB_REPO="PsychQuant/msg"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$GITHUB_REPO/releases/latest\n# docs: https://github.com/PsychQuant/psychquant-claude-plugins/blob/main/README.md\n' > "$T/two/bin/all-wrapper.sh"
-printf 'BINARY_NAME="BotMCP"\nGITHUB_REPO="PsychQuant/msg"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$GITHUB_REPO/releases/latest\n' > "$T/two/bin/bot-wrapper.sh"
+printf 'BINARY_NAME="AllMCP"\nGITHUB_REPO="PsychQuant/msg"\nDESIRED_VERSION="1.0.0"\ncurl -L https://github.com/$GITHUB_REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n# docs: https://github.com/PsychQuant/psychquant-claude-plugins/blob/main/README.md\n' > "$T/two/bin/all-wrapper.sh"
+printf 'BINARY_NAME="BotMCP"\nGITHUB_REPO="PsychQuant/msg"\nDESIRED_VERSION="1.0.0"\ncurl -L https://github.com/$GITHUB_REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' > "$T/two/bin/bot-wrapper.sh"
 printf 'echo "helper, not a wrapper"\n' > "$T/two/bin/setup.sh"
 printf 'BINARY_NAME="stubborn-binary.sh"\necho "test stub: declares a name, downloads nothing"\n' > "$T/two/bin/test-wrapper-pid.sh"
 printf '1.0.0\n' > "$T/bin/.AllMCP.version"; printf '0.9.0\n' > "$T/bin/.BotMCP.version"
 # split: asset name != install name (che-mcps full form)
 mkdir -p "$T/split/bin"
-printf 'BINARY_NAME="CheKeychainMCP"\nINSTALL_NAME="che-keychain"\nREPO="PsychQuant/che-keychain"\ncurl https://api.github.com/repos/$REPO/releases/latest\n' > "$T/split/bin/w"
+printf 'BINARY_NAME="CheKeychainMCP"\nINSTALL_NAME="che-keychain"\nREPO="PsychQuant/che-keychain"\ncurl https://api.github.com/repos/$REPO/releases/latest | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/split/bin/w"
 # verfb: no explicit pin, `version` is what the wrapper downloads (che-apple-notes-mcp shape)
 mkdir -p "$T/verfb/.claude-plugin" "$T/verfb/bin"
 printf '{ "name": "verfb", "version": "0.2.1" }\n' > "$T/verfb/.claude-plugin/plugin.json"
-printf 'BINARY_NAME="NotesMCP"\nREPO="PsychQuant/notes"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON")\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' "'\"version\":[[:space:]]*\"[^\"]+\"'" > "$T/verfb/bin/w.sh"
+printf 'BINARY_NAME="NotesMCP"\nREPO="PsychQuant/notes"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON")\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION | grep browser_download_url | grep "$BINARY_NAME"\n' "'\"version\":[[:space:]]*\"[^\"]+\"'" > "$T/verfb/bin/w.sh"
 # lit: literal DESIRED_VERSION in the wrapper, manifest version is a DIFFERENT number (che-telegram-mcp / che-latex-mcp shape)
 mkdir -p "$T/lit/.claude-plugin" "$T/lit/bin"
 printf '{ "name": "lit", "version": "1.3.2" }\n' > "$T/lit/.claude-plugin/plugin.json"
-printf 'BINARY_NAME="AllMCP"\nGITHUB_REPO="PsychQuant/msg"\nDESIRED_VERSION="0.5.0"\ncurl "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v$DESIRED_VERSION"\n' > "$T/lit/bin/all-wrapper.sh"
+printf 'BINARY_NAME="AllMCP"\nGITHUB_REPO="PsychQuant/msg"\nDESIRED_VERSION="0.5.0"\ncurl "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v$DESIRED_VERSION" | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/lit/bin/all-wrapper.sh"
 # nopin: downloads latest, reads nothing → no pin at all
 mkdir -p "$T/nopin/.claude-plugin" "$T/nopin/bin"
 printf '{ "name": "nopin", "version": "2.0.0" }\n' > "$T/nopin/.claude-plugin/plugin.json"
-printf 'BINARY_NAME="Fetch"\nREPO="a/fetch"\ncurl https://api.github.com/repos/$REPO/releases/latest\n' > "$T/nopin/bin/fetch.sh"
+printf 'BINARY_NAME="Fetch"\nREPO="a/fetch"\ncurl https://api.github.com/repos/$REPO/releases/latest | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/nopin/bin/fetch.sh"
 # twodiff: two wrappers with DIFFERENT literal pins
 mkdir -p "$T/twodiff/bin"
-printf 'BINARY_NAME="A"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' > "$T/twodiff/bin/a.sh"
-printf 'BINARY_NAME="B"\nREPO="a/x"\nDESIRED_VERSION="2.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' > "$T/twodiff/bin/b.sh"
+printf 'BINARY_NAME="A"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/twodiff/bin/a.sh"
+printf 'BINARY_NAME="B"\nREPO="a/x"\nDESIRED_VERSION="2.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/twodiff/bin/b.sh"
 # hijack: a NON-wrapper helper assigns REPO= — it must not re-point the plugin
 mkdir -p "$T/hijack/bin"
 printf 'BINARY_NAME="RealBin"\ncurl https://github.com/real/thing/releases/download/v1/RealBin\n' > "$T/hijack/bin/real-wrapper.sh"
 printf 'REPO="attacker/evil"\necho helper\n' > "$T/hijack/bin/helper.sh"
 # mixed: a bin wrapper AND a hook that also curls releases (both are wrapper rows; dir column tells them apart)
 mkdir -p "$T/mixed/bin" "$T/mixed/hooks"
-printf 'BINARY_NAME="M"\nREPO="a/m"\ncurl https://api.github.com/repos/$REPO/releases/latest\n' > "$T/mixed/bin/m-wrapper.sh"
+printf 'BINARY_NAME="M"\nREPO="a/m"\ncurl https://api.github.com/repos/$REPO/releases/latest | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/mixed/bin/m-wrapper.sh"
 printf 'REPO="a/m"\ncurl https://api.github.com/repos/$REPO/releases/latest\n' > "$T/mixed/hooks/prefetch"
 # emptymcp: .mcp.json is {} — not binary-backed (postgresql-guide)
 mkdir -p "$T/emptymcp"; printf '{}\n' > "$T/emptymcp/.mcp.json"
@@ -239,17 +239,26 @@ printf 'OLD_REPO="attacker/oldfork"\ngh api /repos/attacker/oldfork/releases\n' 
 # keyless: the wrapper names binaryVersion, the manifest has no such key → the pin is UNREADABLE (rc 4), not "no pin"
 mkdir -p "$T/keyless/.claude-plugin" "$T/keyless/bin"
 printf '{ "name": "keyless", "version": "1.0.0" }\n' > "$T/keyless/.claude-plugin/plugin.json"
-printf 'BINARY_NAME="K"\nREPO="a/k"\nV=$(grep -oE %s "$PLUGIN_JSON")\ncurl https://api.github.com/repos/$REPO/releases/tags/v$V\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" > "$T/keyless/bin/w.sh"
+printf 'BINARY_NAME="K"\nREPO="a/k"\nV=$(grep -oE %s "$PLUGIN_JSON")\ncurl https://api.github.com/repos/$REPO/releases/tags/v$V | grep browser_download_url | grep "$BINARY_NAME"\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" > "$T/keyless/bin/w.sh"
 # badpin: the wrapper names binary_version and the manifest value is illegal → rc 4 at the plugin level
 mkdir -p "$T/badpin/bin"
-printf 'BINARY_NAME="B"\nREPO="a/b"\nV=$(grep -oE %s "$PLUGIN_JSON")\ncurl https://api.github.com/repos/$REPO/releases/tags/v$V\n' "'\"binary_version\":[[:space:]]*\"[^\"]+\"'" > "$T/badpin/bin/w.sh"
+printf 'BINARY_NAME="B"\nREPO="a/b"\nV=$(grep -oE %s "$PLUGIN_JSON")\ncurl https://api.github.com/repos/$REPO/releases/tags/v$V | grep browser_download_url | grep "$BINARY_NAME"\n' "'\"binary_version\":[[:space:]]*\"[^\"]+\"'" > "$T/badpin/bin/w.sh"
 # commentonly: the only release URL is in a comment → not a wrapper
 mkdir -p "$T/commentonly/bin"
 printf '#!/bin/sh\n# see https://github.com/a/b/releases/latest\necho helper\n' > "$T/commentonly/bin/doc.sh"
+# cmtrepo: the only literal release URL is in a comment; the real download uses a dynamic repo → repo must be UNKNOWN (rc 1), not the comment's
+mkdir -p "$T/cmtrepo/bin"
+printf '#!/bin/sh\n# example: https://github.com/template/example/releases/latest\nREPO="${OWNER}/${PROJECT}"\ngh release download --repo "$REPO"\n' > "$T/cmtrepo/bin/w.sh"
+# cmtbin: `$HOME/bin/<name>` appears only in a comment; the code installs elsewhere → install name must NOT come from the comment
+mkdir -p "$T/cmtbin/hooks"
+printf '#!/bin/sh\n# installs to $HOME/bin/evil-name\nREPO="a/b"\ncurl https://api.github.com/repos/$REPO/releases/latest -o "$TMP/x"\n' > "$T/cmtbin/hooks/session-start.sh"
+# installonly: BINARY_NAME= is only the install target (downloads by a URL that does not use it) → asset undeclared
+mkdir -p "$T/installonly/bin"
+printf 'BINARY_NAME="che-latex-mcp"\nREPO="a/latex"\ncurl -L "https://github.com/$REPO/releases/download/v1.0.0/CheLatexMCP" -o "$HOME/bin/$BINARY_NAME"\n' > "$T/installonly/bin/w.sh"
 # mixedpin: one wrapper pins a literal, its sibling reads nothing → the plugin pin is the literal (rc 0), the sibling is just unpinned
 mkdir -p "$T/mixedpin/bin"
-printf 'BINARY_NAME="A"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' > "$T/mixedpin/bin/a.sh"
-printf 'BINARY_NAME="B"\nREPO="a/x"\ncurl https://api.github.com/repos/$REPO/releases/latest\n' > "$T/mixedpin/bin/b.sh"
+printf 'BINARY_NAME="A"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/mixedpin/bin/a.sh"
+printf 'BINARY_NAME="B"\nREPO="a/x"\ncurl https://api.github.com/repos/$REPO/releases/latest | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/mixedpin/bin/b.sh"
 
 # ---------------------------------------------------------------------------
 echo
@@ -373,6 +382,12 @@ assert_rc "badpin: illegal manifest value → rc 4 at the plugin level" 4 plugin
 assert_rc "commentonly: a release URL in a # line is not a download → no wrapper rows" 1 plugin_binary_wrappers "$T/commentonly"
 assert_eq "mixedpin: a literal-pinned wrapper next to an unpinned sibling → the literal, rc 0" "1.0.0|wrapper:a.sh" "$(plugin_binary_pin "$T/mixedpin" /nonexistent)"
 assert_rc "mixedpin: rc 0"                            0 plugin_binary_pin "$T/mixedpin" /nonexistent
+assert_rc "cmtrepo: a release URL in a # line is not a repo candidate → rc 1" 1 plugin_binary_repo "$T/cmtrepo"
+assert_eq "cmtrepo: prints empty (dynamic REPO= is not a literal either)" "" "$(plugin_binary_repo "$T/cmtrepo")"
+assert_rc "cmtbin: \$HOME/bin/<name> in a comment is not an install name → rc 1" 1 plugin_install_names "$T/cmtbin"
+assert_eq "installonly: BINARY_NAME= used only as the install target → asset undeclared, install name kept" "bin|w.sh||che-latex-mcp|a/latex||none" "$(plugin_binary_wrappers "$T/installonly")"
+assert_eq "two: BINARY_NAME= used in the download URL IS the asset" "AllMCP" "$(plugin_binary_name "$T/two")"
+assert_eq "hijack: the literal asset name in the download URL declares BINARY_NAME as the asset" "RealBin" "$(plugin_binary_name "$T/hijack")"
 
 echo
 echo "marketplace_entry_version:"
