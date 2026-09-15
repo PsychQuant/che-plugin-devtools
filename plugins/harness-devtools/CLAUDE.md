@@ -76,7 +76,7 @@ plugin_binary_version "$PLUGIN_MANIFEST"        # 明確 manifest pin：binary_v
 plugin_binary_version_key "$PLUGIN_MANIFEST"    # 明確 pin 的 key；rc 1 沒有 / 2 兩個都有（印 binary_version）
 plugin_binary_wrappers "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # **逐 wrapper**：每個真的會下載 release 的檔案一列
                                                 #   dir|file|asset|install|repo|pin|pinsrc（dir ∈ bin|hooks；空欄 = 該檔沒宣告；檔名不合法印 ?）
-                                                #   pin 由**該 wrapper 自己**決定，三種來源封閉列舉：(1) 檔內字面 DESIRED_VERSION="x.y.z" → pinsrc=wrapper:<file>；
+                                                #   pin 由**該 wrapper 自己**決定，三種來源封閉列舉：(1) 檔內字面 DESIRED_VERSION="x.y.z" 且它是檔內**最後一個** DESIRED_VERSION= 賦值（預設值後接 $(grep …) 的不算；最後一個讀不出來 → rc 4 `|wrapper:<file>`）→ pinsrc=wrapper:<file>；
                                                 #   (2) 檔內 grep 的 plugin.json key（binary_version / binaryVersion / version，依它自己的順序）→ pinsrc=<key>；
                                                 #   (3) 都沒有 → pin 空、pinsrc=none。**沒有** manifest 層的全域回退——本機 26 支 wrapper / hook：4 支字面、8 支讀 version、
                                                 #   6 支讀 binaryVersion/binary_version 再 version（含 macdoc 家族三支）、1 支 hook 只讀 binary_version 並自己下載（macdoc）、
@@ -91,8 +91,9 @@ plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # rc 0 + 命中清單
                                                 #   URL 形狀**逐字**是 idd-close has_binary_wrapper 的那一條（含 gh api …/releases）；不掃 skills/ 散文
 plugin_binary_repo "$PLUGIN_DIR"                # owner/repo，只看**會下載 release 的 wrapper 檔**（輔助檔的 REPO= 不算），且有 bin/ wrapper 時**只看 bin/**——
                                                 #   hooks/ 的 check script 指向舊 fork（che-things-mcp / che-zotero-mcp）不能決定 Case E-auto 追哪個 remote 的 tag；
-                                                #   hook-only 佈局才看 hooks/。分級：*_REPO= 賦值（含縮排 / export）> release URL 字面；bare github.com/o/r 文件連結不是候選；
-                                                #   賦值必須是完整字面（REPO="o/r${X}" 不算）。rc 0 恰一 / 1 沒有 / 2 **同一級**多值（印第一個——消費端印 file|repo）
+                                                #   hook-only 佈局才看 hooks/。**逐檔**分級：*_REPO= 賦值（含縮排 / export；**且該變數被用進 release 下載行**——沒被用的
+                                                #   DOCS_REPO= 不算，賦值只是 URL 裡那個變數的值）> release URL 字面（非註解行）；bare github.com/o/r 文件連結不是候選；
+                                                #   賦值必須是完整字面（REPO="o/r${X}" 不算）。跨檔合併：rc 0 恰一 / 1 沒有 / 2 各檔不同（印第一個——消費端印 file|repo）
 plugin_binary_name "$PLUGIN_DIR"                # 第一個**宣告**的 ASSET 名：RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME=（後者只在非註解行用它下載時算：
                                                 #   releases/download/…/$BINARY_NAME、--pattern、browser_download_url；只當 install 目標的不算）；不從 install 名猜；rc 1 沒有
 plugin_install_names "$PLUGIN_DIR"              # 所有 INSTALL 名（INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>），一行一個——sidecar 用這個 key；
@@ -109,8 +110,8 @@ version_gt 0.3.0 0.2.0                          # rc 0 大於 / 1 否 / 2 不可
 **規則**：答不出來回 distinct rc、印空——**不印看起來合理的預設值**。消費端把 rc 1 / 2 / 4 印成 UNKNOWN，
 不把「查不到」當「沒有」。`plugin-update` Phase 0.3（Step 1 / Step 2 (a)(b)(d)(e)、Case E bump fence）、
 Phase 1.5 Step 2 / 3、Phase 2 Step 1 / 4、Phase 5 Step 1.5 全部只消費這裡的輸出。`PBM_GH` / `PLUGIN_BIN_DIR` 是**測試座標**
-（stub gh、sidecar 目錄），只在 `PBM_TEST=1` 時生效，且 `PBM_GH` 只接受絕對路徑的可執行檔。測試：`scripts/test-plugin-binary-meta.sh`
-（133 斷言：註解行的 release URL / $HOME/bin/<name> 不算、只當 install 目標的 BINARY_NAME 不是 asset、兩種 key、四種 pin 來源、macdoc 家族的 grep 寫法、hook-only 有 pin、wrapper 不一致、共用 pin 的兩個來源、點名 key 無值 rc 4、
+（stub gh、sidecar 目錄），只在 `PBM_TEST=1` **且** `PBM_TEST_ROOT` 已設 **且** `$PWD` 在其下時生效（production fence `cd "$MP_ROOT"`，永遠不在測試根下），且 `PBM_GH` 只接受絕對路徑的可執行檔。測試：`scripts/test-plugin-binary-meta.sh`
+（143 斷言：逐檔 repo 合併、沒被用的 *_REPO= 不算、字面 pin 須為最後一個賦值、seam 三條件、asset 名的 `.` 不是萬用字元、註解行的 release URL / $HOME/bin/<name> 不算、只當 install 目標的 BINARY_NAME 不是 asset、兩種 key、四種 pin 來源、macdoc 家族的 grep 寫法、hook-only 有 pin、wrapper 不一致、共用 pin 的兩個來源、點名 key 無值 rc 4、
 無副檔名 wrapper、bin+hooks 混合、hooks 的 REPO= 不蓋 bin、文件連結 vs 賦值、註解行的 URL 不算下載、非 wrapper 的 REPO=、`${X}` 賦值、縮排 / export、
 `gh api` 形、多 binary、asset ≠ install 名、RELEASE_ASSET=、缺 version 的 entry、`.mcp.json` `{}`、sidecar 三態、不安全檔名（含帶字面 pin 的）、
 v 前綴 tag 與裸 tag 回退、stub gh 與 PBM_TEST 守門）。

@@ -22,14 +22,15 @@
 #                                               #   rc 0 every pinned wrapper agrees / 1 no wrapper has a pin / 2 wrappers disagree (first printed)
 #                                               #   / 4 a wrapper names a manifest key whose value cannot be read (missing / illegal / unreadable)
 #   plugin_binary_repo <dir>                    # owner/repo from the DOWNLOADING wrapper files (bin/ when any exist, else hooks/ — a
-#                                               #   check hook can never re-point a plugin that has a bin/ wrapper), ranked: *_REPO= assignment
-#                                               #   > release-URL literal; rc 0 one / 1 none / 2 several IN THE SAME TIER (first printed)
+#                                               #   check hook can never re-point a plugin that has a bin/ wrapper). PER FILE: a *_REPO=
+#                                               #   assignment whose variable is used in a release download line beats a release-URL literal;
+#                                               #   the files' answers are then merged — rc 0 one / 1 none / 2 the files disagree (first printed)
 #   plugin_binary_name <dir>                    # first DECLARED asset name: RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME= (the last only when a
 #                                               #   non-comment line downloads BY that name); rc 1 none — never guessed from the install name,
 #                                               #   a guess would turn into a false "asset missing" that now BLOCKS the Case E bump
 #   plugin_install_names <dir>                  # unique INSTALLED names (INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name>), one/line
 #   plugin_installed_binary_version <dir> [name]  # <bin dir>/.<name>.version; rc 1 no sidecar / 2 no name / 3 sidecar not a version
-#   plugin_bin_dir                              # the sidecar directory (~/bin; PLUGIN_BIN_DIR under PBM_TEST=1)
+#   plugin_bin_dir                              # the sidecar directory (~/bin; PLUGIN_BIN_DIR when the test seam is live)
 #   marketplace_entry_version <mp_root> <p>     # rc 0 (value, or EMPTY when the entry has no version) / 1 no entry / 3 illegal / 4 unreadable
 #   latest_release_version <owner/repo>         # gh release view … tagName, leading v stripped; rc 1 on failure
 #   release_assets <owner/repo> [x.y.z]         # asset names of that release (latest when no version), one per line; the release is
@@ -95,7 +96,9 @@
 #     has_binary_wrapper uses (references/distribution-detection.md). Detection is URL shape only;
 #     the literal owner/repo is plugin_binary_repo's job (assignment beats URL; a bare
 #     `github.com/o/r` docs link is never a candidate).
-#   - PBM_GH / PLUGIN_BIN_DIR are TEST seams and are honoured only when PBM_TEST=1 is also set;
+#   - PBM_GH / PLUGIN_BIN_DIR are TEST seams and are honoured only when PBM_TEST=1 AND PBM_TEST_ROOT is set AND $PWD is
+#     under PBM_TEST_ROOT (production fences cd into the marketplace root, never a test root — an ambient env cannot
+#     substitute the gh that drives Case E-auto);
 #     the production path has exactly one way to reach gh and one sidecar directory.
 
 _PBM_RELEASE_RE='gh release download|gh api[[:space:]]+.*/releases|api\.github\.com/.*/releases|github\.com/.*/releases/(download|tags|latest)'
@@ -130,17 +133,25 @@ _pbm_repo_ok() {
 }
 _pbm_name_ok() { case "$1" in ''|.*|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac; return 0; }
 
-# _pbm_gh → the gh to run: PBM_GH only under PBM_TEST=1 and only as an absolute executable; rc 1 refuses
+# _pbm_test_on → the test seam is live only when PBM_TEST=1 AND PBM_TEST_ROOT is set AND the current directory is under it.
+# Production fences `cd "$MP_ROOT"`, which is never under a test root, so an ambient PBM_TEST/PBM_GH in the environment
+# (settings.json env, direnv, a parent process) cannot substitute the gh whose output drives Case E-auto (#22 verify R5)
+_pbm_test_on() {
+  [ "${PBM_TEST:-}" = 1 ] && [ -n "${PBM_TEST_ROOT:-}" ] || return 1
+  case "$PWD/" in "${PBM_TEST_ROOT%/}/"*) return 0 ;; esac
+  return 1
+}
+# _pbm_gh → the gh to run: PBM_GH only when the test seam is live and only as an absolute executable; rc 1 refuses
 _pbm_gh() {
-  if [ -n "${PBM_GH:-}" ] && [ "${PBM_TEST:-}" = 1 ]; then
+  if [ -n "${PBM_GH:-}" ] && _pbm_test_on; then
     case "$PBM_GH" in /*) [ -x "$PBM_GH" ] && { printf '%s\n' "$PBM_GH"; return 0; } ;; esac
     return 1
   fi
   printf 'gh\n'
 }
-# _pbm_bin_dir → sidecar directory: PLUGIN_BIN_DIR only under PBM_TEST=1
+# _pbm_bin_dir → sidecar directory: PLUGIN_BIN_DIR only when the test seam is live
 _pbm_bin_dir() {
-  if [ -n "${PLUGIN_BIN_DIR:-}" ] && [ "${PBM_TEST:-}" = 1 ]; then printf '%s\n' "$PLUGIN_BIN_DIR"; else printf '%s\n' "$HOME/bin"; fi
+  if [ -n "${PLUGIN_BIN_DIR:-}" ] && _pbm_test_on; then printf '%s\n' "$PLUGIN_BIN_DIR"; else printf '%s\n' "$HOME/bin"; fi
 }
 plugin_bin_dir() { _pbm_bin_dir; }   # public — consumers print it; the underscore form is internal
 
@@ -176,14 +187,20 @@ EOF
   return 1
 }
 
-_pbm_file_repo_tier1() {   # `<X>_REPO=` / `REPO=` assignments (validated), one per line
-  local file="$1" line v
+_pbm_file_repo_tier1() {   # `<X>_REPO=` / `REPO=` assignments (validated) whose VARIABLE is used in a release download line, one per line
+  local file="$1" line v name
   while IFS= read -r line; do
     [ -n "$line" ] || continue
+    name=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?([A-Z_]*REPO)=.*$/\2/')
     v=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?[A-Z_]*REPO=["'"'"']?//; s/["'"'"']?[[:space:]]*(;.*|#.*)?$//')
-    _pbm_repo_ok "$v" && printf '%s\n' "$v"
+    _pbm_repo_ok "$v" || continue
+    # the value is the repo only if the file downloads THROUGH that variable: `$NAME` / `${NAME}` on a non-comment line that is a
+    # release URL or a `--repo` argument. A DOCS_REPO= / MIRROR_REPO= that nothing fetches from is not a candidate (#22 verify R5:
+    # issue point 2 says "from the URL pattern, not the variable name" — the assignment is just the value of the variable in that URL)
+    LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -E "\\\$(\\{${name}\\}|${name}([^A-Za-z0-9_]|\$))" | LC_ALL=C grep -qE "$_PBM_RELEASE_RE|--repo" || continue
+    printf '%s\n' "$v"
   done <<EOF
-$(LC_ALL=C grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?[A-Z_]*REPO=[\"']?[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*[\"']?([[:space:]]*(;|#).*)?[[:space:]]*\$" "$file" 2>/dev/null)
+$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?[A-Z_]*REPO=[\"']?[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*[\"']?([[:space:]]*(;|#).*)?[[:space:]]*\$")
 EOF
   return 0
 }
@@ -210,16 +227,18 @@ EOF
   return 1
 }
 _pbm_file_asset_name() {    # DECLARED release asset only: RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME= when the file downloads BY that name
-  local file="$1" v
+  local file="$1" v ve
   v=$(_pbm_assign "$file" RELEASE_ASSET) && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
   v=$(_pbm_assign "$file" ASSET_NAME)    && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
   # BINARY_NAME is also the install-name fallback; it is the ASSET only when a non-comment line fetches by it —
   # `releases/download/<tag>/$BINARY_NAME` (or the literal value there), `gh release download … --pattern "$BINARY_NAME"`,
   # or a browser_download_url match (every real wrapper that declares it does one of these). A wrapper that only installs
   # TO $BINARY_NAME has no declared asset — a guessed asset would now BLOCK the Case E bump, not just warn (#22 verify R4).
-  if v=$(_pbm_assign "$file" BINARY_NAME) && _pbm_name_ok "$v" \
-     && LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -qE "releases/download/[^[:space:]]*(\\\$\\{?BINARY_NAME|/${v}([[:space:]\"']|\$))|(--pattern|-p)[[:space:]]+[\"']?\\\$\\{?BINARY_NAME|browser_download_url.*BINARY_NAME"; then
-    printf '%s\n' "$v"; return 0
+  if v=$(_pbm_assign "$file" BINARY_NAME) && _pbm_name_ok "$v"; then
+    ve=$(printf '%s' "$v" | sed 's/\./\\./g')   # `.` is an ERE wildcard; the allowlist permits it in names (#22 verify R5)
+    if LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -qE "releases/download/[^[:space:]]*(\\\$\\{?BINARY_NAME|/${ve}([[:space:]\"']|\$))|(--pattern|-p)[[:space:]]+[\"']?\\\$\\{?BINARY_NAME|browser_download_url.*BINARY_NAME"; then
+      printf '%s\n' "$v"; return 0
+    fi
   fi
   return 1
 }
@@ -236,17 +255,27 @@ _pbm_file_repo() {          # tier 1 else tier 2, first valid
 }
 
 # _pbm_file_pin <file> [manifest] → "value|pinsrc" — what THIS wrapper downloads (closed list of three sources)
-#   (1) literal DESIRED_VERSION="x.y.z" in the file          → value|wrapper:<basename>   (basename through the allowlist, else ?)
+#   (1) literal DESIRED_VERSION="x.y.z" that is the LAST DESIRED_VERSION= assignment in the file
+#                                                           → value|wrapper:<basename>   (basename through the allowlist, else ?)
 #   (2) the manifest key(s) the file names on non-comment lines, in file order
 #                                                           → value|<key>   (first key with a non-empty manifest value)
 #   (3) neither                                             → |none        rc 1
 #   (2) applies but no named key has a usable value          → |<first key> rc 4 (manifest missing / unreadable / key absent)
 #   (2) applies and the first present value is illegal       → |<key>       rc 3
+#   DESIRED_VERSION= assigned but the last assignment is not a literal and no key is named
+#                                                           → |wrapper:<basename> rc 4 (source known, value not)
 _pbm_file_pin() {
-  local file="$1" manifest="${2:-}" v key first="" base
+  local file="$1" manifest="${2:-}" v key first="" base last
   base=${file##*/}; _pbm_name_ok "$base" || base='?'
-  v=$(_pbm_assign "$file" DESIRED_VERSION)
-  if [ -n "$v" ] && _pbm_version_ok "$v"; then printf '%s|wrapper:%s\n' "$v" "$base"; return 0; fi
+  # the literal counts only when it is the LAST non-comment assignment to DESIRED_VERSION: `DESIRED_VERSION="1.0.0"` followed by
+  # `DESIRED_VERSION=$(grep … "$PLUGIN_JSON" …)` is a default that the manifest overrides, and the pin is what the manifest says
+  # (#22 verify R5). An overriding assignment we cannot read (not a literal, no manifest key named) → the source is known, the
+  # value is not: `|wrapper:<file>` rc 4, never the stale default.
+  last=$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -E '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?DESIRED_VERSION=' | tail -1)
+  if printf '%s\n' "$last" | LC_ALL=C grep -qE "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?DESIRED_VERSION=[\"']?[A-Za-z0-9][A-Za-z0-9_./+-]*[\"']?([[:space:]]*(;|#).*)?[[:space:]]*\$"; then
+    v=$(printf '%s' "$last" | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?DESIRED_VERSION=["'"'"']?//; s/["'"'"']?[[:space:]]*(;.*|#.*)?$//')
+    if [ -n "$v" ] && _pbm_version_ok "$v"; then printf '%s|wrapper:%s\n' "$v" "$base"; return 0; fi
+  fi
   while IFS= read -r key; do
     [ -n "$key" ] || continue
     [ -n "$first" ] || first="$key"
@@ -260,6 +289,7 @@ _pbm_file_pin() {
 $(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE '"(binary_version|binaryVersion|version)"[^"]*:' | sed -E 's/^"([A-Za-z_]+)".*$/\1/' | awk '!seen[$0]++')
 EOF
   if [ -n "$first" ]; then printf '|%s\n' "$first"; return 4; fi
+  if [ -n "$last" ]; then printf '|wrapper:%s\n' "$base"; return 4; fi   # DESIRED_VERSION is assigned but not readably (no literal last, no key)
   printf '|none\n'; return 1
 }
 
@@ -358,7 +388,7 @@ EOF
 }
 
 plugin_binary_repo() {
-  local dir="$1" f cand tier first="" n=0 seen="" files="" binfiles=""
+  local dir="$1" f cand first="" n=0 seen="" files="" binfiles=""
   [ -d "$dir" ] || { printf '\n'; return 1; }
   files=$(_pbm_wrapper_files "$dir")
   # a plugin with a bin/ wrapper takes its repo from bin/ only — a hooks/ check script pointing at an old fork
@@ -368,21 +398,16 @@ plugin_binary_repo() {
 $files
 EOF
   [ -z "$binfiles" ] || files="$binfiles"
-  for tier in 1 2; do
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      while IFS= read -r cand; do
-        [ -n "$cand" ] || continue
-        case "$seen" in *"|$cand|"*) continue ;; esac
-        seen="${seen:-|}$cand|"; n=$((n + 1)); [ -n "$first" ] || first="$cand"
-      done <<EOF2
-$(if [ "$tier" = 1 ]; then _pbm_file_repo_tier1 "$f"; else _pbm_file_repo_tier2 "$f"; fi)
-EOF2
-    done <<EOF
+  # tiering (assignment > URL literal) is decided PER FILE by _pbm_file_repo, then the files' answers are merged:
+  # one file's assignment must not hide another file's URL that names a different repo (#22 verify R5)
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    cand=$(_pbm_file_repo "$f"); [ -n "$cand" ] || continue
+    case "$seen" in *"|$cand|"*) continue ;; esac
+    seen="${seen:-|}$cand|"; n=$((n + 1)); [ -n "$first" ] || first="$cand"
+  done <<EOF
 $files
 EOF
-    [ "$n" -ge 1 ] && break
-  done
   printf '%s\n' "$first"
   [ "$n" -ge 1 ] || return 1
   [ "$n" = 1 ] || return 2

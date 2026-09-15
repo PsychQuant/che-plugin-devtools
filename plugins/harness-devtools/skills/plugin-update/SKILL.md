@@ -370,7 +370,10 @@ if [ "$IS_BINARY_BACKED" = true ]; then
     # pinsrc 可能是逗號串：che-telegram-mcp 兩支 wrapper 各自字面 pin 同一版本 → `wrapper:a.sh,wrapper:b.sh`（bump 要兩支都改，#22 verify R3）
     case "$PBP_RC" in
       2) echo "⚠ $PLUGIN_DIR 的 wrapper 各自 pin 不同版本（$(plugin_binary_wrappers "$PLUGIN_DIR" "$PLUGIN_MANIFEST" | grep -v '|none$' | cut -d'|' -f2,6,7 | tr '\n' ' ')）— 不是單一 pin，視為 unknown"; BINARY_VERSION=""; BINARY_PIN_SRC=conflict ;;
-      4) echo "⚠ $PLUGIN_DIR 的 wrapper 讀 plugin.json 的 ${BINARY_PIN_SRC}，但 $PLUGIN_MANIFEST 沒有可用的值（key 缺 / 值非法 / 讀不到）— pin unknown（不是 no-pin：key 已被 wrapper 點名，該做的是在 manifest 給它一個 x.y.z）"; BINARY_VERSION=""; BINARY_PIN_SRC="unreadable:${BINARY_PIN_SRC}" ;;
+      4) case "$BINARY_PIN_SRC" in
+           wrapper:*) echo "⚠ $PLUGIN_DIR 的 ${BINARY_PIN_SRC#wrapper:} 對 DESIRED_VERSION 的最後一次賦值不是字面（引數 / 動態運算）— pin 讀不到（不是 no-pin：wrapper 有 pin 的概念，只是本 skill 讀不出值；要讓 Case E / Phase 5 可用，把 pin 寫成字面或讀 plugin.json 的 key）" ;;
+           *) echo "⚠ $PLUGIN_DIR 的 wrapper 讀 plugin.json 的 ${BINARY_PIN_SRC}，但 $PLUGIN_MANIFEST 沒有可用的值（key 缺 / 值非法 / 讀不到）— pin unknown（不是 no-pin：key 已被 wrapper 點名，該做的是在 manifest 給它一個 x.y.z）" ;;
+         esac; BINARY_VERSION=""; BINARY_PIN_SRC="unreadable:${BINARY_PIN_SRC}" ;;
     esac
 fi
 
@@ -414,8 +417,9 @@ REPO_UNPUSHED=$(git rev-list --count "$UPSTREAM..HEAD" 2>/dev/null) || { echo "�
 
 # (d) BINARY repo: main 是否有 unreleased commits（信號移植自 #66 Phase 1.5 強化）
 # owner/repo 由 plugin_binary_repo 從**會下載 release 的** wrapper 檔抽：有 bin/ wrapper 時只看 bin/——hooks/ 的 check script 指向舊 fork
-# 不能決定 Case E 追哪個 remote 的 tag（它有 commit+push 的權限，#22 verify R3）；hook-only 佈局才看 hooks/。URL 字面或 <任何>_REPO= / REPO=
-# 賦值，兩段都過 allowlist（#22：不靠 *-wrapper.sh 檔名、不靠固定變數名）。多個不同 repo → 取第一個並印出來，不靜默選。
+# 不能決定 Case E 追哪個 remote 的 tag（它有 commit+push 的權限，#22 verify R3）；hook-only 佈局才看 hooks/。逐檔：<任何>_REPO= / REPO= 賦值
+# **且該變數被用進 release 下載行**（issue 第 2 點「從 URL 抽」——賦值只是 URL 裡那個變數的值；沒被用的 DOCS_REPO= 不算）> URL 字面，
+# 兩段都過 allowlist（不靠 *-wrapper.sh 檔名、不靠固定變數名）；跨檔合併，不同 repo → rc 2（(e) 印 unknown、bump 拒絕）。
 # detect_binary_repo 定義在本 fence 內（函式也不跨 Bash 呼叫存活）：在三個常見路徑找 local clone；找不到 → 空（best-effort）。
 BINARY_REPO=$(plugin_binary_repo "$PLUGIN_DIR"); PBR_RC=$?
 # rc 2 只在同一層級（*_REPO= 賦值 vs 賦值）多值時出現——文件連結不是候選；印 file|repo 兩欄（che-things-mcp 那種 wrapper 指 PsychQuant/x、
@@ -542,7 +546,7 @@ case "$SYNC_CASE" in
     case "$BINARY_UNKNOWN_WHY" in
       no-wrapper)     echo "  - binary-backed by declaration only — no file under bin/ or hooks/ downloads a release; release status not checked" ;;
       no-pin)         echo "  - binary-backed but the downloading wrapper has no pin — release status not checked（給 wrapper 一個 pin 後重跑才會有 Case E 的 release-ahead 檢查）" ;;
-      pin-unreadable) echo "  - binary-backed but the key the wrapper reads (${BINARY_PIN_SRC#unreadable:}) has no usable value in $PLUGIN_MANIFEST — release status not checked" ;;
+      pin-unreadable) echo "  - binary-backed but the pin source (${BINARY_PIN_SRC#unreadable:}) has no readable value — release status not checked（見上方 ⚠）" ;;
       pin-conflict)   echo "  - wrappers pin different versions — release status not checked（見上方 ⚠）" ;;
       no-clone)       echo "  - binary v$BINARY_VERSION: unreleased-commit check could not run（no local clone / tag / main）— see Phase 1.5" ;;
     esac
@@ -553,7 +557,7 @@ case "$SYNC_CASE" in
     case "$BINARY_UNKNOWN_WHY" in
       no-wrapper)     echo "→ Phase 0.3: binary-backed by declaration only (no file under bin/ or hooks/ downloads a release) — release status cannot be checked; shell unchanged, marketplace in sync — Step 4 Case B (unknown / no-wrapper) asks" ;;
       no-pin)         echo "→ Phase 0.3: binary-backed but the downloading wrapper has no pin — release status cannot be checked; shell unchanged, marketplace in sync — Step 4 Case B (unknown / no-pin) asks" ;;
-      pin-unreadable) echo "→ Phase 0.3: the wrapper reads ${BINARY_PIN_SRC#unreadable:} from $PLUGIN_MANIFEST but there is no usable value — release status cannot be checked; shell unchanged, marketplace in sync — Step 4 Case B (unknown / pin-unreadable) asks" ;;
+      pin-unreadable) echo "→ Phase 0.3: the pin source (${BINARY_PIN_SRC#unreadable:}) has no readable value（見上方 ⚠）— release status cannot be checked; shell unchanged, marketplace in sync — Step 4 Case B (unknown / pin-unreadable) asks" ;;
       pin-conflict)   echo "→ Phase 0.3: wrappers pin different versions — release status cannot be checked; shell unchanged, marketplace in sync — Step 4 Case B (unknown / pin-conflict) asks" ;;
       no-clone)       echo "→ Phase 0.3: binary v$BINARY_VERSION could not be checked (no local clone / tag / main${BINARY_REPO_PATH:+; clone found at $BINARY_REPO_PATH}); shell unchanged, marketplace in sync — Step 4 Case B (unknown / no-clone) asks" ;;
       *)              echo "→ Phase 0.3: binary main has $BINARY_UNRELEASED unreleased commits since v$BINARY_VERSION; shell unchanged, marketplace in sync — Step 4 Case B asks" ;;
@@ -620,7 +624,7 @@ options:
 
 **B-unknown / no-wrapper**（`why=no-wrapper`：manifest 宣告了 pin 或 `.mcp.json` 非空，但 bin/ 與 hooks/ 沒有任何檔案會下載 release）：用 no-pin 模板，問句改成 Step 2 那行 ⚠ 的內容；recommended 選項改成「abort, put the downloader under bin/ (or hooks/) first」——這不是「補 pin」，pin 已經在；是佈局本 skill 認不出。
 
-**B-unknown / pin-unreadable / pin-conflict**（`why=pin-unreadable`：wrapper 點名了 plugin.json 的某個 key，但 manifest 沒有可用的 x.y.z 值；`why=pin-conflict`：多支 wrapper pin 不同版本）：用同一個模板，問句改成 Step 2 那行 ⚠ 的內容；recommended 選項改成「abort, fix the manifest key first」／「abort, unify the wrappers' pins first」——這兩種都不是「補 pin」，是修既有的 pin。
+**B-unknown / pin-unreadable / pin-conflict**（`why=pin-unreadable`：wrapper 點名了 plugin.json 的某個 key 但 manifest 沒有可用的 x.y.z 值，或 wrapper 對 `DESIRED_VERSION` 的最後一次賦值不是字面（CLI 引數 / 動態運算，如 omlx 的 `DESIRED_VERSION="${2:-}"`）；`why=pin-conflict`：多支 wrapper pin 不同版本）：用同一個模板，問句改成 Step 2 那行 ⚠ 的內容；recommended 選項改成「abort, fix the manifest key first」／「abort, unify the wrappers' pins first」——這兩種都不是「補 pin」，是修既有的 pin。
 
 **B-unknown / no-clone**（`unreleased=unknown why=no-clone`：有 pin，但本機沒有 clone / tag / `main` 可比對）：
 
@@ -761,6 +765,8 @@ if [ "$AUTO_PUSH" = yes ]; then
         exit 75
     fi
 fi
+FILES=$(printf '%s' "$TARGETS" | sed 's/|[^|]*$//' | awk '!seen[$0]++'); [ "$ALSO_VERSION" = yes ] && FILES=$(printf '%s\n%s\n' "$FILES" "$PLUGIN_MANIFEST" | awk '!seen[$0]++')
+REL=$(printf '%s\n' "$FILES" | sed "s|^$MP_ROOT/||" | tr '\n' ' ' | sed 's/ $//')
 # 逐檔單行字面替換：只動 `"<key>": "<old>"`（manifest）或 `DESIRED_VERSION="<old>"`（wrapper）那一行；**先全部驗、每個目標恰一命中才一起寫**，
 # 不 json.dump、不重排（#22 verify R2）。ALSO_VERSION 的 version 永遠在 manifest（wrapper 字面 pin 時就是第二個檔，#22 verify R3）
 python3 - "$OLD_PIN" "$NEW_PIN" "$ALSO_VERSION" "$CUR_VERSION" "$PLUGIN_MANIFEST" "$TARGETS" <<'PY'
@@ -792,12 +798,30 @@ if also == "yes":
     if len(pv.findall(text)) != 1:
         sys.exit("refuse: version=%s not found exactly once in %s — nothing written" % (cur, manifest))
     bufs[manifest] = pv.sub(lambda mo: mo.group(1) + new + mo.group(2), text, count=1)
-for path in order:
-    open(path, "w", encoding="utf-8").write(bufs[path])
+# write each file via a temp file + atomic replace; if any step fails, say exactly which files ARE changed — never claim
+# "nothing written" once the first file went through (#22 verify R5)
+import os
+written = []
+try:
+    for path in order:
+        tmp = path + ".pbm-tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(bufs[path])
+        os.replace(tmp, path)
+        written.append(path)
+except Exception as exc:
+    pending = [p for p in order if p not in written]
+    for p in pending:
+        try:
+            os.unlink(p + ".pbm-tmp")
+        except OSError:
+            pass
+    sys.stderr.write("write-failed: %s; written=%s pending=%s\n" % (exc, written, pending))
+    sys.exit(2)
 PY
-[ $? = 0 ] || refuse "替換被拒絕（見上一行）— 沒有任何檔案被改"
-FILES=$(printf '%s' "$TARGETS" | sed 's/|[^|]*$//' | awk '!seen[$0]++'); [ "$ALSO_VERSION" = yes ] && FILES=$(printf '%s\n%s\n' "$FILES" "$PLUGIN_MANIFEST" | awk '!seen[$0]++')
-REL=$(printf '%s\n' "$FILES" | sed "s|^$MP_ROOT/||" | tr '\n' ' ' | sed 's/ $//')
+PY_RC=$?
+[ "$PY_RC" != 2 ] || refuse "寫入階段失敗（見上一行的 write-failed：written= 是**已經改了**的檔案）— 復原：git checkout -- ${REL:-<files>}"
+[ "$PY_RC" = 0 ] || refuse "替換被拒絕（見上一行）— 沒有任何檔案被改"
 # 寫入後用 helper 重讀：rc 必須 0、值必須是 NEW_PIN——不把 rc 丟進 pipe（`| cut` 會吃掉退出碼，半改的樹會被報成成功，#22 verify R3）
 NOWP=$(plugin_binary_pin "$PLUGIN_DIR" "$PLUGIN_MANIFEST"); NOW_RC=$?; NOW=${NOWP%%|*}
 if [ "$NOW_RC" != 0 ] || [ "$NOW" != "$NEW_PIN" ]; then
@@ -807,10 +831,10 @@ echo "→ Phase 0.3 Case E: ${KEYDESC}: $(clean "$OLD_PIN") → $(clean "$NOW") 
 printf '%s\n' "$FILES" | while IFS= read -r F; do [ -n "$F" ] && git --literal-pathspecs diff --stat -- "$F"; done
 if [ "$AUTO_PUSH" = yes ]; then
     printf '%s\n' "$FILES" | while IFS= read -r F; do [ -n "$F" ] && git --literal-pathspecs add -- "$F"; done
-    git commit -q -m "chore($PLUGIN_NAME): bump binary pin to v$NEW_PIN ($KEYDESC)" || { echo "✗ Case E-auto: commit 失敗" >&2; exit 1; }
+    git commit -q -m "chore($PLUGIN_NAME): bump binary pin to v$NEW_PIN ($KEYDESC)" || { echo "AUDIT: Phase 0.3 Case E-auto FAILED after write — commit failed; pin rewritten in ${REL}, not committed; revert: git checkout -- ${REL}"; exit 1; }
     REMOTE=${UPSTREAM%%/*}; RBRANCH=${UPSTREAM#*/}
-    git push "$REMOTE" "HEAD:refs/heads/$RBRANCH" || { echo "✗ Case E-auto: push to $UPSTREAM failed（commit 仍在本地）" >&2; exit 1; }
-    [ "$(git rev-parse '@{u}' 2>/dev/null)" = "$(git rev-parse HEAD)" ] || { echo "✗ Case E-auto: push 回 0 但 $UPSTREAM != HEAD" >&2; exit 1; }
+    git push "$REMOTE" "HEAD:refs/heads/$RBRANCH" || { echo "AUDIT: Phase 0.3 Case E-auto FAILED after write — push to $UPSTREAM failed; commit $(git rev-parse --short HEAD) (pin v${NEW_PIN}) is local only; push it or git reset --hard $UPSTREAM"; exit 1; }
+    [ "$(git rev-parse '@{u}' 2>/dev/null)" = "$(git rev-parse HEAD)" ] || { echo "AUDIT: Phase 0.3 Case E-auto FAILED after write — push returned 0 but $UPSTREAM != HEAD; commit $(git rev-parse --short HEAD) may be local only"; exit 1; }
     echo "AUDIT: Phase 0.3 Case E-auto — pin bumped to v${NEW_PIN} (${KEYDESC}), committed and pushed to $UPSTREAM (verified); re-run Step 2"
 else
     echo "→ 回 Phase 0.3 Step 2 重跑（會落到 Case C；Phase 0.5 會問怎麼 commit 這個改動）。要放棄：git checkout -- ${REL}"
@@ -2040,7 +2064,7 @@ if BINARY_HITS=$(plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"); then
         while IFS='|' read -r wdir wfile asset inst repo pin src; do
             [ "$wdir" = "$EFF" ] || continue
             N_ALL=$((N_ALL + 1))
-            [ -n "$CMD" ] || { [ "$EFF" = bin ] && [ "$wfile" != '?' ] && CMD="(cd / && $PLUGIN_DIR/bin/$wfile --version)"; }
+            [ -n "$CMD" ] || { [ "$wfile" != '?' ] && { if [ "$EFF" = bin ]; then CMD="(cd / && $PLUGIN_DIR/bin/$wfile --version)"; else CMD="$PLUGIN_DIR/hooks/${wfile}（hook-only 佈局：執行下載器）"; fi; }; }
             if [ -z "$inst" ]; then UNRES="${UNRES:+$UNRES }${wfile}"; echo "  ❓ ${wfile}: 抽不到 install 名（無 INSTALL_NAME= / BINARY_NAME= / \$HOME/bin/<name>）— 這支 wrapper 裝的 binary 無法對 sidecar"; continue; fi
             # sidecar 每個 install 名讀一次即可，但**每一列都要對自己的 pin**——同名 binary、不同 pin 的第二支不能被去重吃掉（#22 verify R3）
             INSTALLED=$(plugin_installed_binary_version "$PLUGIN_DIR" "$inst"); PIB_RC=$?
@@ -2058,7 +2082,7 @@ $ROWS
 EOF
         CMD=${CMD:-<wrapper> --version}
         if [ -n "$BAD" ]; then echo "⚠️  Phase 5 Step 1.5: MISMATCH ${BAD} — 已安裝的不是 pin 指的版本（比 pin 新或不可比）；wrapper 下次啟動會抓它自己的 pin；要立刻驗證：${CMD}"
-        elif [ -n "$PEND" ]; then echo "⏳ Phase 5 Step 1.5: PENDING-FETCH ${PEND} — pin 比已安裝新，wrapper 下次啟動才會抓（剛 bump 過 pin 時這是預期；release 若漏傳 asset 會在那時失敗——Phase 1.5 Signal 1 已對 pin 的 tag 查過）；要立刻驗證：${CMD}"
+        elif [ -n "$PEND" ]; then echo "⏳ Phase 5 Step 1.5: PENDING-FETCH ${PEND} — pin 比已安裝新，wrapper 下次啟動才會抓（剛 bump 過 pin 時這是預期；release 若漏傳 asset 會在那時失敗——asset 只有在 Phase 1.5 Signal 1 對這個 tag 查到時才算核對過：hook-only 佈局與 gh 查不到時沒有）；要立刻驗證：${CMD}"
         elif [ -n "$MISSING$ODD$UNRES$NOPIN" ]; then echo "❓ Phase 5 Step 1.5: UNVERIFIED — ${OK_N}/${N_ALL} verified${MISSING:+; no sidecar: $MISSING}${UNRES:+; unresolved wrapper: $UNRES}${NOPIN:+; no pin: $NOPIN}${ODD:+; unreadable sidecar: $ODD}；binary 是否到位**未驗證**；要驗證：${CMD}"
         else echo "✅ Phase 5 Step 1.5: installed == pin for all ${OK_N} binar$([ "$OK_N" = 1 ] && printf 'y' || printf 'ies')"; fi
     fi

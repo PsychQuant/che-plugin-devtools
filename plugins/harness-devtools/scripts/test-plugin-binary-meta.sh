@@ -126,7 +126,7 @@ mkdir -p "$T/mpbad/.claude-plugin"; printf '{ not json\n' > "$T/mpbad/.claude-pl
 mkdir -p "$T/bin"
 printf '0.2.0\n' > "$T/bin/.che-keychain.version"
 printf '1.2.0\n' > "$T/bin/.XMCP.version"
-export PLUGIN_BIN_DIR="$T/bin" PBM_TEST=1
+export PLUGIN_BIN_DIR="$T/bin" PBM_TEST=1 PBM_TEST_ROOT="$T"; cd "$T"   # the seam is live only under PBM_TEST_ROOT
 
 # gh stub: `release view --repo o/r --json tagName -q .tagName` → v9.9.9; PBM_STUB_FAIL=1 → rc 1
 cat > "$T/gh-stub" <<'SH'
@@ -255,6 +255,23 @@ printf '#!/bin/sh\n# installs to $HOME/bin/evil-name\nREPO="a/b"\ncurl https://a
 # installonly: BINARY_NAME= is only the install target (downloads by a URL that does not use it) → asset undeclared
 mkdir -p "$T/installonly/bin"
 printf 'BINARY_NAME="che-latex-mcp"\nREPO="a/latex"\ncurl -L "https://github.com/$REPO/releases/download/v1.0.0/CheLatexMCP" -o "$HOME/bin/$BINARY_NAME"\n' > "$T/installonly/bin/w.sh"
+# mixrepo: one wrapper names its repo by assignment, the other by URL literal — a DIFFERENT repo; the merge must see both (R5 HIGH)
+mkdir -p "$T/mixrepo/bin"
+printf 'REPO="a/one"\nDESIRED_VERSION="1.0.0"\ngh release download --repo "$REPO"\n' > "$T/mixrepo/bin/a.sh"
+printf 'DESIRED_VERSION="1.0.0"\ncurl https://github.com/b/two/releases/download/v1.0.0/B\n' > "$T/mixrepo/bin/b.sh"
+# unusedrepo: a *_REPO= assignment that nothing downloads through is not a candidate; the URL literal is the repo
+mkdir -p "$T/unusedrepo/bin"
+printf 'DOCS_REPO="docs/site"\nBINARY_NAME="R"\ncurl https://github.com/real/thing/releases/download/v1/R\n' > "$T/unusedrepo/bin/w.sh"
+# override: a literal default followed by a manifest read — the manifest wins (R5 HIGH)
+mkdir -p "$T/override/.claude-plugin" "$T/override/bin"
+printf '{ "name": "override", "version": "2.0.0", "binaryVersion": "2.0.0" }\n' > "$T/override/.claude-plugin/plugin.json"
+printf 'REPO="a/o"\nDESIRED_VERSION="1.0.0"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/override/bin/w.sh"
+# overrideunk: a literal default followed by an override the helper cannot read → source known, value not (rc 4), never the stale default
+mkdir -p "$T/overrideunk/bin"
+printf 'REPO="a/o"\nDESIRED_VERSION="1.0.0"\nDESIRED_VERSION="${PIN_OVERRIDE:-$DESIRED_VERSION}"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION\n' > "$T/overrideunk/bin/w.sh"
+# dotname: BINARY_NAME with a dot must not match a URL where the dot is some other character
+mkdir -p "$T/dotname/bin"
+printf 'BINARY_NAME="a.b"\nREPO="a/d"\ncurl https://github.com/$REPO/releases/download/v1/axb\n' > "$T/dotname/bin/w.sh"
 # mixedpin: one wrapper pins a literal, its sibling reads nothing → the plugin pin is the literal (rc 0), the sibling is just unpinned
 mkdir -p "$T/mixedpin/bin"
 printf 'BINARY_NAME="A"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/mixedpin/bin/a.sh"
@@ -388,6 +405,14 @@ assert_rc "cmtbin: \$HOME/bin/<name> in a comment is not an install name → rc 
 assert_eq "installonly: BINARY_NAME= used only as the install target → asset undeclared, install name kept" "bin|w.sh||che-latex-mcp|a/latex||none" "$(plugin_binary_wrappers "$T/installonly")"
 assert_eq "two: BINARY_NAME= used in the download URL IS the asset" "AllMCP" "$(plugin_binary_name "$T/two")"
 assert_eq "hijack: the literal asset name in the download URL declares BINARY_NAME as the asset" "RealBin" "$(plugin_binary_name "$T/hijack")"
+assert_rc "mixrepo: assignment in one file + a different URL literal in the other → rc 2 (per-file tiering, then merge)" 2 plugin_binary_repo "$T/mixrepo"
+assert_eq "mixrepo: first printed"                    "a/one" "$(plugin_binary_repo "$T/mixrepo")"
+assert_eq "unusedrepo: a *_REPO= nothing downloads through is ignored; the URL literal is the repo" "real/thing" "$(plugin_binary_repo "$T/unusedrepo")"
+assert_rc "unusedrepo: rc 0"                          0 plugin_binary_repo "$T/unusedrepo"
+assert_eq "override: literal default + manifest read → the manifest key is the pin" "2.0.0|binaryVersion" "$(plugin_binary_pin "$T/override" "$T/override/.claude-plugin/plugin.json")"
+assert_rc "overrideunk: literal default + unreadable override → rc 4, not the stale literal" 4 plugin_binary_pin "$T/overrideunk" /nonexistent
+assert_eq "overrideunk: names the wrapper as the (unreadable) source" "|wrapper:w.sh" "$(plugin_binary_pin "$T/overrideunk" /nonexistent)"
+assert_rc "dotname: BINARY_NAME=a.b vs URL …/axb → no declared asset (dot is not a wildcard)" 1 plugin_binary_name "$T/dotname"
 
 echo
 echo "marketplace_entry_version:"
@@ -406,11 +431,15 @@ lrv_fail() { PBM_GH="$T/gh-stub" PBM_STUB_FAIL=1 latest_release_version "$@"; } 
 lrv_nogh() { PBM_GH=/nonexistent latest_release_version "$@"; }
 lrv_rel()  { PBM_GH=gh-stub latest_release_version "$@"; }   # relative PBM_GH must be refused, not searched on PATH
 lrv_notest() { PBM_TEST= PBM_GH="$T/gh-stub" latest_release_version "$@"; }   # without PBM_TEST=1 the seam is ignored → real gh (unreachable repo → rc 1)
+lrv_noroot() { PBM_TEST_ROOT= PBM_GH="$T/gh-stub" latest_release_version "$@"; }   # PBM_TEST=1 alone is not enough
+lrv_outside() { ( cd / && PBM_GH="$T/gh-stub" latest_release_version "$@" ); }   # …nor is it when $PWD is outside the test root
 assert_rc "gh failure → rc 1"                        1 lrv_fail PsychQuant/che-keychain
 assert_eq "gh failure → prints empty"                "" "$(lrv_fail PsychQuant/che-keychain)"
 assert_rc "malformed repo arg → rc 1 without calling gh" 1 lrv_nogh 'bad repo'
 assert_rc "relative PBM_GH → rc 1 (test seam takes absolute paths only)" 1 lrv_rel PsychQuant/che-keychain
 assert_eq "PBM_GH is ignored without PBM_TEST=1 (stub never answers 9.9.9)" "" "$( [ "$(lrv_notest Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
+assert_eq "PBM_GH is ignored without PBM_TEST_ROOT" "" "$( [ "$(lrv_noroot Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
+assert_eq "PBM_GH is ignored when \$PWD is outside PBM_TEST_ROOT (a production fence cd's into the marketplace root)" "" "$( [ "$(lrv_outside Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
 assert_eq "release_assets 0.2.0 queries tag v0.2.0 (pins are bare, tags are v-prefixed)" "CheKeychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/che-keychain 0.2.0)"
 assert_eq "release_assets v0.2.0: a leading v is normalised, same release" "CheKeychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/che-keychain v0.2.0)"
 ra_tag() { PBM_GH="$T/gh-stub" release_assets "$@"; }

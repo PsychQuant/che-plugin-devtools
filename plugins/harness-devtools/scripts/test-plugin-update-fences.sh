@@ -206,7 +206,7 @@ PY
 # (rc 1). Tag-aware on purpose: a stub that answers any tag hid the bare-vs-v-prefixed tag bug for three rounds (#22 verify R3).
 gh_stub() { printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v%s --repo %s "*"--json assets"*|"release view v0.2.0 --repo %s "*"--json assets"*) echo %s ;; "release view "*"--json assets"*) exit 1 ;; *) echo v%s ;; esac\n' "$1" "$2" "$2" "$3" "$1" > "$T/gh-stub"; chmod +x "$T/gh-stub"; }
 gh_stub 9.9.9 PsychQuant/che-keychain CheKeychain
-mkdir -p "$T/bin"; export PBM_GH="$T/gh-stub" PLUGIN_BIN_DIR="$T/bin" PBM_TEST=1
+mkdir -p "$T/bin"; export PBM_GH="$T/gh-stub" PLUGIN_BIN_DIR="$T/bin" PBM_TEST=1 PBM_TEST_ROOT="$T"   # fences cd into $T/dev/fx-mp, under the test root
 prep01 kc
 run_both "kc: Step 1 detects bin/kc + the binaryVersion pin (no *-wrapper.sh, no GITHUB_REPO=)" 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' kc "IS_BINARY_BACKED=true (bin:kc pin:binaryVersion)"
 prep01 kc
@@ -351,6 +351,16 @@ assert_contains "two: …bot-wrapper.sh on disk"  'DESIRED_VERSION="2.0.0"' "$(c
 assert_contains "two: …manifest version on disk" '"version": "2.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/.claude-plugin/plugin.json")"
 assert_contains "two: …revert command lists every file" "git checkout -- plugins/two/bin/all-wrapper.sh plugins/two/bin/bot-wrapper.sh plugins/two/.claude-plugin/plugin.json" "$OUT"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two )
+chmod 555 "$T/dev/fx-mp/plugins/two/.claude-plugin"   # the manifest's directory is read-only → the third write (manifest) fails after the two wrappers went through
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+chmod 755 "$T/dev/fx-mp/plugins/two/.claude-plugin"
+assert_contains "two: write-stage failure names the files that WERE written (no 'nothing written' claim)" "write-failed:" "$OUT"
+assert_contains "two: …written= lists the wrappers" "written=['$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh', '$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh']" "$OUT"
+assert_contains "two: …the ✗ line says 已經改了 and gives the revert" "已經改了" "$OUT"
+assert_contains "two: …and the wrappers really are changed on disk" 'DESIRED_VERSION="2.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
+( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two && rm -f plugins/two/.claude-plugin/*.pbm-tmp )
 export IDD_ALL_UNATTENDED=1
 ( cd "$T/dev/fx-mp" && git push -q origin HEAD:master 2>/dev/null )
 prep01 two
@@ -363,6 +373,14 @@ assert_contains "two: …the commit touches exactly the two wrapper files" "2" "
 assert_contains "two: …subject" "chore(two): bump binary pin to v2.0.0 (DESIRED_VERSION)" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
 prep01 two
 run_both "two: after E-auto, Step 2 reads 2.0.0 from both wrappers and release_ahead=no" 'BINARY_UNKNOWN_WHY' two "binary=2.0.0 pinsrc=wrapper:all-wrapper.sh,wrapper:bot-wrapper.sh"
+two_stub 3.0.0 "AllMCP BotMCP"; printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v3.0.0 --repo PsychQuant/msg "*"--json assets"*) printf "AllMCP\\nBotMCP\\n" ;; "release view "*"--json assets"*) exit 1 ;; *) echo v3.0.0 ;; esac\n' > "$T/gh-stub"
+( cd "$T/dev/fx-mp" && git remote set-url origin "$T/nonexistent-remote.git" )   # push will fail after the commit
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='3.0.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "two: E-auto push failure prints an AUDIT line naming the local-only commit" "AUDIT: Phase 0.3 Case E-auto FAILED after write — push to origin/master failed; commit" "$OUT"
+assert_contains "two: …the commit exists locally" "chore(two): bump binary pin to v3.0.0 (DESIRED_VERSION)" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
+( cd "$T/dev/fx-mp" && git remote set-url origin "$T/remote.git" && git reset -q --hard origin/master )
 unset IDD_ALL_UNATTENDED
 echo
 echo "#22 R4 — Phase 5 must not dedupe by install name before comparing pins (two wrappers, one binary name, different pins)"
@@ -421,6 +439,9 @@ run_both "hp: Step 3 runs the local CLI from plugin_bin_dir (test seam) and comp
 printf '0.7.0\n' > "$T/bin/.hpbin.version"
 run_both_ctx "hp: Phase 5 verifies the hook row against its pin and sidecar" 'if [ -z "$ROWS" ]' hp "✅ hpbin: installed v0.7.0 == pin v0.7.0 (binary_version)"
 run_both_ctx "hp: …and says it is a hook-only layout" 'if [ -z "$ROWS" ]' hp "hook-only 佈局"
+rm -f "$T/bin/.hpbin.version"
+run_both_ctx "hp: a not-done state names the hook as the thing to run, not the <wrapper> placeholder" 'if [ -z "$ROWS" ]' hp "要驗證：$T/dev/fx-mp/plugins/hp/hooks/session-start.sh（hook-only 佈局：執行下載器）"
+printf '0.7.0\n' > "$T/bin/.hpbin.version"
 export IDD_ALL_UNATTENDED=1
 prep01 hp
 run_both "hp: unattended → Case E-auto (dedicated key)" 'BINARY_UNKNOWN_WHY' hp "→ Phase 0.3 sync intent: Case E-auto"
