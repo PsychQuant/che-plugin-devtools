@@ -20,7 +20,8 @@
 #                                               #   hooks/ rows (hook-only layouts such as macdoc / gifthub) — "value|pinsrc[,pinsrc…]":
 #                                               #   every distinct source in row order (two wrappers sharing one literal pin → two sources);
 #                                               #   rc 0 every pinned wrapper agrees / 1 no wrapper has a pin / 2 wrappers disagree (first printed)
-#                                               #   / 4 a wrapper names a manifest key whose value cannot be read (missing / illegal / unreadable)
+#                                               #   / 4 some downloading wrapper's pin cannot be read (missing / illegal key value, unreadable
+#                                               #     override, moving ref) — prints "|src[,src…]" with NO value, even if a sibling wrapper's pin is readable
 #   plugin_binary_repo <dir>                    # owner/repo from the DOWNLOADING wrapper files (bin/ when any exist, else hooks/ — a
 #                                               #   check hook can never re-point a plugin that has a bin/ wrapper). PER FILE: a *_REPO=
 #                                               #   assignment whose variable is used in a release download line beats a release-URL literal;
@@ -98,8 +99,8 @@
 #     `github.com/o/r` docs link is never a candidate).
 #   - PBM_GH / PLUGIN_BIN_DIR are TEST seams and are honoured only when PBM_TEST=1 AND PBM_TEST_ROOT is a real directory under
 #     a system temp tree (never / or $HOME) AND the real $PWD is under it (production fences cd into the marketplace root, which
-#     is not under a temp tree). This makes an ambient env unable to redirect gh for a normally-placed marketplace; a marketplace
-#     checked out under /tmp is not protected by it;
+#     is not under a temp tree). This keeps the SEAM from opening on a normally-placed marketplace; it is not a claim that the
+#     environment cannot redirect gh at all — PATH can always do that, and a marketplace checked out under /tmp is inside the tree;
 #     the production path has exactly one way to reach gh and one sidecar directory.
 
 _PBM_RELEASE_RE='gh release download|gh api[[:space:]]+.*/releases|api\.github\.com/.*/releases|github\.com/.*/releases/(download|tags|latest)'
@@ -138,17 +139,22 @@ _pbm_name_ok() { case "$1" in ''|.*|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac; retu
 # _pbm_test_on → the test seam is live only when PBM_TEST=1 AND PBM_TEST_ROOT names a real directory under a system temp tree
 # (/tmp, /private/tmp, /var/folders, $TMPDIR — what mktemp -d hands out; never / or $HOME) AND the real current directory is
 # under it. Production fences `cd "$MP_ROOT"`, which is never under a temp tree, so an ambient PBM_TEST/PBM_GH/PBM_TEST_ROOT
-# in the environment (settings.json env, direnv, a parent process) cannot substitute the gh whose output drives Case E-auto.
-# This narrows the seam; it is not a sandbox — a marketplace checked out under /tmp would be inside the allowed tree (#22 R5/R6)
+# in the environment does not open THIS seam for a normally-placed marketplace. It narrows the seam; it is not a sandbox and
+# not the only way an environment can redirect gh (PATH is) — a marketplace checked out under /tmp is inside the tree (#22 R5–R7)
 _pbm_test_on() {
-  local root here
+  local root here tmpreal
   [ "${PBM_TEST:-}" = 1 ] && [ -n "${PBM_TEST_ROOT:-}" ] || return 1
   root=$(cd "$PBM_TEST_ROOT" 2>/dev/null && pwd -P) || return 1
   # `PBM_TEST_ROOT=/` (or $HOME, or any ancestor of the marketplace) would make the prefix test match every production cwd
-  # (#22 verify R6): the root must be a directory under one of the system temp trees mktemp -d uses, compared by real path
+  # (#22 verify R6): the root must be a directory under one of the system temp trees mktemp -d uses, compared by real path.
+  # $TMPDIR is resolved FIRST and the arm is skipped when it does not resolve — an unresolvable TMPDIR must never become an
+  # empty prefix that matches everything (#22 verify R7). This narrows the seam so tests can stub gh; it is not a sandbox.
   case "$root" in
     /tmp/?*|/private/tmp/?*|/var/folders/?*|/private/var/folders/?*) ;;
-    *) [ -n "${TMPDIR:-}" ] && case "$root" in "$(cd "$TMPDIR" 2>/dev/null && pwd -P)"/?*) ;; *) return 1 ;; esac || return 1 ;;
+    *) [ -n "${TMPDIR:-}" ] || return 1
+       tmpreal=$(cd "$TMPDIR" 2>/dev/null && pwd -P) || return 1
+       [ -n "$tmpreal" ] && [ "$tmpreal" != / ] || return 1
+       case "$root" in "$tmpreal"/?*) ;; *) return 1 ;; esac ;;
   esac
   here=$(pwd -P 2>/dev/null) || return 1
   case "$here/" in "$root"/*) return 0 ;; esac
@@ -291,6 +297,12 @@ _pbm_file_pin() {
     if [ -n "$v" ] && _pbm_pin_ok "$v"; then printf '%s|wrapper:%s\n' "$v" "$base"; return 0; fi
     printf '|wrapper:%s\n' "$base"; return 4    # a literal that is not a version (`latest`, `main`) — source known, value not a pin
   fi
+  # the last assignment is not a literal: it must itself be a MANIFEST READ (the `"key"…:` shape on that line) for the key scan
+  # below to describe what the wrapper downloads — `DESIRED_VERSION="${PIN_OVERRIDE:-$DESIRED_VERSION}"` after a manifest read
+  # is an override the helper cannot follow, so the manifest key is NOT the pin (#22 verify R7)
+  if [ -n "$last" ] && ! printf '%s\n' "$last" | LC_ALL=C grep -qE '"(binary_version|binaryVersion|version)"[^"]*:'; then
+    printf '|wrapper:%s\n' "$base"; return 4
+  fi
   while IFS= read -r key; do
     [ -n "$key" ] || continue
     [ -n "$first" ] || first="$key"
@@ -400,9 +412,11 @@ EOF
     [ -z "$unread" ] || { printf '|%s\n' "$srcs"; return 4; }
     printf '|none\n'; return 1
   fi
+  # partial: some wrapper's pin cannot be read → the plugin's pin is unknown; print the sources only (a printed value would be a
+  # plausible default the header forbids, #22 verify R7)
+  [ -z "$unread" ] || { printf '|%s\n' "$srcs"; return 4; }
   printf '%s|%s\n' "$first" "$srcs"
   [ "$n" = 1 ] || return 2
-  [ -z "$unread" ] || return 4
   return 0
 }
 

@@ -196,7 +196,7 @@ mkdir -p "$T/broken-root/scripts"; cp "$PLUGIN_ROOT/scripts/resolve-marketplace.
 f=$(prep 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' nobin)
 OUT=$(cd "$T" && CLAUDE_PLUGIN_ROOT="$T/broken-root" bash "$f" 2>&1)
 assert_contains "Step 1 with no plugin-binary-meta.sh aborts loudly" "✗ 載不到 scripts/plugin-binary-meta.sh" "$OUT"
-assert_contains "…and never prints IS_BINARY_BACKED=false" "0" "$(printf '%s' "$OUT" | grep -c 'IS_BINARY_BACKED=false')"
+assert_contains "…and never prints IS_BINARY_BACKED=false" "count=0" "count=$(printf '%s' "$OUT" | grep -c 'IS_BINARY_BACKED=false')"
 echo
 echo "#22 — che-keychain-shaped plugin 'kc': bin/kc (no -wrapper.sh suffix, REPO= not GITHUB_REPO=), binaryVersion, entry without version, hook delegates"
 # The five silent misses of che-keychain 0.3.0, as one fixture. Each assertion is on a line the fence PRINTS.
@@ -241,7 +241,7 @@ run_both_ctx() {   # like run_both, but the fence ENDS the invocation (remove_pl
   if printf "%s" "$out_z" | grep -q "no matches found"; then FAIL=$((FAIL+1)); echo "  ✗ $1: a glob matched nothing under zsh (fatal in the Bash tool)"; else PASS=$((PASS+1)); echo "  ✓ $1: no unmatched glob under zsh"; fi
 }
 printf '0.2.0\n' > "$T/bin/.che-keychain.version"
-run_both_ctx "kc: sidecar 0.2.0 == pin 0.2.0 → ✅" 'if [ -z "$ROWS" ]' kc "✅ Phase 5 Step 1.5: installed == pin for all 1 binary"
+run_both_ctx "kc: sidecar 0.2.0 == pin 0.2.0 → ✅" 'if [ -z "$ROWS" ]' kc "✅ Phase 5 Step 1.5: installed == pin for all 1 wrapper"
 run_both_ctx "kc: …per-binary line names the source" 'if [ -z "$ROWS" ]' kc "✅ che-keychain: installed v0.2.0 == pin v0.2.0 (binaryVersion)"
 printf '0.1.0\n' > "$T/bin/.che-keychain.version"
 run_both_ctx "kc: sidecar 0.1.0 < pin 0.2.0 → PENDING-FETCH (the wrapper has not fetched yet — the state right after a Case E bump)" 'if [ -z "$ROWS" ]' kc "PENDING-FETCH che-keychain=v0.1.0<v0.2.0"
@@ -333,11 +333,13 @@ run_both "two: Signal 1 ✅ for the second binary too, against ITS pin tag" 'for
 printf '1.0.0\n' > "$T/bin/.AllMCP.version"; printf '0.9.0\n' > "$T/bin/.BotMCP.version"
 run_both_ctx "two: Phase 5 reads each sidecar against that wrapper's pin — one lagging binary is enough to flag" 'if [ -z "$ROWS" ]' two "PENDING-FETCH BotMCP=v0.9.0<v1.0.0"
 printf '1.0.0\n' > "$T/bin/.BotMCP.version"
-run_both_ctx "two: both sidecars match the literal pins (manifest version 1.3.2 is irrelevant) → ✅ for all 2" 'if [ -z "$ROWS" ]' two "✅ Phase 5 Step 1.5: installed == pin for all 2 binaries"
+run_both_ctx "two: both sidecars match the literal pins (manifest version 1.3.2 is irrelevant) → ✅ for all 2" 'if [ -z "$ROWS" ]' two "✅ Phase 5 Step 1.5: installed == pin for all 2 wrappers"
 rm -f "$T/bin/.BotMCP.version"
 run_both_ctx "two: one sidecar missing → UNVERIFIED names it, 1/2 verified" 'if [ -z "$ROWS" ]' two "UNVERIFIED — 1/2 verified; no sidecar: BotMCP"
-printf '1.0.0\n' > "$T/bin/.BotMCP.version"
+printf '0.9.0\n' > "$T/bin/.BotMCP.version"
 printf '#!/bin/sh\nGITHUB_REPO="PsychQuant/msg"\ncurl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/latest"\n' > "$T/dev/fx-mp/plugins/two/bin/c-wrapper.sh"   # downloads, declares no name
+run_both_ctx "two: PENDING-FETCH on one wrapper + an unresolved sibling → the one line carries both and k/N" 'if [ -z "$ROWS" ]' two "PENDING-FETCH BotMCP=v0.9.0<v1.0.0; unresolved wrapper: c-wrapper.sh — 1/3 verified"
+printf '1.0.0\n' > "$T/bin/.BotMCP.version"
 run_both_ctx "two + an unresolvable third wrapper: never 'all N' — UNVERIFIED with the wrapper named" 'if [ -z "$ROWS" ]' two "UNVERIFIED — 2/3 verified; unresolved wrapper: c-wrapper.sh"
 run_both "two + unresolvable wrapper: Phase 1.5 counts it as unresolved, 2 of 3" 'for wrapper in' two "wrappers checked: 2 of 3 bin/ wrapper(s)"
 rm -f "$T/dev/fx-mp/plugins/two/bin/c-wrapper.sh"
@@ -371,7 +373,7 @@ OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "two: bump succeeded" "DESIRED_VERSION: 1.0.0 → 2.0.0" "$OUT"
 assert_contains "two: all-wrapper.sh is still executable after the bump" "755" "$(stat -f %Lp "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh")"
 assert_contains "two: bot-wrapper.sh is still executable after the bump" "755" "$(stat -f %Lp "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
-assert_contains "two: git sees a content change only, no mode change" "0" "$(cd "$T/dev/fx-mp" && git diff --summary -- plugins/two | grep -c 'mode change')"
+assert_contains "two: git sees a content change only, no mode change" "count=0" "count=$(cd "$T/dev/fx-mp" && git diff --summary -- plugins/two | grep -c 'mode change')"
 assert_contains "two: the symlink target outside the repo is untouched" "do not touch" "$(cat "$T/outside-target")"
 rm -f "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh.pbm-tmp"; ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two )
 prep01 two
@@ -405,10 +407,20 @@ prep01 two
 f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
 OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
 assert_contains "two: E-auto bumps both wrappers, commits and pushes (verified)" "AUDIT: Phase 0.3 Case E-auto — pin bumped to v2.0.0 (DESIRED_VERSION), committed and pushed to origin/" "$OUT"
-assert_contains "two: …the commit touches exactly the two wrapper files" "2" "$(cd "$T/dev/fx-mp" && git show --stat --format= HEAD | grep -c 'wrapper.sh')"
+assert_contains "two: …the commit touches exactly the two wrapper files" "count=2" "count=$(cd "$T/dev/fx-mp" && git show --stat --format= HEAD | grep -c 'wrapper.sh')"
 assert_contains "two: …subject" "chore(two): bump binary pin to v2.0.0 (DESIRED_VERSION)" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
 prep01 two
 run_both "two: after E-auto, Step 2 reads 2.0.0 from both wrappers and release_ahead=no" 'BINARY_UNKNOWN_WHY' two "binary=2.0.0 pinsrc=wrapper:all-wrapper.sh,wrapper:bot-wrapper.sh"
+export IDD_ALL_UNATTENDED=1
+( cd "$T/dev/fx-mp" && git config filter.pbmfail.clean false && git config filter.pbmfail.required true && printf 'plugins/two/bin/bot-wrapper.sh filter=pbmfail\n' > .gitattributes && git add .gitattributes && git -c user.name=t -c user.email=t@t commit -qm attrs && git push -q origin HEAD:master 2>/dev/null )
+two_stub 2.5.0 "AllMCP BotMCP"; printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v2.5.0 --repo PsychQuant/msg "*"--json assets"*) printf "AllMCP\\nBotMCP\\n" ;; "release view "*"--json assets"*) exit 1 ;; *) echo v2.5.0 ;; esac\n' > "$T/gh-stub"
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.5.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "two: E-auto with one wrapper whose git add fails (clean filter) → FAILED after write, nothing committed" "AUDIT: Phase 0.3 Case E-auto FAILED after write — git add 失敗" "$OUT"
+assert_contains "two: …HEAD is still the attrs commit (no half-staged pin commit)" "attrs" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
+( cd "$T/dev/fx-mp" && git rm -q --cached .gitattributes && rm -f .gitattributes && git config --unset filter.pbmfail.clean; git config --unset filter.pbmfail.required; git reset -q -- plugins/two && git checkout -q -- plugins/two; git -c user.name=t -c user.email=t@t commit -qm "drop attrs" && git push -q origin HEAD:master 2>/dev/null )
+unset IDD_ALL_UNATTENDED
 two_stub 3.0.0 "AllMCP BotMCP"; printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v3.0.0 --repo PsychQuant/msg "*"--json assets"*) printf "AllMCP\\nBotMCP\\n" ;; "release view "*"--json assets"*) exit 1 ;; *) echo v3.0.0 ;; esac\n' > "$T/gh-stub"
 ( cd "$T/dev/fx-mp" && git remote set-url origin "$T/nonexistent-remote.git" )   # push will fail after the commit
 prep01 two
@@ -468,10 +480,11 @@ prep01 hp
 run_both "hp: Step 1 sees the hook + the binary_version pin" 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' hp "IS_BINARY_BACKED=true (hook:session-start.sh pin:binary_version)"
 run_both "hp: Step 2 reads the pin from the hook (macdoc regex shape) → Case E, not no-pin" 'BINARY_UNKNOWN_WHY' hp "binary=0.7.0 pinsrc=binary_version"
 run_both "hp: …Case E" 'BINARY_UNKNOWN_WHY' hp "→ Phase 0.3 sync intent: Case E"
-run_both "hp: Step 3 compares the local CLI against the hook's PIN (latest is Case E's business) and counts 1 of 1" 'hooks checked:' hp "→ Phase 1.5 Step 3: hooks checked: 1 of 1 hook wrapper(s)"
+run_both "hp: Step 3 with no local CLI reports ❓ and counts 0 of 1 (checked = compared, not 'had metadata')" 'hooks checked:' hp "→ Phase 1.5 Step 3: hooks checked: 0 of 1 hook wrapper(s)"
 run_both "hp: …the comparison names the pin" 'hooks checked:' hp "pin (binary_version) v0.7.0"
 printf '#!/bin/sh\necho "hpbin 0.7.0"\n' > "$T/bin/hpbin"; chmod +x "$T/bin/hpbin"
 run_both "hp: Step 3 runs the local CLI from plugin_bin_dir (test seam) and compares it to the PIN" 'hooks checked:' hp "✅ hpbin local v0.7.0 == pin (binary_version) v0.7.0（PsychQuant/macdoc）; latest v9.9.9 ≠ pin — Phase 0.3 Case E 管 bump"
+run_both "hp: …and now it counts 1 of 1" 'hooks checked:' hp "→ Phase 1.5 Step 3: hooks checked: 1 of 1 hook wrapper(s)"
 printf '0.7.0\n' > "$T/bin/.hpbin.version"
 run_both_ctx "hp: Phase 5 verifies the hook row against its pin and sidecar" 'if [ -z "$ROWS" ]' hp "✅ hpbin: installed v0.7.0 == pin v0.7.0 (binary_version)"
 run_both_ctx "hp: …and says it is a hook-only layout" 'if [ -z "$ROWS" ]' hp "hook-only 佈局"

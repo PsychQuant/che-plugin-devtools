@@ -282,6 +282,15 @@ printf 'BINARY_NAME="J"\nREPO="a/j"\nV=$(jq -r .binaryVersion "$PLUGIN_JSON")\nc
 # movingref: DESIRED_VERSION="latest" is not a pin → rc 4 (never a value Phase 5 would compare against)
 mkdir -p "$T/movingref/bin"
 printf 'BINARY_NAME="M"\nREPO="a/m"\nDESIRED_VERSION="latest"\ncurl https://github.com/$REPO/releases/download/$DESIRED_VERSION/$BINARY_NAME\n' > "$T/movingref/bin/w.sh"
+# mfover: manifest read followed by an override the helper cannot follow → rc 4 (the manifest key is NOT what downloads) (R7 HIGH)
+mkdir -p "$T/mfover/.claude-plugin" "$T/mfover/bin"
+printf '{ "name": "mfover", "version": "1.0.0", "binaryVersion": "2.0.0" }\n' > "$T/mfover/.claude-plugin/plugin.json"
+printf 'BINARY_NAME="F"\nREPO="a/f"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\nDESIRED_VERSION="${PIN_OVERRIDE:-$DESIRED_VERSION}"\ncurl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/mfover/bin/w.sh"
+# partial: one wrapper's pin is readable, the sibling's is not → the PLUGIN pin is unknown and no value is printed (R7 MEDIUM)
+mkdir -p "$T/partial/.claude-plugin" "$T/partial/bin"
+printf '{ "name": "partial", "version": "1.0.0", "binary_version": "0.3.0" }\n' > "$T/partial/.claude-plugin/plugin.json"
+printf 'BINARY_NAME="Thing"\nREPO="o/r"\nV=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl https://github.com/$REPO/releases/download/v$V/$BINARY_NAME\n' "'\"binary_version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/partial/bin/a.sh"
+printf 'BINARY_NAME="Other"\nREPO="o/r"\nDESIRED_VERSION="${2:-}"\ncurl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' > "$T/partial/bin/b.sh"
 # mixedpin: one wrapper pins a literal, its sibling reads nothing → the plugin pin is the literal (rc 0), the sibling is just unpinned
 mkdir -p "$T/mixedpin/bin"
 printf 'BINARY_NAME="A"\nREPO="a/x"\nDESIRED_VERSION="1.0.0"\ncurl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION | grep browser_download_url | grep "$BINARY_NAME"\n' > "$T/mixedpin/bin/a.sh"
@@ -428,6 +437,11 @@ assert_eq "condover: names the wrapper as the (unreadable) source" "|wrapper:w.s
 assert_rc "jqpin: key read through jq (no \"key\": shape) → rc 4 with the key, not 'reads nothing'" 4 plugin_binary_pin "$T/jqpin" "$T/jqpin/.claude-plugin/plugin.json"
 assert_eq "jqpin: prints |binaryVersion"             "|binaryVersion" "$(plugin_binary_pin "$T/jqpin" "$T/jqpin/.claude-plugin/plugin.json")"
 assert_rc "movingref: DESIRED_VERSION=\"latest\" is not a pin → rc 4" 4 plugin_binary_pin "$T/movingref" /nonexistent
+assert_rc "mfover: manifest read then an unfollowable override → rc 4 (manifest key is not what downloads)" 4 plugin_binary_pin "$T/mfover" "$T/mfover/.claude-plugin/plugin.json"
+assert_eq "mfover: names the wrapper, prints no value"  "|wrapper:w.sh" "$(plugin_binary_pin "$T/mfover" "$T/mfover/.claude-plugin/plugin.json")"
+assert_eq "kc: a manifest read that IS the last assignment still resolves (rush / che-keychain shape)" "0.2.0|binaryVersion" "$(plugin_binary_pin "$T/kc" "$T/kc/.claude-plugin/plugin.json")"
+assert_rc "partial: one readable pin + one unreadable sibling → rc 4" 4 plugin_binary_pin "$T/partial" "$T/partial/.claude-plugin/plugin.json"
+assert_eq "partial: prints the sources and NO value (never a plausible default)" "|binary_version,wrapper:b.sh" "$(plugin_binary_pin "$T/partial" "$T/partial/.claude-plugin/plugin.json")"
 
 echo
 echo "marketplace_entry_version:"
@@ -450,6 +464,10 @@ lrv_noroot() { PBM_TEST_ROOT= PBM_GH="$T/gh-stub" latest_release_version "$@"; }
 lrv_outside() { ( cd / && PBM_GH="$T/gh-stub" latest_release_version "$@" ); }   # …nor is it when $PWD is outside the test root
 lrv_slashroot() { ( cd "$T" && PBM_TEST_ROOT=/ PBM_GH="$T/gh-stub" latest_release_version "$@" ); }   # PBM_TEST_ROOT=/ must not turn the prefix test into "everything"
 lrv_homeroot() { ( cd "$T" && PBM_TEST_ROOT="$HOME" PBM_GH="$T/gh-stub" latest_release_version "$@" ); }
+# the temp-tree arm must be exercised with a cwd UNDER the offending root (a cwd outside it is rejected by the cwd test alone)
+PROBE="$HOME/.cache/pbm-seam-probe.$$"; mkdir -p "$PROBE"
+lrv_homeroot_in() { ( cd "$PROBE" && TMPDIR=/nonexistent-pbm-xyz PBM_TEST_ROOT="$HOME" PBM_GH="$T/gh-stub" latest_release_version "$@" ); }   # stale TMPDIR + cwd under $HOME
+lrv_homeroot_in2() { ( cd "$PROBE" && TMPDIR="$T" PBM_TEST_ROOT="$HOME" PBM_GH="$T/gh-stub" latest_release_version "$@" ); }   # valid TMPDIR, root still not under it
 assert_rc "gh failure → rc 1"                        1 lrv_fail PsychQuant/che-keychain
 assert_eq "gh failure → prints empty"                "" "$(lrv_fail PsychQuant/che-keychain)"
 assert_rc "malformed repo arg → rc 1 without calling gh" 1 lrv_nogh 'bad repo'
@@ -459,6 +477,9 @@ assert_eq "PBM_GH is ignored without PBM_TEST_ROOT" "" "$( [ "$(lrv_noroot Nonex
 assert_eq "PBM_GH is ignored when \$PWD is outside PBM_TEST_ROOT (a production fence cd's into the marketplace root)" "" "$( [ "$(lrv_outside Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
 assert_eq "PBM_TEST_ROOT=/ does not open the seam" "" "$( [ "$(lrv_slashroot Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
 assert_eq "PBM_TEST_ROOT=\$HOME does not open the seam (only system temp trees qualify)" "" "$( [ "$(lrv_homeroot Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
+assert_eq "PBM_TEST_ROOT=\$HOME with cwd UNDER \$HOME and a stale TMPDIR: seam stays closed (no empty prefix)" "" "$( [ "$(lrv_homeroot_in Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
+assert_eq "PBM_TEST_ROOT=\$HOME with cwd UNDER \$HOME and a valid TMPDIR: seam stays closed" "" "$( [ "$(lrv_homeroot_in2 Nonexistent/repo-xyz-0)" = 9.9.9 ] && echo LEAK )"
+rmdir "$PROBE" 2>/dev/null
 assert_eq "release_assets 0.2.0 queries tag v0.2.0 (pins are bare, tags are v-prefixed)" "CheKeychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/che-keychain 0.2.0)"
 assert_eq "release_assets v0.2.0: a leading v is normalised, same release" "CheKeychain" "$(PBM_GH="$T/gh-stub" release_assets PsychQuant/che-keychain v0.2.0)"
 ra_tag() { PBM_GH="$T/gh-stub" release_assets "$@"; }
