@@ -53,6 +53,7 @@ echo "# fixture" > "$INSTALL/skills/skill-creator/SKILL.md"
 FAKE_BIN="$TMPROOT/fake-claude"
 cat > "$FAKE_BIN" <<'EOF'
 #!/bin/bash
+[ -n "${FAKE_CLAUDE_SLEEP:-}" ] && sleep "$FAKE_CLAUDE_SLEEP"
 printf '%s' "${FAKE_CLAUDE_OUT:-}"
 exit "${FAKE_CLAUDE_RC:-0}"
 EOF
@@ -126,6 +127,33 @@ assert_eq "CLI 回傳損毀、磁碟也無 → exit 1" "1" "$RC"
 
 FAKE_CLAUDE_OUT='' FAKE_CLAUDE_RC=1 run "$FAKE_BIN" "$TMPROOT/disk-ok.json"
 assert_eq "CLI 非零結束 → 退到磁碟 → exit 0" "0" "$RC"
+
+echo "設計決定（verify R1 補上：這些在腳本檔頭明寫過，但原本沒有測試守著）："
+FAKE_CLAUDE_OUT='[]' FAKE_CLAUDE_RC=0 run "$FAKE_BIN" "$TMPROOT/disk-ok.json"
+assert_eq "CLI 說沒裝、磁碟卻有紀錄 → 以 CLI 為準，exit 1" "1" "$RC"
+
+MULTI=$(printf '[{"id":"%s","version":"x","enabled":false,"scope":"user","installPath":"%s"},{"id":"%s","version":"x","enabled":true,"scope":"project","installPath":"%s"}]' "$ID" "$TMPROOT/gone" "$ID" "$INSTALL")
+FAKE_CLAUDE_OUT="$MULTI" FAKE_CLAUDE_RC=0 run "$FAKE_BIN" "$NO_DISK"
+assert_eq "同一 id 多個 scope，其中一個停用、一個啟用且可用 → exit 0" "0" "$RC"
+assert_contains "印出的是那個可用的 installPath" "$INSTALL" "$OUT"
+
+NOEN=$(printf '[{"id":"%s","version":"x","scope":"user","installPath":"%s"}]' "$ID" "$INSTALL")
+FAKE_CLAUDE_OUT="$NOEN" FAKE_CLAUDE_RC=0 run "$FAKE_BIN" "$TMPROOT/disk-ok.json"
+assert_eq "CLI 回傳沒有 enabled 欄位（舊版）→ 不誤報停用，退到磁碟 exit 0" "0" "$RC"
+assert_contains "並說明 enabled 無法確認" "enabled" "$ERR"
+
+if command -v perl >/dev/null 2>&1; then
+  FAKE_CLAUDE_OUT=$(cli_json "$ID" true "$INSTALL") FAKE_CLAUDE_RC=0 FAKE_CLAUDE_SLEEP=3 CLAUDE_TIMEOUT=1 run "$FAKE_BIN" "$TMPROOT/disk-ok.json"
+  assert_eq "CLI 卡住超過逾時 → 退到磁碟，不讓整個 skill 卡在 Step 1" "0" "$RC"
+  assert_contains "並說明改用了本機安裝紀錄" "本機安裝紀錄" "$ERR"
+else
+  echo "  - 略過逾時測試：這台機器沒有 perl"
+fi
+
+mkdir -p "$TMPROOT/emptybin"
+OUT=$(PATH="$TMPROOT/emptybin" CLAUDE_BIN="$FAKE_BIN" INSTALLED_PLUGINS_JSON="$TMPROOT/disk-ok.json" /bin/bash "$CHECKER" 2>"$TMPROOT/err"); RC=$?; ERR=$(cat "$TMPROOT/err")
+assert_eq "python3 不在 PATH → exit 2（不是誤報成「找不到 skill-creator」）" "2" "$RC"
+assert_contains "訊息點名 python3" "python3" "$ERR"
 
 echo ""
 echo "─────────────────────────────"
