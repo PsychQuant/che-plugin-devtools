@@ -32,7 +32,7 @@ allowed-tools:
 **兩條紀律，都來自實際踩到的缺陷：**
 
 1. **每次 Bash 呼叫都是新的 shell，變數不會留到後面的步驟。** 每個步驟需要的值，都在該步驟自己的 Bash 呼叫裡重新取得。
-2. **不可信的文字（名字、路徑、使用者的描述）永遠不貼進 shell 原始碼。** 單引號會被名字裡的單引號提早結束，heredoc 會被內容裡的結束標記提早結束，兩者都在驗證之前就執行了。做法是：用 **Write 工具**把值寫進工作目錄的檔案（Write 的內容不會被 shell 解析），shell 只用 `cat` 讀檔再驗證。工作目錄的路徑由 `mktemp` 產生，並以 `printf %q` 輸出成已跳脫的 `WORK=...` 一行，後面每個步驟**逐字貼回那一行**，是唯一會被貼回指令的值。驗證名字與路徑的邏輯放在 `scripts/validate-skill-input.sh`（有測試），每個步驟都呼叫它，驗證用的值與之後使用的值是同一次讀取的結果。
+2. **不可信的文字（名字、路徑、使用者的描述）永遠不貼進 shell 原始碼。** 單引號會被名字裡的單引號提早結束，heredoc 會被內容裡的結束標記提早結束，兩者都在驗證之前就執行了。做法是：用 **Write 工具**把值寫進工作目錄的檔案（Write 的內容不會被 shell 解析），shell 只用 `cat` 讀檔再驗證。工作目錄的路徑由 `mktemp` 產生，並以 `printf %q` 輸出成已跳脫的 `WORK=...` 一行，後面每個步驟**逐字貼回那一行**，是唯一會被貼回指令的值。驗證名字與路徑的邏輯放在 `scripts/validate-skill-input.sh`（有測試），Step 2 驗名字、Step 3 驗目標；Step 5、6 以 `target-used` 模式再驗一次（建好之後目標已存在是預期的），所以後面步驟用到的值每次都是剛驗過的那一次讀取，不是信任前一步。
 
 ## Execution Steps
 
@@ -133,9 +133,10 @@ eval 查詢集（20 句、should-trigger 與 should-not-trigger 各半，反例�
 
 ```bash
 <貼上 Step 2 印出的 WORK=... 那一行>
-TARGET_DIR=$(cat "$WORK/target")   # 已在 Step 3 驗證過；這裡只在有引號的展開中使用，不再貼進任何 shell 原始碼
+TARGET_DIR=$(bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/validate-skill-input.sh" target-used "$WORK/target" "$WORK/name") || exit $?
 MODEL=$(cat "$WORK/model")
-[ -n "$MODEL" ] && [ "$(printf '%s' "$MODEL" | wc -l | tr -d ' ')" -eq 0 ] || { echo "✗ model 檔為空或多行" >&2; exit 1; }
+case "$MODEL" in ''|-*) echo "✗ model ID 不得為空或以 - 開頭" >&2; exit 1 ;; esac
+[ -z "$(printf '%s' "$MODEL" | tr -d 'A-Za-z0-9._:[]-')" ] || { echo "✗ model ID 含不合法字元（只接受英數與 . _ : [ ] -）" >&2; exit 1; }
 [ -s "$WORK/eval.json" ] || { echo "✗ 找不到 eval.json" >&2; exit 1; }
 SC_PATH=$(bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/check-skill-creator.sh") || exit $?
 cd "$SC_PATH/skills/skill-creator" && python3 -m scripts.run_loop \
@@ -153,20 +154,20 @@ cd "$SC_PATH/skills/skill-creator" && python3 -m scripts.run_loop \
 
 ### Step 6: 檢查引用，並清掉工作目錄
 
-只在目標目錄位於某個 git repo 內時才跑，而且**對那個 repo** 跑，不是對目前的工作目錄。用本 plugin 自己的檢查腳本，不要求目標 repo 另有一份。三種結果分開報，不可混在一起：目標不存在、不在 git repo 內、檢查跑完但發現失效引用。
+只在目標目錄位於某個 git repo 內時才跑，而且**對那個 repo** 跑，不是對目前的工作目錄。用本 plugin 自己的檢查腳本，不要求目標 repo 另有一份。四種結果分開報，不可混在一起：目標不存在、不在 git repo 內、檢查跑完但發現失效引用（exit 1）、檢查沒有跑成（exit 2，例如個人 `.claude/skills/` 所在的 repo 沒有 `plugins/` 目錄）。
 
 ```bash
 <貼上 Step 2 印出的 WORK=... 那一行>
-TARGET_DIR=$(cat "$WORK/target")
-[ -n "$TARGET_DIR" ] || { echo "✗ target 檔是空的" >&2; exit 1; }
+TARGET_DIR=$(bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/validate-skill-input.sh" target-used "$WORK/target" "$WORK/name") || exit $?
 if [ ! -d "$TARGET_DIR" ]; then
   echo "✗ $TARGET_DIR 不存在（Step 4 沒有建出 skill）：引用檢查未執行" >&2
 elif TARGET_REPO=$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null); then
-  if bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/check-skill-references.sh" --repo "$TARGET_REPO"; then
-    echo "引用檢查通過"
-  else
-    echo "引用檢查跑完了，但發現失效引用（見上方輸出）" >&2
-  fi
+  bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/check-skill-references.sh" --repo "$TARGET_REPO"; REF_RC=$?
+  case "$REF_RC" in
+    0) echo "引用檢查通過" ;;
+    1) echo "引用檢查跑完了，但發現失效引用（見上方輸出）" >&2 ;;
+    *) echo "引用檢查沒有跑成（exit $REF_RC，例如這個 repo 沒有 plugins/ 目錄）：未執行，這不是通過" >&2 ;;
+  esac
 else
   echo "目標不在 git repo 內：引用檢查未執行（這不是通過）"
 fi
@@ -176,9 +177,18 @@ fi
 
 ```bash
 <貼上 Step 2 印出的 WORK=... 那一行>
-case "$WORK" in
-  "${TMPDIR:-/tmp}"/skill-create.??????)
-    if [ -d "$WORK" ] && [ ! -L "$WORK" ]; then rm -rf -- "$WORK"; else echo "✗ $WORK 不是目錄或是 symlink，不刪" >&2; fi ;;
+# 形狀：最後一段必須恰好是 skill-create. 加六個英數字；`?` 在 case 裡也會比對 / 與 .，所以不能用 ??????。
+# 位置：父目錄實體路徑必須等於 TMPDIR 的實體路徑，擋掉 .. 與多一層的巢狀。
+BASE=${WORK##*/}
+PARENT=$(cd "${WORK%/*}" 2>/dev/null && pwd -P)
+TMPREAL=$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P)
+case "$BASE" in
+  skill-create.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
+    if [ -d "$WORK" ] && [ ! -L "$WORK" ] && [ -n "$PARENT" ] && [ "$PARENT" = "$TMPREAL" ]; then
+      rm -rf -- "$WORK"
+    else
+      echo "✗ $WORK 不在 ${TMPDIR:-/tmp} 底下、不是目錄、或是 symlink，不刪" >&2
+    fi ;;
   *) echo "✗ $WORK 不是本 skill 建的工作目錄，不刪" >&2 ;;
 esac
 ```

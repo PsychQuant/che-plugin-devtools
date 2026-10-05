@@ -20,7 +20,7 @@ accept() { # desc mode file [namefile] expected-output
   [ $rc -eq 0 ] && [ "$out" = "$5" ] && ok "$1" || bad "$1" "rc=$rc out=[$out] expected=[$5]"; }
 reject() { # desc mode file [namefile]
   local rc; bash "$V" "$2" "$3" ${4:+"$4"} >/dev/null 2>&1; rc=$?
-  [ $rc -eq 1 ] && ok "$1" || bad "$1" "rc=$rc（預期 1：驗證拒絕）"; }
+  [ $rc -eq 1 ] && ok "$1" || bad "$1" "rc=${rc}（預期 1：驗證拒絕）"; }
 
 echo "name:"
 printf '%s' 'plaud-to-srt' > "$T/n"; accept "合法名字" name "$T/n" "" "plaud-to-srt"
@@ -39,7 +39,11 @@ printf '%s' "$(printf 'a%.0s' $(seq 1 65))" > "$T/n"; reject "超過 64 字元" 
 echo "target:"
 printf '%s' 'plaud-to-srt' > "$T/name"
 printf '%s' "$T/newdir/plaud-to-srt" > "$T/t"; accept "合法目標" target "$T/t" "$T/name" "$T/newdir/plaud-to-srt"
-printf '%s' "$T/Che's skills/plaud-to-srt" > "$T/t"; accept "路徑含單引號是合法的（不進 shell 原始碼）" target "$T/t" "$T/name" "$T/Che's skills/plaud-to-srt"
+printf '%s' "$T/Che skills/plaud-to-srt" > "$T/t"; accept "路徑含空白是合法的" target "$T/t" "$T/name" "$T/Che skills/plaud-to-srt"
+printf '%s' "$T/標楷 資料/plaud-to-srt" > "$T/t"; accept "路徑含中文是合法的" target "$T/t" "$T/name" "$T/標楷 資料/plaud-to-srt"
+for BAD in "Che's skills" 'a$(id)b' 'a`id`b' 'a;b' 'a|b' 'a&b' 'a"b' 'a\\b' 'a<b' 'a>b' 'a(b' 'a)b' 'a{b' 'a*b' 'a?b' 'a!b' 'a[b' 'a#b' 'a~b'; do
+  printf '%s' "$T/$BAD/plaud-to-srt" > "$T/t"; reject "路徑含 shell 元字元被拒絕：$BAD" target "$T/t" "$T/name"
+done
 printf '%s' "rel/plaud-to-srt" > "$T/t"; reject "相對路徑" target "$T/t" "$T/name"
 printf '%s' "$T/a/../plaud-to-srt" > "$T/t"; reject "含 .. 成分" target "$T/t" "$T/name"
 printf '%s' "$T/./plaud-to-srt" > "$T/t"; reject "含 . 成分" target "$T/t" "$T/name"
@@ -48,8 +52,16 @@ printf '%s' "$T/other" > "$T/t"; reject "目錄名不等於名字" target "$T/t"
 mkdir -p "$T/exists/plaud-to-srt"; printf '%s' "$T/exists/plaud-to-srt" > "$T/t"; reject "目標已存在" target "$T/t" "$T/name"
 ln -s /nonexistent "$T/dangling-plaud-to-srt"; printf '%s' 'dangling-plaud-to-srt' > "$T/name2"; printf '%s' "$T/dangling-plaud-to-srt" > "$T/t"; reject "懸空 symlink 也算已存在" target "$T/t" "$T/name2"
 printf '' > "$T/t"; reject "目標檔為空" target "$T/t" "$T/name"
-printf '%s' "$T/newdir/plaud-to-srt" > "$T/t"; printf 'Bad_Name' > "$T/name3"; reject "名字檔本身不合法時，目標驗證也失敗" target "$T/t" "$T/name3"
+# 名字檔不合法、且目標目錄名恰好等於那個不合法的名字：只有「target 模式內部重驗名字」那一行能擋下（變異測試：刪掉該行這條會失敗）
+printf 'Bad_Name' > "$T/name3"; printf '%s' "$T/newdir/Bad_Name" > "$T/t"; reject "名字檔不合法且目標目錄名與它相同 → 仍拒絕（名字在 target 模式被重驗）" target "$T/t" "$T/name3"
+printf 'ab\0cd' > "$T/name4"; printf '%s' "$T/newdir/abcd" > "$T/t"; reject "名字檔含 NUL 時 target 模式也拒絕" target "$T/t" "$T/name4"
 reject "沒給名字檔" target "$T/t"
+
+echo "target-used（Step 5、6：名字與格式仍驗，但目標已存在是預期的）:"
+printf '%s' "plaud-to-srt" > "$T/name"
+mkdir -p "$T/made/plaud-to-srt"; printf '%s' "$T/made/plaud-to-srt" > "$T/t"; accept "目標已存在也通過（用於建好之後）" target-used "$T/t" "$T/name" "$T/made/plaud-to-srt"
+printf '%s' "$T/made/a;b/plaud-to-srt" > "$T/t"; reject "target-used 仍擋 shell 元字元" target-used "$T/t" "$T/name"
+printf '%s' "$T/made/../plaud-to-srt" > "$T/t"; reject "target-used 仍擋 .." target-used "$T/t" "$T/name"
 
 echo "mode:"
 reject "未知模式" bogus "$T/n"
