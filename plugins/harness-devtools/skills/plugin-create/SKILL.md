@@ -66,7 +66,7 @@ $ARGUMENTS 格式：
 
 問以下問題（缺的才問）：
 
-1. **Plugin name**（kebab-case）。取名前先過命名準則（完整內容在 `docs/design-principles.md` 的「命名慣例」，此處不複述）：把名字說成一句「我要＿＿」，能還原成這個 plugin 管的事才算過。提出名字時附上這句話，讓使用者看得到判斷依據；不過就請使用者換一個說法，不要自己挑一個「看起來比較好」的
+1. **Plugin name**（kebab-case）。取名前先讀 `docs/design-principles.md` 的「命名慣例」並過那條準則（判準只寫在那一處，這裡不複述）。提出名字時附上準則要求的那句還原句，讓使用者看得到判斷依據；不過就請使用者換一個說法，不要自己挑一個「看起來比較好」的
 2. **Description**（一句話描述）
 3. **Category**（development / productivity / documentation / other）
 4. **Target repo**（預設 `PsychQuant/psychquant-claude-plugins`）
