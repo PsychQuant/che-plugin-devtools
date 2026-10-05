@@ -150,6 +150,17 @@ else
   echo "  - 略過逾時測試：這台機器沒有 perl"
 fi
 
+if command -v perl >/dev/null 2>&1; then
+  # CLI 留下持有 stdout 的子行程時，逾時仍要在時限內回來（verify R2：舊測試只看 exit code，證明不了這件事）
+  SLOW_BIN="$TMPROOT/slow-claude"
+  printf '#!/bin/bash\n(sleep 8) &\nsleep 8\n' > "$SLOW_BIN"; chmod +x "$SLOW_BIN"
+  T0=$(date +%s)
+  CLAUDE_BIN="$SLOW_BIN" INSTALLED_PLUGINS_JSON="$TMPROOT/disk-ok.json" CLAUDE_TIMEOUT=1 /bin/bash "$CHECKER" >/dev/null 2>&1; RC=$?
+  EL=$(( $(date +%s) - T0 ))
+  assert_eq "有子行程握著 stdout 的 CLI 逾時後 exit 0（退磁碟）" "0" "$RC"
+  [ "$EL" -lt 6 ] && assert_eq "實際耗時小於 6 秒（逾時真的限制住整個呼叫）" "ok" "ok" || assert_eq "實際耗時小於 6 秒（逾時真的限制住整個呼叫）" "<6s" "${EL}s"
+fi
+
 mkdir -p "$TMPROOT/emptybin"
 OUT=$(PATH="$TMPROOT/emptybin" CLAUDE_BIN="$FAKE_BIN" INSTALLED_PLUGINS_JSON="$TMPROOT/disk-ok.json" /bin/bash "$CHECKER" 2>"$TMPROOT/err"); RC=$?; ERR=$(cat "$TMPROOT/err")
 assert_eq "python3 不在 PATH → exit 2（不是誤報成「找不到 skill-creator」）" "2" "$RC"

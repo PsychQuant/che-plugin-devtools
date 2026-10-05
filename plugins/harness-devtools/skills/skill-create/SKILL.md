@@ -56,14 +56,16 @@ echo "skill-creator installPath: $SC_PATH"
 
 非零 exit code 時，把腳本印在 stderr 的那行指令（安裝或啟用）原樣轉告使用者，然後**停下**。不要複製一份 skill-creator 的流程湊合，也不要「先寫寫看」。這個 repo 沒有 plugin 依賴宣告機制，缺依賴時最糟的結果是流程安靜地走偏，所以寧可擋下。exit code 2 是這台機器沒有 python3，與 skill-creator 有沒有裝無關，照訊息處理。
 
-成功時記住上面印出的 installPath。腳本在 CLI 不可用而改用磁碟紀錄時，會在 stderr 說 enabled 狀態無法確認；看到這行就在最後的報告裡一併說明。
+成功時 installPath 只是讓你看到依賴就位；Step 5 會自己重取，不需要記。腳本在 CLI 不可用而改用磁碟紀錄時，會在 stderr 說 enabled 狀態無法確認；看到這行就在最後的報告裡一併說明。
 
 ### Step 2: 取名
 
 **動手前先讀命名準則**（判準只寫在 `docs/design-principles.md` 的「命名慣例」，這裡不複述，以免兩份文字日後各自改動而互相矛盾）。路徑相對於本 plugin 而不是目前的工作目錄：
 
 ```bash
-sed -n '/^### 命名慣例/,/^---$/p' "${CLAUDE_PLUGIN_ROOT:?}/docs/design-principles.md"
+SEC=$(sed -n '/^### 命名慣例/,/^---$/p' "${CLAUDE_PLUGIN_ROOT:?}/docs/design-principles.md")
+[ -n "$SEC" ] || { echo "✗ 找不到「命名慣例」一節，不要憑記憶編準則" >&2; exit 1; }
+printf '%s\n' "$SEC"
 ```
 
 流程：
@@ -75,10 +77,15 @@ sed -n '/^### 命名慣例/,/^---$/p' "${CLAUDE_PLUGIN_ROOT:?}/docs/design-princ
    > 名字會同時出現在目錄名、frontmatter 的 `name:`、README、docs 與測試，而引用不像 import：改名漏掉一處時，skill 照樣載入，只是文件指向一個不存在的名字，沒有任何東西報錯。取名時多想一分鐘，比事後改名便宜。
 
 4. 若目標 repo 有 `scripts/check-skill-references.sh`，提醒日後改名時用它找殘留的引用
-5. **名字確認後、用到它之前，先驗證格式。** 名字會被拼進目錄路徑，也會被帶進 Step 4 的呼叫，所以只接受小寫英數與連字號，開頭不能是連字號，不得含 `/`、`.`、空白或引號：
+5. **名字確認後、用到它之前，先驗證格式。** 名字會被拼進目錄路徑，也會被帶進 Step 4 的呼叫，所以只接受小寫英數與連字號，開頭不能是連字號，不得含 `/`、`.`、空白或引號。
+
+   **先在你自己的判斷裡檢查，不通過就不要寫任何 shell**：把名字貼進 shell 原始碼本身就是注入面（名字含單引號時，驗證那一行還沒跑，後面的字就已經被當成指令）。通過了才用下面這段做第二道檢查；名字經過帶引號的 heredoc 傳入，不會被 shell 解析：
 
    ```bash
-   NAME='<使用者確認的名字>'
+   NAME=$(cat <<'NAME_EOF'
+   <使用者確認的名字>
+   NAME_EOF
+   )
    case "$NAME" in
      ''|-*|*[!a-z0-9-]*) echo "✗ 名字格式不合：只接受小寫英數與連字號（不得以連字號開頭）" >&2; exit 1 ;;
    esac
@@ -86,7 +93,7 @@ sed -n '/^### 命名慣例/,/^---$/p' "${CLAUDE_PLUGIN_ROOT:?}/docs/design-princ
    echo "name ok: $NAME"
    ```
 
-   不過就請使用者換一個，不要自動「清理」成合法的樣子。
+   不過就請使用者換一個，不要自動「清理」成合法的樣子。Step 3、Step 4 只有在這一步通過後才能執行。
 
 名字有沒有撞到別的 skill 不在本 skill 的檢查範圍，也沒有自動檢查。
 
@@ -94,11 +101,16 @@ sed -n '/^### 命名慣例/,/^---$/p' "${CLAUDE_PLUGIN_ROOT:?}/docs/design-princ
 
 未指定時用 AskUserQuestion 問：要放在哪個 plugin 底下（`plugins/{plugin}/skills/{name}/`），還是個人的 `.claude/skills/{name}/`。目錄只由 Step 2 驗證過的名字與使用者選的位置組成，不拼接任何其他使用者輸入。
 
-**目錄已存在就停下回報**，不覆蓋、不合併：
+**目錄已存在就停下回報**，不覆蓋、不合併（懸空的 symlink 也算已存在）。路徑同樣經帶引號的 heredoc 傳入，並**印出來**，因為 Step 6 要用同一個值：
 
 ```bash
-TARGET_DIR='<目標目錄的絕對路徑>'
-[ ! -e "$TARGET_DIR" ] || { echo "✗ $TARGET_DIR 已存在，不覆蓋" >&2; exit 1; }
+TARGET_DIR=$(cat <<'TARGET_EOF'
+<目標目錄的絕對路徑>
+TARGET_EOF
+)
+case "$TARGET_DIR" in /*) : ;; *) echo "✗ 目標必須是絕對路徑" >&2; exit 1 ;; esac
+if [ -e "$TARGET_DIR" ] || [ -L "$TARGET_DIR" ]; then echo "✗ $TARGET_DIR 已存在，不覆蓋" >&2; exit 1; fi
+echo "target dir: $TARGET_DIR"
 ```
 
 只建檔，不 commit、不發布；發布走 `/harness-devtools:plugin-update`。
@@ -138,6 +150,11 @@ eval 查詢集（20 句、should-trigger 與 should-not-trigger 各半，反例�
 只在目標目錄位於某個 git repo 內時才跑，而且**對那個 repo** 跑，不是對目前的工作目錄。用本 plugin 自己的檢查腳本，不要求目標 repo 另有一份：
 
 ```bash
+TARGET_DIR=$(cat <<'TARGET_EOF'
+<Step 3 印出的目標目錄絕對路徑>
+TARGET_EOF
+)
+[ -n "$TARGET_DIR" ] || { echo "✗ TARGET_DIR 是空的：不可呼叫 git -C（空字串會讓 git 改用目前的工作目錄）" >&2; exit 1; }
 TARGET_REPO=$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null) \
   || { echo "目標不在 git repo 內：引用檢查未執行（這不是通過）"; exit 0; }
 bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/check-skill-references.sh" --repo "$TARGET_REPO"

@@ -83,11 +83,20 @@ CLI_VERDICT=""
 if command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
   CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-20}"
   if command -v perl >/dev/null 2>&1; then
-    CLI_OUT=$(perl -e 'alarm shift; exec @ARGV' "$CLAUDE_TIMEOUT" "$CLAUDE_BIN" plugin list --json 2>/dev/null)
+    # 輸出寫到暫存檔而不是 $(...)：command substitution 會等所有持有 stdout 管線的行程結束，
+    # CLI 若留下子行程，alarm 只殺得到直接的那個，$(...) 仍會卡到子行程結束。檔案不是管線，沒有這個問題。
+    CLI_TMP=$(mktemp "${TMPDIR:-/tmp}/check-skill-creator.XXXXXX") || CLI_TMP=""
+    if [ -n "$CLI_TMP" ]; then
+      perl -e 'alarm shift; exec @ARGV' "$CLAUDE_TIMEOUT" "$CLAUDE_BIN" plugin list --json >"$CLI_TMP" 2>/dev/null
+      CLI_RC=$?
+      CLI_OUT=$(cat "$CLI_TMP"); rm -f "$CLI_TMP"
+    else
+      CLI_OUT=$("$CLAUDE_BIN" plugin list --json 2>/dev/null); CLI_RC=$?
+    fi
   else
-    CLI_OUT=$("$CLAUDE_BIN" plugin list --json 2>/dev/null)
+    CLI_OUT=$("$CLAUDE_BIN" plugin list --json 2>/dev/null); CLI_RC=$?
   fi
-  if [ $? -eq 0 ]; then
+  if [ "$CLI_RC" -eq 0 ]; then
     CLI_VERDICT=$(printf '%s' "$CLI_OUT" | python3 -c '
 import json, os, sys
 pid = sys.argv[1]

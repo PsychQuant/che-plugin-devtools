@@ -67,7 +67,7 @@ $ARGUMENTS 格式：
 
 問以下問題（缺的才問）：
 
-1. **Plugin name**（kebab-case）。取名前先讀命名準則並過它（判準只寫在 `docs/design-principles.md` 的「命名慣例」，這裡不複述；路徑相對於本 plugin，不是目前的工作目錄）：`sed -n '/^### 命名慣例/,/^---$/p' "${CLAUDE_PLUGIN_ROOT:?}/docs/design-principles.md"`。提出名字時附上準則要求的那句還原句，讓使用者看得到判斷依據；不過就請使用者換一個說法，不要自己挑一個「看起來比較好」的
+1. **Plugin name**（kebab-case）。取名前先讀命名準則並過它（判準只寫在 `docs/design-principles.md` 的「命名慣例」，這裡不複述；路徑相對於本 plugin，不是目前的工作目錄）：`SEC=$(sed -n '/^### 命名慣例/,/^---$/p' "${CLAUDE_PLUGIN_ROOT:?}/docs/design-principles.md"); [ -n "$SEC" ] || { echo "✗ 找不到「命名慣例」一節" >&2; exit 1; }; printf '%s\n' "$SEC"`。取出空字串就停下，不要憑記憶編準則。提出名字時附上準則要求的那句還原句，讓使用者看得到判斷依據；不過就請使用者換一個說法，不要自己挑一個「看起來比較好」的
 2. **Description**（一句話描述）
 3. **Category**（development / productivity / documentation / other）
 4. **Target repo**（預設 `PsychQuant/psychquant-claude-plugins`）
