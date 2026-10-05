@@ -87,15 +87,20 @@ list_mcp_projects                             # 所有已知專案
 
 新增 umbrella 時只改 `MCP_ROOTS_SPEC` 一處。
 
-## 三個領域的 skill 命名
+## skill 的命名
 
 | 前綴 | 產物 | 典型鏈路 |
 |---|---|---|
 | `plugin-*` | Claude Code plugin | create → upgrade → deploy → update → health/debug |
 | `mcp-*` | MCP server | new-app → sign-pipeline → deploy → publish → test/diagnose |
 | `cli-*` | Swift CLI | new-app → deploy → install → upgrade |
+| `skill-*` | 單一 skill | create |
 
-前綴天然不衝突（已驗證 24 個 skill 零重名），合併後可直接並置。
+前三列是發布管道的三個領域；`skill-*` 不屬於發布管道，目前只有 `skill-create` 一個。
+
+前綴天然不衝突（已驗證 25 個 skill 零重名），合併後可直接並置。
+
+前綴之後的部分怎麼取，判準寫在 `docs/design-principles.md` 的「命名慣例」：名字要貼近使用者會打的動作加對象。完整準則只在那一處，這裡不複述。新建 plugin 與 skill 時，`/harness-devtools:plugin-create` 與 `/harness-devtools:skill-create` 都會在取名時指向它。
 
 ## 跨 skill 呼叫
 

@@ -197,6 +197,25 @@ mcp-tools/
 | 開發流程 | `mcp-*` | mcp-deploy, mcp-install |
 | 除錯工具 | 動詞 | diagnose, debug, test |
 
+#### 名字從「使用者會打什麼」出發
+
+前綴管領域，前綴之後的部分管使用者怎麼叫它。skill 與 plugin 的名字都適用同一條判準：
+
+> 把名字說成一句「我要＿＿」，能還原成這個 skill 的主要動作與對象，才算過。
+
+| 名字從哪裡來 | 例子 | 結果 |
+|---|---|---|
+| 動作加對象，也就是使用者會說的話 | `plaud-to-srt`（把錄音變成字幕）、`plaud-sync`（把雲端錄音帶下來） | 過 |
+| 格式名 | `plaud-srt` | 不過：說的是檔案長什麼樣，沒說要做什麼 |
+| 內部機制 | `plaud-index` | 不過：說的是實作怎麼運作，使用者不會這樣想事情 |
+| 實作分層 | 名字裡放的是程式的分層名稱，而不是使用者要做的事 | 不過：說的是作者怎麼切程式 |
+
+上表的 `plaud-*` 例子來自 PsychQuant/plaud-mcp-connector#65：使用者想抓某場錄音的字幕，直覺打的是 `/plaud-to-srt`，實際的 skill 叫 `plaud-srt`，它依賴的前置 skill 叫 `plaud-index`，兩個名字都對不上他要做的事，最後兩個都改了名。
+
+**取名時多花一分鐘，因為改名的成本落在引用的長尾。** 一個名字會同時出現在目錄名、frontmatter 的 `name:`、README、docs 與測試，而引用不像 import：指向不存在的名字時，skill 照樣載入，沒有任何東西報錯。這個 repo 自己已經踩過兩代改名（`changelog-tools` → `doc-tools` → `doc-guardian`，以及 `plugin-tools`／`mcp-tools`／`cli-tools` → `devtools` → `harness-devtools`），`scripts/check-skill-references.sh` 就是為了抓這種殘留而寫的。
+
+**適用範圍與限度。** 只管之後新建的 skill 與 plugin，不回頭稽核現有的。這條判準不會替你想出好名字：最後的裁判是使用者的語感，判準的作用是讓取名時多一道提問，並留下判斷的依據。名字有沒有撞到別的 skill，另由「零重名」處理（見 `CLAUDE.md` 的 skill 命名一節）。
+
 ---
 
 ## 版本策略
