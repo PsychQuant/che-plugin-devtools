@@ -82,16 +82,26 @@ report_disabled() {
 CLI_VERDICT=""
 if command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
   CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-20}"
-  case "$CLAUDE_TIMEOUT" in ''|*[!0-9]*|0) CLAUDE_TIMEOUT=20 ;; esac   # 非正整數會讓 alarm 失效（0 = 不逾時），一律改回預設
+  # 必須是 1 到 3600 的整數。只擋字面 "0" 不夠：00、000 與超大值（>= 2^32 會溢位成 0）讀成數值後都讓 alarm 失效。
+  case "$CLAUDE_TIMEOUT" in ''|*[!0-9]*) CLAUDE_TIMEOUT=20 ;; esac
+  if [ "${#CLAUDE_TIMEOUT}" -gt 4 ] || [ "$((10#$CLAUDE_TIMEOUT))" -lt 1 ] || [ "$((10#$CLAUDE_TIMEOUT))" -gt 3600 ]; then CLAUDE_TIMEOUT=20; fi
+  CLAUDE_TIMEOUT=$((10#$CLAUDE_TIMEOUT))
   CLI_RC=1; CLI_OUT=""
   if command -v perl >/dev/null 2>&1; then
     # 輸出寫到暫存檔而不是 $(...)：command substitution 會等所有持有 stdout 管線的行程結束，
     # CLI 若留下子行程，alarm 只殺得到直接的那個，$(...) 仍會卡到子行程結束。檔案不是管線，沒有這個問題。
     CLI_TMP=$(mktemp "${TMPDIR:-/tmp}/check-skill-creator.XXXXXX" 2>/dev/null) || CLI_TMP=""
     if [ -n "$CLI_TMP" ]; then
-      trap 'rm -f "$CLI_TMP"' EXIT INT TERM
-      perl -e 'alarm shift; exec @ARGV' "$CLAUDE_TIMEOUT" "$CLAUDE_BIN" plugin list --json >"$CLI_TMP" 2>/dev/null
-      CLI_RC=$?
+      # perl 放背景再 wait：前景子行程執行期間 bash 會延後處理訊號，trap 要等 CLI 跑完才動，
+      # 而且舊的 trap 沒有 exit，收到 INT/TERM 後腳本會接著跑下去、把「被中斷」變成一個錯誤的權威結果。
+      CLI_PID=""
+      trap 'rm -f "$CLI_TMP"' EXIT
+      trap '[ -n "$CLI_PID" ] && kill "$CLI_PID" 2>/dev/null; exit 130' INT
+      trap '[ -n "$CLI_PID" ] && kill "$CLI_PID" 2>/dev/null; exit 143' TERM
+      perl -e 'alarm shift; exec @ARGV' "$CLAUDE_TIMEOUT" "$CLAUDE_BIN" plugin list --json >"$CLI_TMP" 2>/dev/null &
+      CLI_PID=$!
+      wait "$CLI_PID"; CLI_RC=$?
+      CLI_PID=""
       CLI_OUT=$(cat "$CLI_TMP"); rm -f "$CLI_TMP"; trap - EXIT INT TERM
     else
       # 建不起暫存檔時不退回「沒有逾時的 CLI 呼叫」：那會把逾時整個繞過。直接走磁碟後援。

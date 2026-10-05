@@ -175,6 +175,18 @@ if command -v perl >/dev/null 2>&1; then
   assert_eq "逾時後不留暫存檔" "0" "$(ls "$CLEAN" | wc -l | tr -d ' ')"
 fi
 
+if command -v perl >/dev/null 2>&1; then
+  # 收到 TERM 要立刻結束，並清掉暫存檔（verify R4：舊 trap 不 exit，訊號被吞掉、腳本繼續跑下去變成錯誤的權威結果）
+  CLEAN2="$TMPROOT/cleandir2"; mkdir -p "$CLEAN2"
+  T0=$(date +%s)
+  TMPDIR="$CLEAN2" CLAUDE_BIN="$SLOW_BIN" INSTALLED_PLUGINS_JSON="$TMPROOT/disk-ok.json" CLAUDE_TIMEOUT=30 /bin/bash "$CHECKER" >/dev/null 2>&1 &
+  CPID=$!; sleep 1; kill -TERM "$CPID" 2>/dev/null; wait "$CPID" 2>/dev/null; RC=$?
+  EL=$(( $(date +%s) - T0 ))
+  assert_eq "收到 TERM 後以 143 結束，不是被吞掉後繼續跑" "143" "$RC"
+  [ "$EL" -lt 5 ] && assert_eq "收到 TERM 後在 5 秒內結束（不等 CLI 跑完）" "ok" "ok" || assert_eq "收到 TERM 後在 5 秒內結束" "<5s" "${EL}s"
+  assert_eq "被 TERM 中斷後不留暫存檔" "0" "$(ls "$CLEAN2" | wc -l | tr -d ' ')"
+fi
+
 mkdir -p "$TMPROOT/emptybin"
 OUT=$(PATH="$TMPROOT/emptybin" CLAUDE_BIN="$FAKE_BIN" INSTALLED_PLUGINS_JSON="$TMPROOT/disk-ok.json" /bin/bash "$CHECKER" 2>"$TMPROOT/err"); RC=$?; ERR=$(cat "$TMPROOT/err")
 assert_eq "python3 不在 PATH → exit 2（不是誤報成「找不到 skill-creator」）" "2" "$RC"

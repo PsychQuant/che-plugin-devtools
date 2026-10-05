@@ -15,7 +15,6 @@ allowed-tools:
   - Bash(sed:*)
   - Bash(ls:*)
   - Bash(mktemp:*)
-  - Bash(rm:*)
   - Bash(git:*)
   - Read
   - Write
@@ -33,7 +32,7 @@ allowed-tools:
 **兩條紀律，都來自實際踩到的缺陷：**
 
 1. **每次 Bash 呼叫都是新的 shell，變數不會留到後面的步驟。** 每個步驟需要的值，都在該步驟自己的 Bash 呼叫裡重新取得。
-2. **不可信的文字（名字、路徑、使用者的描述）永遠不貼進 shell 原始碼。** 單引號會被名字裡的單引號提早結束，heredoc 會被內容裡的結束標記提早結束，兩者都在驗證之前就執行了。做法是：用 **Write 工具**把值寫進工作目錄的檔案（Write 的內容不會被 shell 解析），shell 只用 `cat` 讀檔再驗證。工作目錄的路徑由 `mktemp` 產生，是唯一會被貼回指令的值。
+2. **不可信的文字（名字、路徑、使用者的描述）永遠不貼進 shell 原始碼。** 單引號會被名字裡的單引號提早結束，heredoc 會被內容裡的結束標記提早結束，兩者都在驗證之前就執行了。做法是：用 **Write 工具**把值寫進工作目錄的檔案（Write 的內容不會被 shell 解析），shell 只用 `cat` 讀檔再驗證。工作目錄的路徑由 `mktemp` 產生，並以 `printf %q` 輸出成已跳脫的 `WORK=...` 一行，後面每個步驟**逐字貼回那一行**，是唯一會被貼回指令的值。驗證名字與路徑的邏輯放在 `scripts/validate-skill-input.sh`（有測試），每個步驟都呼叫它，驗證用的值與之後使用的值是同一次讀取的結果。
 
 ## Execution Steps
 
@@ -65,11 +64,11 @@ echo "skill-creator installPath: $SC_PATH"
 
 ### Step 2: 取名
 
-先建工作目錄並**記住它印出的路徑**（後面每個步驟都用同一個）：
+先建工作目錄。它印出的 `WORK=...` 那一行（已跳脫）要**逐字貼在後面每個步驟的 Bash 指令開頭**：
 
 ```bash
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/skill-create.XXXXXX") || exit 1
-echo "work dir: $WORK"
+printf 'WORK=%q\n' "$WORK"
 ```
 
 **讀命名準則**（判準只寫在 `docs/design-principles.md` 的「命名慣例」，這裡不複述，以免兩份文字日後各自改動而互相矛盾）。路徑相對於本 plugin 而不是目前的工作目錄：
@@ -92,13 +91,8 @@ printf '%s\n' "$SEC"
 5. **名字確認後，用 Write 工具把名字寫進 `<work dir>/name`**（檔案內容只有名字本身）。**不要把名字貼進任何 Bash 指令。** 然後驗證：
 
 ```bash
-WORK='<Step 2 印出的 work dir>'
-NAME=$(cat "$WORK/name")
-LC_ALL=C
-case "$NAME" in
-  ''|-*|*[!a-z0-9-]*) echo "✗ 名字格式不合：只接受小寫英數與連字號（不得以連字號開頭、不得含換行）" >&2; exit 1 ;;
-esac
-[ "${#NAME}" -le 64 ] || { echo "✗ 名字超過 64 字元" >&2; exit 1; }
+<貼上 Step 2 印出的 WORK=... 那一行>
+NAME=$(bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/validate-skill-input.sh" name "$WORK/name") || exit $?
 echo "name ok: $NAME"
 ```
 
@@ -113,16 +107,12 @@ echo "name ok: $NAME"
 **用 Write 工具把目標目錄的絕對路徑寫進 `<work dir>/target`，不要貼進 Bash 指令。** 然後驗證，並**印出路徑**：
 
 ```bash
-WORK='<Step 2 印出的 work dir>'
-NAME=$(cat "$WORK/name")
-TARGET_DIR=$(cat "$WORK/target")
-case "$TARGET_DIR" in /*) : ;; *) echo "✗ 目標必須是絕對路徑" >&2; exit 1 ;; esac
-case "$TARGET_DIR" in *[[:cntrl:]]*) echo "✗ 路徑含控制字元（含換行）" >&2; exit 1 ;; esac
-case "$TARGET_DIR/" in */../*|*/./*) echo "✗ 路徑含 . 或 .. 成分" >&2; exit 1 ;; esac
-[ "${TARGET_DIR##*/}" = "$NAME" ] || { echo "✗ 目錄名必須等於已驗證的名字 $NAME" >&2; exit 1; }
-if [ -e "$TARGET_DIR" ] || [ -L "$TARGET_DIR" ]; then echo "✗ $TARGET_DIR 已存在（含懸空 symlink），不覆蓋" >&2; exit 1; fi
+<貼上 Step 2 印出的 WORK=... 那一行>
+TARGET_DIR=$(bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/validate-skill-input.sh" target "$WORK/target" "$WORK/name") || exit $?
 echo "target dir: $TARGET_DIR"
 ```
+
+驗證內容（寫在腳本裡，有測試）：名字再驗一次、絕對路徑、無控制字元與 `.`／`..` 成分、目錄名等於名字、不存在（含懸空 symlink）、無 NUL。
 
 只建檔，不 commit、不發布；發布走 `/harness-devtools:plugin-update`。
 
@@ -142,10 +132,10 @@ Skill(skill="skill-creator:skill-creator",
 eval 查詢集（20 句、should-trigger 與 should-not-trigger 各半，反例要用近似但不該觸發的句子）的產生方式見 skill-creator 的 SKILL.md「Description Optimization」一節。**用 Write 工具把 eval 集寫進 `<work dir>/eval.json`，把目前這個 session 使用的 model ID 寫進 `<work dir>/model`**，然後整段放在同一個 Bash 呼叫裡執行（自己重取 installPath，所有路徑都用絕對路徑，因為 `cd` 之後相對路徑會指錯）：
 
 ```bash
-WORK='<Step 2 印出的 work dir>'
-TARGET_DIR=$(cat "$WORK/target")
+<貼上 Step 2 印出的 WORK=... 那一行>
+TARGET_DIR=$(cat "$WORK/target")   # 已在 Step 3 驗證過；這裡只在有引號的展開中使用，不再貼進任何 shell 原始碼
 MODEL=$(cat "$WORK/model")
-case "$MODEL" in ''|*[!A-Za-z0-9._-]*) echo "✗ model ID 格式不合" >&2; exit 1 ;; esac
+[ -n "$MODEL" ] && [ "$(printf '%s' "$MODEL" | wc -l | tr -d ' ')" -eq 0 ] || { echo "✗ model 檔為空或多行" >&2; exit 1; }
 [ -s "$WORK/eval.json" ] || { echo "✗ 找不到 eval.json" >&2; exit 1; }
 SC_PATH=$(bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/check-skill-creator.sh") || exit $?
 cd "$SC_PATH/skills/skill-creator" && python3 -m scripts.run_loop \
@@ -163,23 +153,37 @@ cd "$SC_PATH/skills/skill-creator" && python3 -m scripts.run_loop \
 
 ### Step 6: 檢查引用，並清掉工作目錄
 
-只在目標目錄位於某個 git repo 內時才跑，而且**對那個 repo** 跑，不是對目前的工作目錄。用本 plugin 自己的檢查腳本，不要求目標 repo 另有一份。目標目錄不存在（Step 4 沒有成功建出來）和目標不在 git repo 內是兩件事，分開報：
+只在目標目錄位於某個 git repo 內時才跑，而且**對那個 repo** 跑，不是對目前的工作目錄。用本 plugin 自己的檢查腳本，不要求目標 repo 另有一份。三種結果分開報，不可混在一起：目標不存在、不在 git repo 內、檢查跑完但發現失效引用。
 
 ```bash
-WORK='<Step 2 印出的 work dir>'
+<貼上 Step 2 印出的 WORK=... 那一行>
 TARGET_DIR=$(cat "$WORK/target")
 [ -n "$TARGET_DIR" ] || { echo "✗ target 檔是空的" >&2; exit 1; }
 if [ ! -d "$TARGET_DIR" ]; then
   echo "✗ $TARGET_DIR 不存在（Step 4 沒有建出 skill）：引用檢查未執行" >&2
+elif TARGET_REPO=$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null); then
+  if bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/check-skill-references.sh" --repo "$TARGET_REPO"; then
+    echo "引用檢查通過"
+  else
+    echo "引用檢查跑完了，但發現失效引用（見上方輸出）" >&2
+  fi
 else
-  TARGET_REPO=$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null) \
-    && bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/check-skill-references.sh" --repo "$TARGET_REPO" \
-    || echo "目標不在 git repo 內，或檢查失敗：引用檢查未通過也未跑完（這不是通過）"
+  echo "目標不在 git repo 內：引用檢查未執行（這不是通過）"
 fi
-rm -rf "$WORK"
 ```
 
-有失效引用就列出來，不自動修。
+**清掉工作目錄**——只在確認它真的是本 skill 建的才刪（形狀必須是 `${TMPDIR:-/tmp}/skill-create.XXXXXX`、是目錄、不是 symlink）。刪除指令不在 `allowed-tools` 裡，所以會跳出一次確認；這是刻意的，一個遞迴刪除不該靜默放行：
+
+```bash
+<貼上 Step 2 印出的 WORK=... 那一行>
+case "$WORK" in
+  "${TMPDIR:-/tmp}"/skill-create.??????)
+    if [ -d "$WORK" ] && [ ! -L "$WORK" ]; then rm -rf -- "$WORK"; else echo "✗ $WORK 不是目錄或是 symlink，不刪" >&2; fi ;;
+  *) echo "✗ $WORK 不是本 skill 建的工作目錄，不刪" >&2 ;;
+esac
+```
+
+前面任何一步提早中止時這一步不會跑，工作目錄會留在 `${TMPDIR:-/tmp}`，由作業系統清理；內容只有名字、路徑與 eval 集，沒有機密。
 
 ## 最後報告
 
