@@ -29,7 +29,7 @@ Claude Code 開發工具鏈 — plugin / MCP server / CLI 的完整發布管道�
 
 ## 先看這個：哪個 skill、什麼順序
 
-下面的表把 24 個 skill 逐條列出，但**逐條列表答不出「現在該跑哪一個」**——
+下面的表把 25 個 skill 逐條列出，但**逐條列表答不出「現在該跑哪一個」**——
 而選錯的代價不對稱：`plugin-update` 對一個還沒上架的 plugin 會走進錯誤的 repo
 （#16）。
 
@@ -68,6 +68,12 @@ wrapper script、或 hook 會去 curl GitHub Release——三者任一即是。
 | `/harness-devtools:plugin-update` | 更新到最新版（marketplace.json 同步 + update + 安裝檢查），dependency-aware |
 | `/harness-devtools:plugin-health` | 掃所有已安裝 plugin 的健康狀態（載入錯誤、版本不同步、hook 格式、binary 缺失）|
 | `/harness-devtools:plugin-debug` | 深度除錯單一 plugin（hook 副作用、權限衝突、cache 版本不一致）|
+
+### Skill 撰寫
+
+| Skill | 用途 |
+|---|---|
+| `/harness-devtools:skill-create` | 建立單一 skill：先過命名準則，再呼叫官方 `skill-creator` 撰寫，最後跑 description 觸發測試並如實回報。依賴 `skill-creator@claude-plugins-official`，缺了直接擋下 |
 
 ### MCP Server
 
