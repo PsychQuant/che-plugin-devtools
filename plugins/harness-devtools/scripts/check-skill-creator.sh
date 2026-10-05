@@ -82,18 +82,24 @@ report_disabled() {
 CLI_VERDICT=""
 if command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
   CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-20}"
+  case "$CLAUDE_TIMEOUT" in ''|*[!0-9]*|0) CLAUDE_TIMEOUT=20 ;; esac   # 非正整數會讓 alarm 失效（0 = 不逾時），一律改回預設
+  CLI_RC=1; CLI_OUT=""
   if command -v perl >/dev/null 2>&1; then
     # 輸出寫到暫存檔而不是 $(...)：command substitution 會等所有持有 stdout 管線的行程結束，
     # CLI 若留下子行程，alarm 只殺得到直接的那個，$(...) 仍會卡到子行程結束。檔案不是管線，沒有這個問題。
-    CLI_TMP=$(mktemp "${TMPDIR:-/tmp}/check-skill-creator.XXXXXX") || CLI_TMP=""
+    CLI_TMP=$(mktemp "${TMPDIR:-/tmp}/check-skill-creator.XXXXXX" 2>/dev/null) || CLI_TMP=""
     if [ -n "$CLI_TMP" ]; then
+      trap 'rm -f "$CLI_TMP"' EXIT INT TERM
       perl -e 'alarm shift; exec @ARGV' "$CLAUDE_TIMEOUT" "$CLAUDE_BIN" plugin list --json >"$CLI_TMP" 2>/dev/null
       CLI_RC=$?
-      CLI_OUT=$(cat "$CLI_TMP"); rm -f "$CLI_TMP"
+      CLI_OUT=$(cat "$CLI_TMP"); rm -f "$CLI_TMP"; trap - EXIT INT TERM
     else
-      CLI_OUT=$("$CLAUDE_BIN" plugin list --json 2>/dev/null); CLI_RC=$?
+      # 建不起暫存檔時不退回「沒有逾時的 CLI 呼叫」：那會把逾時整個繞過。直接走磁碟後援。
+      echo "⚠ 建不起暫存檔（TMPDIR=${TMPDIR:-/tmp}），略過 claude CLI 以免失去逾時保護。" >&2
     fi
   else
+    # 沒有 perl 就沒有逾時機制：CLI 卡住時這一步會一起卡住。這是已知限制，不是靜默降級，所以先說。
+    echo "⚠ 這台機器沒有 perl，claude CLI 呼叫沒有逾時保護。" >&2
     CLI_OUT=$("$CLAUDE_BIN" plugin list --json 2>/dev/null); CLI_RC=$?
   fi
   if [ "$CLI_RC" -eq 0 ]; then

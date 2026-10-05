@@ -161,6 +161,20 @@ if command -v perl >/dev/null 2>&1; then
   [ "$EL" -lt 6 ] && assert_eq "實際耗時小於 6 秒（逾時真的限制住整個呼叫）" "ok" "ok" || assert_eq "實際耗時小於 6 秒（逾時真的限制住整個呼叫）" "<6s" "${EL}s"
 fi
 
+if command -v perl >/dev/null 2>&1; then
+  # mktemp 失敗（TMPDIR 不存在）時不可退回「沒有逾時的 CLI 呼叫」（verify R3：DA 實測會多等 5 秒）
+  T0=$(date +%s)
+  TMPDIR="$TMPROOT/does-not-exist" CLAUDE_BIN="$SLOW_BIN" INSTALLED_PLUGINS_JSON="$TMPROOT/disk-ok.json" CLAUDE_TIMEOUT=1 /bin/bash "$CHECKER" >/dev/null 2>"$TMPROOT/err"; RC=$?
+  EL=$(( $(date +%s) - T0 )); ERR=$(cat "$TMPROOT/err")
+  assert_eq "TMPDIR 不可用時直接退磁碟 exit 0，不跑無逾時的 CLI" "0" "$RC"
+  [ "$EL" -lt 4 ] && assert_eq "TMPDIR 不可用時耗時小於 4 秒" "ok" "ok" || assert_eq "TMPDIR 不可用時耗時小於 4 秒" "<4s" "${EL}s"
+  assert_contains "並說明暫存檔建不起來" "暫存" "$ERR"
+  # 逾時後不留暫存檔
+  CLEAN="$TMPROOT/cleandir"; mkdir -p "$CLEAN"
+  TMPDIR="$CLEAN" CLAUDE_BIN="$SLOW_BIN" INSTALLED_PLUGINS_JSON="$TMPROOT/disk-ok.json" CLAUDE_TIMEOUT=1 /bin/bash "$CHECKER" >/dev/null 2>&1
+  assert_eq "逾時後不留暫存檔" "0" "$(ls "$CLEAN" | wc -l | tr -d ' ')"
+fi
+
 mkdir -p "$TMPROOT/emptybin"
 OUT=$(PATH="$TMPROOT/emptybin" CLAUDE_BIN="$FAKE_BIN" INSTALLED_PLUGINS_JSON="$TMPROOT/disk-ok.json" /bin/bash "$CHECKER" 2>"$TMPROOT/err"); RC=$?; ERR=$(cat "$TMPROOT/err")
 assert_eq "python3 不在 PATH → exit 2（不是誤報成「找不到 skill-creator」）" "2" "$RC"
