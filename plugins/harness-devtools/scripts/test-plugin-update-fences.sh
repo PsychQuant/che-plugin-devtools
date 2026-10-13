@@ -15,6 +15,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SKILL="$PLUGIN_ROOT/skills/plugin-update/SKILL.md"
 PASS=0; FAIL=0
+HARNESS_MISSING=$(mktemp "${TMPDIR:-/tmp}/pbm-harness-missing.XXXXXX")
+# bash runs command_not_found_handle in a separate environment, so it records into a file the summary counts (#22 verify R9:
+# a helper called before its definition skipped an assertion silently while the run still printed 358/358)
+command_not_found_handle() { printf '%s\n' "$1" >> "$HARNESS_MISSING"; echo "  ✗ harness: command not found: $1" >&2; return 127; }
 assert_contains() {   # desc needle haystack
   if printf '%s' "$3" | grep -qF -- "$2"; then PASS=$((PASS+1)); echo "  ✓ $1"
   else FAIL=$((FAIL+1)); echo "  ✗ $1"; printf '%s\n' "$3" | sed 's/^/      | /' | head -20; fi
@@ -90,6 +94,12 @@ echo "Phase 0.3 for a PURE-SHELL plugin (#19): clean + synced + dormant → Case
 run_both "pure: Step 0.1 resolves" 'plugin_holders "$PLUGIN_NAME" "$WANT_MP"' pure "→ Step 0.1 OK: marketplace=fx-mp"
 run_both "pure: Step 1 says not binary-backed (all four signals miss)" 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' pure "IS_BINARY_BACKED=false"
 prep01() { fence_with 'plugin_holders "$PLUGIN_NAME" "$WANT_MP"' | sed "s/^PLUGIN_NAME='<plugin-name>'/PLUGIN_NAME='$1'/; s/^MP_NAME='<marketplace-name-or-empty>'/MP_NAME=''/" > "$T/fence01.sh"; (cd "$T" && bash "$T/fence01.sh" >/dev/null 2>&1); }   # Phase 0.3 Case A removes the context; re-arm it (own file: must not clobber $T/fence.sh)
+run_both_ctx() {   # like run_both, but the fence ENDS the invocation (remove_plugin_ctx) — re-arm Step 0.1 before each shell
+  local f; f=$(prep "$2" "$3"); local out_b out_z
+  prep01 "$3"; out_b=$(cd "$T" && bash "$f" 2>&1); prep01 "$3"; out_z=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
+  assert_contains "$1 (bash)" "$4" "$out_b"; assert_contains "$1 (zsh)" "$4" "$out_z"
+  if printf "%s" "$out_z" | grep -q "no matches found"; then FAIL=$((FAIL+1)); echo "  ✗ $1: a glob matched nothing under zsh (fatal in the Bash tool)"; else PASS=$((PASS+1)); echo "  ✓ $1: no unmatched glob under zsh"; fi
+}
 prep01 pure; f=$(prep 'BINARY_UNKNOWN_WHY' pure); assert_contains "pure: clean + synced + dormant → Case A (bash)" "→ Phase 0.3 sync intent: Case A" "$(cd "$T" && bash "$f" 2>&1)"
 prep01 pure; assert_contains "pure: clean + synced + dormant → Case A (zsh)" "→ Phase 0.3 sync intent: Case A" "$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)"
 printf '# edited, not committed\n' >> "$T/dev/fx-mp/plugins/pure/skills/p/SKILL.md"
@@ -254,12 +264,6 @@ prep01 kc
 run_both "kc: Phase 2 Step 4 refuses an entry without version with its own prescription (not the version-mismatch line)" 'MP_NOW=$(marketplace_entry_version' kc "entry 沒有 version — Step 2 的 Edit 沒落地"
 echo
 echo "#22 — Phase 5 Step 1.5 (binary-backed verification against the ~/bin sidecar):"
-run_both_ctx() {   # like run_both, but the fence ENDS the invocation (remove_plugin_ctx) — re-arm Step 0.1 before each shell
-  local f; f=$(prep "$2" "$3"); local out_b out_z
-  prep01 "$3"; out_b=$(cd "$T" && bash "$f" 2>&1); prep01 "$3"; out_z=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
-  assert_contains "$1 (bash)" "$4" "$out_b"; assert_contains "$1 (zsh)" "$4" "$out_z"
-  if printf "%s" "$out_z" | grep -q "no matches found"; then FAIL=$((FAIL+1)); echo "  ✗ $1: a glob matched nothing under zsh (fatal in the Bash tool)"; else PASS=$((PASS+1)); echo "  ✓ $1: no unmatched glob under zsh"; fi
-}
 printf '0.2.0\n' > "$T/bin/.che-keychain.version"
 run_both_ctx "kc: sidecar 0.2.0 == pin 0.2.0 → ✅" 'if [ -z "$ROWS" ]' kc "✅ Phase 5 Step 1.5: installed == pin for all 1 wrapper"
 run_both_ctx "kc: …per-binary line names the source" 'if [ -z "$ROWS" ]' kc "✅ che-keychain: installed v0.2.0 == pin v0.2.0 (binaryVersion)"
@@ -459,6 +463,12 @@ f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-
 OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "two: E-auto with one wrapper whose git add fails (clean filter) → FAILED after write, nothing committed" "AUDIT: Phase 0.3 Case E-auto FAILED after write — git add 失敗" "$OUT"
 assert_contains "two: …HEAD is still the attrs commit (no half-staged pin commit)" "attrs" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
+# restore by content: the clean filter is DESIGNED to fail, so git checkout cannot be trusted to rewrite the files here
+( cd "$T/dev/fx-mp" || exit; git reset -q -- plugins/two 2>/dev/null; for w in all-wrapper.sh bot-wrapper.sh; do git show "HEAD:plugins/two/bin/$w" > "plugins/two/bin/$w"; done )   # reset also trips the failing filter: do not chain on it
+prep01 two
+OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
+assert_contains "two: …the same git add failure under zsh (the Bash tool's shell) still prints the AUDIT line" "AUDIT: Phase 0.3 Case E-auto FAILED after write — git add 失敗" "$OUT"
+assert_contains "two: …and under zsh HEAD is still the attrs commit" "attrs" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
 ( cd "$T/dev/fx-mp" && git rm -q --cached .gitattributes && rm -f .gitattributes && git config --unset filter.pbmfail.clean; git config --unset filter.pbmfail.required; git reset -q -- plugins/two && git checkout -q -- plugins/two; git -c user.name=t -c user.email=t@t commit -qm "drop attrs" && git push -q origin HEAD:master 2>/dev/null )
 unset IDD_ALL_UNATTENDED
 two_stub 3.0.0 "AllMCP BotMCP"; printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v3.0.0 --repo PsychQuant/msg "*"--json assets"*) printf "AllMCP\\nBotMCP\\n" ;; "release view "*"--json assets"*) exit 1 ;; *) echo v3.0.0 ;; esac\n' > "$T/gh-stub"
@@ -524,6 +534,9 @@ run_both "hp: Step 3 with no local CLI reports ❓ and counts 0 of 1 (checked = 
 run_both "hp: …the comparison names the pin" 'hooks checked:' hp "pin (binary_version) v0.7.0"
 printf '#!/bin/sh\necho "hpbin 0.7.0"\n' > "$T/bin/hpbin"; chmod +x "$T/bin/hpbin"
 run_both "hp: Step 3 runs the local CLI from plugin_bin_dir (test seam) and compares it to the PIN" 'hooks checked:' hp "✅ hpbin local v0.7.0 == pin (binary_version) v0.7.0（PsychQuant/macdoc）; latest v9.9.9 ≠ pin — Phase 0.3 Case E 管 bump"
+printf '#!/bin/sh\necho "hpbin 0.7.0-rc1"\n' > "$T/bin/hpbin"
+run_both "hp: a local prerelease 0.7.0-rc1 is NOT reported equal to pin 0.7.0 (no x.y.z truncation)" 'hooks checked:' hp "⚠️  hpbin local v0.7.0-rc1, pin (binary_version) v0.7.0"
+printf '#!/bin/sh\necho "hpbin 0.7.0"\n' > "$T/bin/hpbin"
 run_both "hp: …and now it counts 1 of 1" 'hooks checked:' hp "→ Phase 1.5 Step 3: hooks checked: 1 of 1 hook wrapper(s)"
 printf '0.7.0\n' > "$T/bin/.hpbin.version"
 run_both_ctx "hp: Phase 5 verifies the hook row against its pin and sidecar" 'if [ -z "$ROWS" ]' hp "✅ hpbin: installed v0.7.0 == pin v0.7.0 (binary_version)"
@@ -672,5 +685,7 @@ echo "plugin-debug version query (root-level manifest lookup):"
 SKILL="$PLUGIN_ROOT/skills/plugin-debug/SKILL.md"
 run_both "plugin-debug reads the version through plugin_manifest_path" 'plugin_manifest_path "$SRC"' nobin "1.0.0"
 
+MISSING_N=$(grep -c . "$HARNESS_MISSING" 2>/dev/null); MISSING_N=${MISSING_N:-0}; rm -f "$HARNESS_MISSING"
+if [ "$MISSING_N" -gt 0 ]; then FAIL=$((FAIL + MISSING_N)); echo "  ✗ harness: ${MISSING_N} command(s) not found — an assertion did not run"; fi
 echo; echo "─────────────────────────────"; echo "PASS: $PASS   FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]

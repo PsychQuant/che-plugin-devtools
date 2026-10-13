@@ -848,10 +848,16 @@ echo "→ Phase 0.3 Case E: ${KEYDESC}: $(clean "$OLD_PIN") → $(clean "$NOW") 
 printf '%s\n' "$FILES" | while IFS= read -r F; do [ -n "$F" ] && git --literal-pathspecs diff --stat -- "$F"; done
 if [ "$AUTO_PUSH" = yes ]; then
     # 逐檔 add，任一失敗（clean filter、權限）就停；commit 前再確認每個目標的 index == 工作樹——半 stage 的 commit 會 push 出只改一半的 pin（#22 verify R7）
-    printf '%s\n' "$FILES" | while IFS= read -r F; do [ -n "$F" ] || continue; git --literal-pathspecs add -- "$F" || exit 9; done
-    [ $? = 0 ] || refuse_after_write "git add 失敗（見上方 git 訊息）— 不 commit"
-    printf '%s\n' "$FILES" | while IFS= read -r F; do [ -n "$F" ] || continue; git --literal-pathspecs diff --quiet -- "$F" || exit 9; done
-    [ $? = 0 ] || refuse_after_write "有目標的 index 與工作樹不一致 — 不 commit"
+    # 迴圈不放在 pipeline 裡：zsh 在目前的 shell 跑 pipeline 最後一段，裡面的 exit 會結束整個 fence、印不出 AUDIT（#22 verify R9）
+    STAGE_OK=yes
+    while IFS= read -r F; do [ -n "$F" ] || continue; git --literal-pathspecs add -- "$F" || { STAGE_OK=no; break; }; done <<EOF
+$FILES
+EOF
+    [ "$STAGE_OK" = yes ] || refuse_after_write "git add 失敗（見上方 git 訊息）— 不 commit"
+    while IFS= read -r F; do [ -n "$F" ] || continue; git --literal-pathspecs diff --quiet -- "$F" || { STAGE_OK=no; break; }; done <<EOF
+$FILES
+EOF
+    [ "$STAGE_OK" = yes ] || refuse_after_write "有目標的 index 與工作樹不一致 — 不 commit"
     git commit -q -m "chore($PLUGIN_NAME): bump binary pin to v$NEW_PIN ($KEYDESC)" || { echo "AUDIT: Phase 0.3 Case E-auto FAILED after write — commit failed; pin rewritten in ${REL}, not committed; revert: git checkout -- ${REL}"; exit 1; }
     REMOTE=${UPSTREAM%%/*}; RBRANCH=${UPSTREAM#*/}
     git push "$REMOTE" "HEAD:refs/heads/$RBRANCH" || { echo "AUDIT: Phase 0.3 Case E-auto FAILED after write — push to $UPSTREAM failed; commit $(git rev-parse --short HEAD) (pin v${NEW_PIN}) is local only; push it or git reset --hard $UPSTREAM"; exit 1; }
@@ -887,7 +893,7 @@ fi
 
 ## Phase 0.5: Git State Preview & Confirmation Gate（v1.16.0+ #60）
 
-> **為什麼這 phase 在 Phase 1 之前**:Phase 1+ 會 `git add` / `git commit` / `git push` / `claude plugin marketplace update`,在那之前,user 必須對樹上**既有**的變更（未提交 / 未推送 / 分歧，Case B–E）明確表態要不要一起推。clean start（Case A）沒有裁決點，直接通過（#19）——這代表在 clean start 下（含 unattended）**以下動作不經人工確認就會發生（封閉列舉，不得類推）**：(0) Phase 0.3 Case E-auto 的 binary pin bump commit + push——只在 pin 來源是專用 key（`binary_version` / `binaryVersion` / wrapper 字面 `DESIRED_VERSION`，**不是** `version`）、樹乾淨且與 upstream 分歧 0 0 時，push 走 Phase 2 Step 4 同一套 refspec + 事後驗證（#22）；(1) Phase 2 對 `.claude-plugin/marketplace.json` 的鏡像 commit + push——只在該檔的 entry 版本已等於 plugin.json 且相對 HEAD 有變更時，push 前列出視窗內混進的 commit 與其 plugin 歸屬；(2) Phase 3 `claude plugin marketplace update`（重拉 plugin index）；(3) Phase 4 `claude plugin update` / `install`（把 plugin 程式碼裝進本機；binary-backed plugin 的 wrapper 下次啟動會自動下載 release binary）。#19 之前 unattended 在 Phase 0.5 一律 abort，這三項從未在無人看管下執行過；現在它們是 common-release-flow 自動鏈刻意要的行為。其餘兩道互動閘在 unattended 下：**仍會 abort** 的只有 Phase 1.5 Step 4（binary 不同步）；Phase 2.5 Step 2（README stale）**不 abort**，自動「先略過」繼續 Phase 3，並印一行 `AUDIT:` 供 Phase 5 的最終 report 收錄。
+> **為什麼這 phase 在 Phase 1 之前**:Phase 1+ 會 `git add` / `git commit` / `git push` / `claude plugin marketplace update`,在那之前,user 必須對樹上**既有**的變更（未提交 / 未推送 / 分歧，Case B–E）明確表態要不要一起推。clean start（Case A）沒有裁決點，直接通過（#19）——這代表在 clean start 下（含 unattended）**以下動作不經人工確認就會發生（封閉列舉，不得類推）**：(0) Phase 0.3 Case E-auto 的 binary pin bump commit + push——只在 pin 來源是專用 key（`binary_version` / `binaryVersion` / wrapper 字面 `DESIRED_VERSION`，**不是** `version`）、樹乾淨且與 upstream 分歧 0 0 時，push 走 Phase 2 Step 4 同一套 refspec + 事後驗證（#22）；(1) Phase 2 對 `.claude-plugin/marketplace.json` 的鏡像 commit + push——只在該檔的 entry 版本已等於 plugin.json 且相對 HEAD 有變更時，push 前列出視窗內混進的 commit 與其 plugin 歸屬；(2) Phase 3 `claude plugin marketplace update`（重拉 plugin index）；(3) Phase 4 `claude plugin update` / `install`（把 plugin 程式碼裝進本機；binary-backed plugin 的 wrapper 下次啟動會自動下載 release binary）。#19 之前 unattended 在 Phase 0.5 一律 abort，(1)–(3) 從未在無人看管下執行過；(0) 是 #22 新增、在 Phase 0.3（本 gate 之前）執行。四項都是 common-release-flow 自動鏈刻意要的行為。其餘兩道互動閘在 unattended 下：**仍會 abort** 的只有 Phase 1.5 Step 4（binary 不同步）；Phase 2.5 Step 2（README stale）**不 abort**，自動「先略過」繼續 Phase 3，並印一行 `AUDIT:` 供 Phase 5 的最終 report 收錄。
 >
 > 既有 (pre-v1.16.0) 行為:Phase 1 Step 2 印出 `git status` 後接 narrative reminder text 「請先 commit + push」,但**沒實際 gate**,AI executor 可以印 reminder 後繼續。新 phase 把這個決定升格成 **AskUserQuestion** explicit dispatch,跟 skill 內既有 [Phase 1.5: External Binary Dependency Check](#phase-15-external-binary-dependency-check若有) + [Phase 2.5: README Freshness Check](#phase-25-readme-freshness-check) 同 pattern(用 section refs 而非 line numbers,避免後續 insert 後 stale)。
 >
@@ -1449,11 +1455,13 @@ while IFS='|' read -r wdir wfile asset inst repo pin src; do
     BIN_DIR=$(plugin_bin_dir)
     [ -x "$BIN_DIR/$inst" ] || echo "ℹ $BIN_DIR/$inst 未安裝（或不可執行）— 本機版本無法取得"
     # 這是 plugin 檔案內容點名的 binary（它自己的 CLI）：從中性目錄執行，不讓它以 marketplace repo 為 cwd
-    LOCAL_VERSION=$(cd / && "$BIN_DIR/$inst" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    # latest 走 gh（帶認證；與 Phase 0.3 (e) 同一函式，測試共用 PBM_GH stub）；兩邊都正規化成 x.y.z 再比（tag v1.2.3-rc1 / 前綴 tag 不得製造假的「落後」）
-    LATEST_VERSION=$(latest_release_version "$repo" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    WANT="$LATEST_VERSION"; WANTDESC="latest"; [ -n "$pin" ] && { WANT=$(printf '%s' "$pin" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1); WANTDESC="pin (${src})"; }
-    if [ -z "$WANT" ]; then if [ -n "$pin" ]; then echo "❓ ${wfile} 的 pin '${pin}' 不是 x.y.z 形 — ${inst} 無法比對"; else echo "❓ 取不到 $repo 的 latest release（網路 / 沒有 release / rate limit）— ${inst} 無法比對"; fi
+    # 版本比對用**完整**版本字串（x.y.z 加可選的 -prerelease / +build）：截成 x.y.z 會把 1.2.3-rc1 與 1.2.3 判成相同，
+    # 而 Phase 5 比的是完整字串——兩個 phase 會給出相反結論（#22 verify R9）
+    LOCAL_VERSION=$(cd / && "$BIN_DIR/$inst" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?' | head -1)
+    # latest 走 gh（帶認證；與 Phase 0.3 (e) 同一函式，測試共用 PBM_GH stub）；helper 已去掉 tag 的 v 前綴
+    LATEST_VERSION=$(latest_release_version "$repo" | grep -xE '[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?' | head -1)
+    WANT="$LATEST_VERSION"; WANTDESC="latest"; [ -n "$pin" ] && { WANT=$(printf '%s\n' "$pin" | grep -xE '[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?' | head -1); WANTDESC="pin (${src})"; }
+    if [ -z "$WANT" ]; then if [ -n "$pin" ]; then echo "❓ ${wfile} 的 pin '${pin}' 不是 x.y.z[-pre] 形 — ${inst} 無法比對"; else echo "❓ 取不到 $repo 的 latest release（網路 / 沒有 release / rate limit）— ${inst} 無法比對"; fi
     elif [ -z "$LOCAL_VERSION" ]; then echo "❓ 取不到本機 $inst 的版本（${WANTDESC} v${WANT}）— 無法比對"
     elif CHECKED=$((CHECKED + 1)) && [ "$LOCAL_VERSION" != "$WANT" ]; then
         echo "⚠️  $inst local v$LOCAL_VERSION, ${WANTDESC} v$WANT"

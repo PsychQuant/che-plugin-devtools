@@ -314,6 +314,88 @@ printf 'DESIRED_VERSION="1.0.0"\ncurl -sL "https://notgithub.example/PsychQuant/
 # unkmcp: .mcp.json that does not parse — "cannot answer", not "no" (R8 LOW #19)
 mkdir -p "$T/unkmcp"; printf '{ not json\n' > "$T/unkmcp/.mcp.json"
 mkdir -p "$T/unkmf"; printf '{ "name": "unkmf"\n' > "$T/unkmf/bad.json"
+# R10 closed shapes — the R9 counter-examples (each must be rc 4, never a guess) and the real corpus shapes (each must resolve)
+for d in fnindent sameline archover trailcmt mailshape pdfshape; do mkdir -p "$T/$d/bin" "$T/$d/.claude-plugin"
+  printf '{ "name": "r", "version": "2.0.0", "binaryVersion": "0.3.0", "binary_version": "0.4.0" }\n' > "$T/$d/.claude-plugin/plugin.json"; done
+printf '{ "name": "p", "version": "2.0.0" }\n' > "$T/pdfshape/.claude-plugin/plugin.json"
+mkdir -p "$T/pdfempty/bin" "$T/pdfempty/.claude-plugin"; printf '{ "name": "p", "version": "2.0.0", "binary_version": "" }\n' > "$T/pdfempty/.claude-plugin/plugin.json"
+cat > "$T/fnindent/bin/w.sh" <<'W'
+REPO="a/f"
+main() {
+  DESIRED_VERSION="1.0.0"
+  DESIRED_VERSION="2.0.0"
+  curl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/F
+}
+W
+cat > "$T/sameline/bin/w.sh" <<'W'
+REPO="a/s"
+DESIRED_VERSION=$(cat /etc/override) || DESIRED_VERSION="1.0.0"
+curl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/S
+W
+cat > "$T/archover/bin/w.sh" <<'W'
+REPO="a/u"
+DESIRED_VERSION="1.0.0"
+if [ "$(uname -m)" = x86_64 ]; then
+  DESIRED_VERSION="0.9.0"
+fi
+curl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/U
+W
+cat > "$T/trailcmt/bin/w.sh" <<'W'
+REPO="a/t"
+DESIRED_VERSION="1.0.0" # bumped from the "version": field
+curl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/T
+W
+cat > "$T/mailshape/bin/w.sh" <<'W'
+REPO="a/m"
+DESIRED_VERSION=""
+if [[ -f "$PLUGIN_JSON" ]]; then
+    DESIRED_VERSION=$(grep -oE '"binary_version":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" 2>/dev/null \
+        | head -1 | cut -d'"' -f4 || true)
+    if [[ -z "$DESIRED_VERSION" ]]; then
+        DESIRED_VERSION=$(grep -oE '"version":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" 2>/dev/null \
+            | head -1 | cut -d'"' -f4 || true)
+    fi
+fi
+curl https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION
+W
+cat > "$T/pdfshape/bin/w.sh" <<'W'
+REPO="a/p"
+DESIRED_VERSION=""
+if [[ -f "$PLUGIN_JSON" ]]; then
+    if grep -qE '"binary_version"[[:space:]]*:' "$PLUGIN_JSON" 2>/dev/null; then
+        DESIRED_VERSION=$(grep -oE '"binary_version"[[:space:]]*:[[:space:]]*"[^"]+"' "$PLUGIN_JSON" 2>/dev/null \
+            | head -1 | sed -E 's/.*"([^"]+)"$/\1/' || true)
+        if [[ -z "$DESIRED_VERSION" ]]; then
+            run_existing_or_die "binary_version present in plugin.json but empty/malformed"
+        fi
+    else
+        DESIRED_VERSION=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$PLUGIN_JSON" 2>/dev/null \
+            | head -1 | sed -E 's/.*"([^"]+)"$/\1/' || true)
+    fi
+fi
+URL="https://github.com/$REPO/releases/download/v$DESIRED_VERSION/P"
+W
+cp "$T/pdfshape/bin/w.sh" "$T/pdfempty/bin/w.sh"
+mkdir -p "$T/varlit/bin" "$T/supportlink/bin" "$T/shortR/bin" "$T/repoeq/bin" "$T/varhost/bin" "$T/flatmcp" "$T/emptymcp"
+cat > "$T/varlit/bin/w.sh" <<'W'
+REPO="a/one"
+curl -L "https://github.com/$REPO/releases/download/v1.0.0/X" || curl -L "https://github.com/b/two/releases/download/v1.0.0/X"
+W
+cat > "$T/supportlink/bin/w.sh" <<'W'
+SUPPORT="acme/support-forum"
+curl -L https://github.com/acme/real-tool/releases/download/v1.0.0/Tool || echo "see https://github.com/$SUPPORT/issues"
+W
+printf 'gh release download v1.0.0 -R o/short -p X\n' > "$T/shortR/bin/w.sh"
+cat > "$T/repoeq/bin/w.sh" <<'W'
+R="o/eq"
+gh release download v1.0.0 --repo="$R" -p X
+W
+cat > "$T/varhost/bin/w.sh" <<'W'
+PROJ="PsychQuant/real"
+curl https://notgithub.com/$PROJ/releases/download/v1.0.0/x
+W
+printf '{ "zotero": { "type": "stdio", "command": "${CLAUDE_PLUGIN_ROOT}/bin/w.sh" } }\n' > "$T/flatmcp/.mcp.json"
+printf '{}\n' > "$T/emptymcp/.mcp.json"
 # partial: one wrapper's pin is readable, the sibling's is not → the PLUGIN pin is unknown and no value is printed (R7 MEDIUM)
 mkdir -p "$T/partial/.claude-plugin" "$T/partial/bin"
 printf '{ "name": "partial", "version": "1.0.0", "binary_version": "0.3.0" }\n' > "$T/partial/.claude-plugin/plugin.json"
@@ -456,7 +538,7 @@ assert_rc "mixrepo: assignment in one file + a different URL literal in the othe
 assert_eq "mixrepo: first printed"                    "a/one" "$(plugin_binary_repo "$T/mixrepo")"
 assert_eq "unusedrepo: a *_REPO= nothing downloads through is ignored; the URL literal is the repo" "real/thing" "$(plugin_binary_repo "$T/unusedrepo")"
 assert_rc "unusedrepo: rc 0"                          0 plugin_binary_repo "$T/unusedrepo"
-assert_eq "override: literal default + manifest read → the manifest key is the pin" "2.0.0|binaryVersion" "$(plugin_binary_pin "$T/override" "$T/override/.claude-plugin/plugin.json")"
+assert_eq "override: literal then an UNGUARDED manifest read → not a recognised shape → rc 4, no value (R10 closed shapes)" "|wrapper:w.sh" "$(plugin_binary_pin "$T/override" "$T/override/.claude-plugin/plugin.json")"
 assert_rc "overrideunk: literal default + unreadable override → rc 4, not the stale literal" 4 plugin_binary_pin "$T/overrideunk" /nonexistent
 assert_eq "overrideunk: names the wrapper as the (unreadable) source" "|wrapper:w.sh" "$(plugin_binary_pin "$T/overrideunk" /nonexistent)"
 assert_rc "dotname: BINARY_NAME=a.b vs URL …/axb → no declared asset (dot is not a wildcard)" 1 plugin_binary_name "$T/dotname"
@@ -467,7 +549,21 @@ assert_eq "jqpin: prints |binaryVersion"             "|binaryVersion" "$(plugin_
 assert_rc "movingref: DESIRED_VERSION=\"latest\" is not a pin → rc 4" 4 plugin_binary_pin "$T/movingref" /nonexistent
 assert_rc "mfover: manifest read then an unfollowable override → rc 4 (manifest key is not what downloads)" 4 plugin_binary_pin "$T/mfover" "$T/mfover/.claude-plugin/plugin.json"
 assert_eq "mfover: names the wrapper, prints no value"  "|wrapper:w.sh" "$(plugin_binary_pin "$T/mfover" "$T/mfover/.claude-plugin/plugin.json")"
-assert_eq "twouncond: two unconditional manifest reads → the LAST key is the pin" "2.0.0|version" "$(plugin_binary_pin "$T/twouncond" "$T/twouncond/.claude-plugin/plugin.json")"
+assert_eq "fnindent: two unconditional literals inside a function (indented) → rc 4, not the first" "|wrapper:w.sh" "$(plugin_binary_pin "$T/fnindent" "$T/fnindent/.claude-plugin/plugin.json")"
+assert_eq "sameline: \$(…) || \"1.0.0\" on one line → rc 4 (the opaque primary is not ignored)" "|wrapper:w.sh" "$(plugin_binary_pin "$T/sameline" "$T/sameline/.claude-plugin/plugin.json")"
+assert_eq "archover: a readable override under \`if uname\` → rc 4 (not an only-if-empty guard)" "|wrapper:w.sh" "$(plugin_binary_pin "$T/archover" "$T/archover/.claude-plugin/plugin.json")"
+assert_eq "trailcmt: a key shape in a trailing comment does not turn a literal into a manifest read" "1.0.0|wrapper:w.sh" "$(plugin_binary_pin "$T/trailcmt" "$T/trailcmt/.claude-plugin/plugin.json")"
+assert_eq "mailshape (real corpus): \"\" + if-f + key + if -z guarded fallback key, continued lines → the first key" "0.4.0|binary_version" "$(plugin_binary_pin "$T/mailshape" "$T/mailshape/.claude-plugin/plugin.json")"
+assert_eq "pdfshape (real corpus): if grep -q KEY … else <other key> → the else key when KEY is absent" "2.0.0|version" "$(plugin_binary_pin "$T/pdfshape" "$T/pdfshape/.claude-plugin/plugin.json")"
+assert_eq "pdfempty: binary_version present but empty → the wrapper refuses; rc 4 naming the key, NOT the version fallback" "|binary_version" "$(plugin_binary_pin "$T/pdfempty" "$T/pdfempty/.claude-plugin/plugin.json")"
+assert_rc "varlit: variable primary + literal fallback repo in one file → rc 2" 2 plugin_binary_repo "$T/varlit"
+assert_eq "supportlink: a non-release github.com/\$X/issues link does not choose the repo" "acme/real-tool" "$(plugin_binary_repo "$T/supportlink")"
+assert_eq "shortR: gh release download -R o/r" "o/short" "$(plugin_binary_repo "$T/shortR")"
+assert_eq "repoeq: --repo=\"\$R\"" "o/eq" "$(plugin_binary_repo "$T/repoeq")"
+assert_rc "varhost: notgithub.com/\$PROJ/releases names no GitHub repo → rc 1" 1 plugin_binary_repo "$T/varhost"
+assert_eq "flatmcp: the flat plugin .mcp.json format (every real plugin) declares a server" "mcp.json" "$(plugin_is_binary_backed "$T/flatmcp")"
+assert_rc "emptymcp: {} declares nothing → rc 1" 1 plugin_is_binary_backed "$T/emptymcp"
+assert_eq "twouncond: two unguarded manifest reads → not a recognised shape → rc 4, no value (R10)" "|wrapper:w.sh" "$(plugin_binary_pin "$T/twouncond" "$T/twouncond/.claude-plugin/plugin.json")"
 assert_eq "indentfb: manifest read + indented literal fallback → the manifest key (it has a value)" "0.3.0|binaryVersion" "$(plugin_binary_pin "$T/indentfb" "$T/indentfb/.claude-plugin/plugin.json")"
 assert_eq "indentfb2: …and the literal only when the manifest key is empty" "0.0.0|wrapper:w.sh" "$(plugin_binary_pin "$T/indentfb2" "$T/indentfb2/.claude-plugin/plugin.json")"
 assert_eq "mention: echo/grep lines mentioning DESIRED_VERSION= are not assignments" "1.2.3|wrapper:w.sh" "$(plugin_binary_pin "$T/mention" /nonexistent)"
