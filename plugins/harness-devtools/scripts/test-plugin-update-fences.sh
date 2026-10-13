@@ -212,7 +212,7 @@ echo "#22 — che-keychain-shaped plugin 'kc': bin/kc (no -wrapper.sh suffix, RE
 # The five silent misses of che-keychain 0.3.0, as one fixture. Each assertion is on a line the fence PRINTS.
 mkdir -p "$T/dev/fx-mp/plugins/kc/.claude-plugin" "$T/dev/fx-mp/plugins/kc/bin" "$T/dev/fx-mp/plugins/kc/hooks"
 printf '{ "name": "kc", "version": "0.3.0", "binaryVersion": "0.2.0" }\n' > "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json"
-printf '#!/bin/sh\nREPO="PsychQuant/che-keychain"\nRELEASE_ASSET="CheKeychain"\nINSTALL_NAME="che-keychain"\nINSTALL_DIR="$HOME/bin"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\n[ -n "$DESIRED_VERSION" ] || DESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "https://api.github.com/repos/$REPO/releases/latest"\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" "'\"version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/kc/bin/kc"
+printf '#!/bin/sh\nREPO="PsychQuant/che-keychain"\nRELEASE_ASSET="CheKeychain"\nINSTALL_NAME="che-keychain"\nINSTALL_DIR="$HOME/bin"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\n[ -n "$DESIRED_VERSION" ] || DESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl -sL "${DESIRED_VERSION:+https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION}" "https://api.github.com/repos/$REPO/releases/latest"\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" "'\"version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/dev/fx-mp/plugins/kc/bin/kc"
 printf '#!/bin/sh\nexec "$(dirname "$0")/../bin/kc" --prefetch\n' > "$T/dev/fx-mp/plugins/kc/hooks/session-start.sh"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PY'
 import json,sys
@@ -281,7 +281,7 @@ run_both_ctx "pure: Phase 5 Step 1.5 says n/a for a non-binary plugin" 'if [ -z 
 echo
 echo "#22 R2 — Case E bump fence (the only code that writes the pin): key preserved, version untouched / bumped / refused when it would go DOWN"
 prep01 kc
-f=$(prep "AUTO_PUSH='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/" "$f"
+f=$(prep "ALSO_VERSION='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/" "$f"
 OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
 assert_contains "bump (pin only): prints old → new under the file's own key" "binaryVersion: 0.2.0 → 9.9.9 in plugins/kc/.claude-plugin/plugin.json; version: 0.3.0 (unchanged)" "$OUT"
 assert_contains "bump (pin only): single-line literal replacement, the one-line manifest stays one line" "1" "$(wc -l < "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json" | tr -d ' ')"
@@ -291,38 +291,36 @@ prep01 kc
 run_both "after the bump, Step 2 sees release_ahead=no and falls to Case C (dirty tree)" 'BINARY_UNKNOWN_WHY' kc "release_ahead=no"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/kc/.claude-plugin/plugin.json )
 prep01 kc
-f=$(prep "AUTO_PUSH='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='0.2.5'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
+f=$(prep "ALSO_VERSION='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='0.2.5'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
 OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
 assert_contains "bump together that would LOWER plugin version 0.3.0 → 0.2.5 is refused" "降版" "$OUT"
 assert_contains "…and the manifest is untouched" '"binaryVersion": "0.2.0"' "$(cat "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json")"
 prep01 kc
-f=$(prep "AUTO_PUSH='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
+f=$(prep "ALSO_VERSION='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "bump together upward writes both fields" "binaryVersion: 0.2.0 → 9.9.9 in plugins/kc/.claude-plugin/plugin.json; version: 9.9.9" "$OUT"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/kc/.claude-plugin/plugin.json )
 echo
-echo "#22 R2 — unattended Case E does NOT abort: AUDIT line + shell-signal case"
+echo "#22 R12 — unattended never bumps a pin: AUDIT line + shell-signal case; the bump fence refuses under unattended"
 export IDD_ALL_UNATTENDED=1; prep01 kc
-run_both "unattended + dedicated pin key: Step 2 prints the auto-bump AUDIT and Case E-auto" 'BINARY_UNKNOWN_WHY' kc "AUDIT: Phase 0.3 pin v0.2.0 (binaryVersion) behind latest release v9.9.9 of PsychQuant/che-keychain — auto-bumping under unattended"
-run_both "unattended + dedicated pin key: …Case E-auto line" 'BINARY_UNKNOWN_WHY' kc "→ Phase 0.3 sync intent: Case E-auto"
-( cd "$T/dev/fx-mp" && git push -q origin HEAD:master 2>/dev/null; git status --porcelain | grep -q . && echo "  (fixture tree not clean before E-auto test — expect refusal)" )   # E-auto needs clean + 0 0 (explicit refspec: an earlier test set push.default=current on a renamed branch)
+run_both "unattended + dedicated pin key: Step 2 prints the not-bumped AUDIT (a pin bump needs a human)" 'BINARY_UNKNOWN_WHY' kc "AUDIT: Phase 0.3 pin v0.2.0 (binaryVersion) behind latest release v9.9.9 of PsychQuant/che-keychain — not bumped under unattended"
+run_both "unattended + dedicated pin key: …continues as the shell-signal case, never Case E" 'BINARY_UNKNOWN_WHY' kc "→ Phase 0.3 sync intent: Case C"
 prep01 kc
-f=$(prep "AUTO_PUSH='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
+f=$(prep "ALSO_VERSION='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/" "$f"
+OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1); RC=$?
+assert_contains "unattended: the bump fence itself refuses (exit 75, AUDIT)" "AUDIT: Phase 0.3 Case E bump fence refused under unattended" "$OUT"
+assert_contains "unattended: …exit 75" "75" "$RC"
+assert_contains "unattended: …manifest untouched" '"binaryVersion": "0.2.0"' "$(cat "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json")"
+unset IDD_ALL_UNATTENDED
+( cd "$T/dev/fx-mp" && git push -q origin HEAD:master 2>/dev/null )
+prep01 kc
+f=$(prep "ALSO_VERSION='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/" "$f"
 OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
-assert_contains "E-auto bump fence: clean tree + 0 0 → pin bumped, committed and pushed (verified)" "AUDIT: Phase 0.3 Case E-auto — pin bumped to v9.9.9 (binaryVersion), committed and pushed to origin/" "$OUT"
-assert_contains "E-auto: upstream == HEAD after the push" "$(cd "$T/dev/fx-mp" && git rev-parse HEAD)" "$(cd "$T/dev/fx-mp" && git rev-parse '@{u}')"
-assert_contains "E-auto: commit subject follows the chore(<plugin>) form" "chore(kc): bump binary pin to v9.9.9 (binaryVersion)" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
+assert_contains "attended bump fence (the human path): pin rewritten, nothing committed by the fence" "binaryVersion: 0.2.0 → 9.9.9" "$OUT"
+( cd "$T/dev/fx-mp" && git add -A plugins/kc && git -c user.name=t -c user.email=t@t commit -qm "chore(kc): bump binary pin to v9.9.9 (binaryVersion)" && git push -q origin HEAD:master 2>/dev/null )   # Phase 0.5's job, done by the harness
 prep01 kc
-run_both "E-auto: re-running Step 2 → release_ahead=no, Case C (recent commit), no further bump" 'BINARY_UNKNOWN_WHY' kc "release_ahead=no"
-( cd "$T/dev/fx-mp" && printf '# scratch\n' >> plugins/kc/skills-scratch.md )
-gh_stub 10.0.0 PsychQuant/che-keychain CheKeychain
-prep01 kc
-f=$(prep "AUTO_PUSH='no'" kc); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='10.0.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
-OUT=$(cd "$T" && bash "$f" 2>&1)
-assert_contains "E-auto bump fence: dirty tree → refused with AUDIT, nothing written" "AUDIT: Phase 0.3 Case E-auto refused — tree not clean" "$OUT"
-assert_contains "E-auto refused: manifest untouched" '"binaryVersion": "9.9.9"' "$(cat "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json")"
-( cd "$T/dev/fx-mp" && rm -f plugins/kc/skills-scratch.md )
-gh_stub 9.9.9 PsychQuant/che-keychain CheKeychain
+run_both "after the bump: re-running Step 2 → release_ahead=no" 'BINARY_UNKNOWN_WHY' kc "release_ahead=no"
+export IDD_ALL_UNATTENDED=1
 # ver: wrapper reads plugin.json `version` → the pin IS the published version → unattended never bumps it
 mkdir -p "$T/dev/fx-mp/plugins/ver/.claude-plugin" "$T/dev/fx-mp/plugins/ver/bin"
 printf '{ "name": "ver", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/ver/.claude-plugin/plugin.json"
@@ -379,7 +377,7 @@ echo "#22 R9 — a wrapper that downloads from two repos (primary || fallback): 
 cp "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh" "$T/bot.bak"
 printf 'FB_REPO="Other/fallback"\ncurl -L https://github.com/$FB_REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' >> "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh"
 prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+f=$(prep "ALSO_VERSION='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
 assert_contains "two + fallback repo in one wrapper: the bump fence refuses (multi-repo inside a file)" "下載點指向多個 repo 或 repo 判不出" "$(cd "$T" && bash "$f" 2>&1)"
 assert_contains "two + fallback repo: …the wrapper is untouched" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
 cp "$T/bot.bak" "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh"; rm -f "$T/bot.bak"
@@ -388,14 +386,14 @@ echo
 echo "#22 R4 — Case E on a plugin whose two wrappers share one literal pin: every source is rewritten, the asset is pre-checked, half-bumps cannot be committed"
 two_stub 2.0.0 "AllMCP"   # v2.0.0 released WITHOUT BotMCP
 prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+f=$(prep "ALSO_VERSION='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
 OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
 assert_contains "two: bump to a release that lacks one wrapper's asset is REFUSED before writing" "✗ Case E: BotMCP not in PsychQuant/msg release v2.0.0" "$OUT"
 assert_contains "two: …and the other asset was checked too" "✅ Case E: AllMCP present in PsychQuant/msg release v2.0.0" "$OUT"
 assert_contains "two: …nothing written" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
 two_stub 2.0.0 "AllMCP BotMCP"
 prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
+f=$(prep "ALSO_VERSION='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "two: attended bump-together rewrites BOTH wrappers AND the manifest version (three files, literal pin + version live apart)" "DESIRED_VERSION: 1.0.0 → 2.0.0 in plugins/two/bin/all-wrapper.sh plugins/two/bin/bot-wrapper.sh plugins/two/.claude-plugin/plugin.json; version: 2.0.0" "$OUT"
 assert_contains "two: …all-wrapper.sh on disk"  'DESIRED_VERSION="2.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh")"
@@ -409,7 +407,7 @@ chmod 755 "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh" "$T/dev/fx-mp/plugins/tw
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm "two: exec bits" && git push -q origin HEAD:master 2>/dev/null )
 printf 'do not touch\n' > "$T/outside-target"; ln -s "$T/outside-target" "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh.pbm-tmp"
 prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+f=$(prep "ALSO_VERSION='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "two: bump succeeded" "DESIRED_VERSION: 1.0.0 → 2.0.0" "$OUT"
 assert_contains "two: all-wrapper.sh is still executable after the bump" "755" "$(stat -f %Lp "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh")"
@@ -418,13 +416,13 @@ assert_contains "two: git sees a content change only, no mode change" "count=0" 
 assert_contains "two: the symlink target outside the repo is untouched" "do not touch" "$(cat "$T/outside-target")"
 rm -f "$T/dev/fx-mp/plugins/two/bin/all-wrapper.sh.pbm-tmp"; ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two )
 prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='0.9.0'/" "$f"
+f=$(prep "ALSO_VERSION='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='0.9.0'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "two: NEW_PIN older than the pin is refused (no silent rollback)" "✗ Case E: NEW_PIN v0.9.0 不比目前 pin v1.0.0 新 — 不做 rollback" "$OUT"
 assert_contains "two: …nothing written" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
 chmod 555 "$T/dev/fx-mp/plugins/two/.claude-plugin"   # the manifest's directory is read-only → the third write (manifest) fails after the two wrappers went through
 prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
+f=$(prep "ALSO_VERSION='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
 chmod 755 "$T/dev/fx-mp/plugins/two/.claude-plugin"
 assert_contains "two: write-stage failure names the files that WERE written (no 'nothing written' claim)" "write-failed:" "$OUT"
@@ -432,15 +430,9 @@ assert_contains "two: …written= lists the wrappers" "written=['$T/dev/fx-mp/pl
 assert_contains "two: …the ✗ line says 已經改了 and gives the revert" "已經改了" "$OUT"
 assert_contains "two: …and the wrappers really are changed on disk" 'DESIRED_VERSION="2.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two && rm -f plugins/two/.claude-plugin/*.pbm-* )
-export IDD_ALL_UNATTENDED=1
+chmod 555 "$T/dev/fx-mp/plugins/two/.claude-plugin"
 prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
-OUT=$(cd "$T" && bash "$f" 2>&1)
-assert_contains "two: E-auto with ALSO_VERSION=yes is refused before any write (unattended never touches the published version)" "AUDIT: Phase 0.3 Case E-auto refused — unattended 不連帶 bump published version" "$OUT"
-assert_contains "two: …nothing on disk changed" "count=0" "count=$(cd "$T/dev/fx-mp" && git status --porcelain -- plugins/two | wc -l | tr -d ' ')"
-unset IDD_ALL_UNATTENDED; chmod 555 "$T/dev/fx-mp/plugins/two/.claude-plugin"
-prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
+f=$(prep "ALSO_VERSION='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
 chmod 755 "$T/dev/fx-mp/plugins/two/.claude-plugin"
 assert_contains "two: attended write-stage failure says 已改 and names the rewritten files (never 'left as is')" "已改的檔案：plugins/two/bin/all-wrapper.sh plugins/two/bin/bot-wrapper.sh" "$OUT"
@@ -449,40 +441,17 @@ assert_contains "two: …and that it was the write stage" "寫入階段失敗" "
 export IDD_ALL_UNATTENDED=1
 ( cd "$T/dev/fx-mp" && git push -q origin HEAD:master 2>/dev/null )
 prep01 two
-run_both "two: unattended → Case E-auto (two wrapper literals, no version source)" 'BINARY_UNKNOWN_WHY' two "→ Phase 0.3 sync intent: Case E-auto"
+run_both "two: unattended → not bumped (AUDIT), never Case E" 'BINARY_UNKNOWN_WHY' two "not bumped under unattended"
+unset IDD_ALL_UNATTENDED
 prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
+f=$(prep "ALSO_VERSION='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
 OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
-assert_contains "two: E-auto bumps both wrappers, commits and pushes (verified)" "AUDIT: Phase 0.3 Case E-auto — pin bumped to v2.0.0 (DESIRED_VERSION), committed and pushed to origin/" "$OUT"
+assert_contains "two: attended bump rewrites both wrappers" "DESIRED_VERSION: 1.0.0 → 2.0.0" "$OUT"
+( cd "$T/dev/fx-mp" && git add -A plugins/two && git -c user.name=t -c user.email=t@t commit -qm "chore(two): bump binary pin to v2.0.0 (DESIRED_VERSION)" && git push -q origin HEAD:master 2>/dev/null )
 assert_contains "two: …the commit touches exactly the two wrapper files" "count=2" "count=$(cd "$T/dev/fx-mp" && git show --stat --format= HEAD | grep -c 'wrapper.sh')"
-assert_contains "two: …subject" "chore(two): bump binary pin to v2.0.0 (DESIRED_VERSION)" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
 prep01 two
-run_both "two: after E-auto, Step 2 reads 2.0.0 from both wrappers and release_ahead=no" 'BINARY_UNKNOWN_WHY' two "binary=2.0.0 pinsrc=wrapper:all-wrapper.sh,wrapper:bot-wrapper.sh"
-export IDD_ALL_UNATTENDED=1
-( cd "$T/dev/fx-mp" && git config filter.pbmfail.clean false && git config filter.pbmfail.required true && printf 'plugins/two/bin/bot-wrapper.sh filter=pbmfail\n' > .gitattributes && git add .gitattributes && git -c user.name=t -c user.email=t@t commit -qm attrs && git push -q origin HEAD:master 2>/dev/null )
-two_stub 2.5.0 "AllMCP BotMCP"; printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v2.5.0 --repo PsychQuant/msg "*"--json assets"*) printf "AllMCP\\nBotMCP\\n" ;; "release view "*"--json assets"*) exit 1 ;; *) echo v2.5.0 ;; esac\n' > "$T/gh-stub"
-prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.5.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
-OUT=$(cd "$T" && bash "$f" 2>&1)
-assert_contains "two: E-auto with one wrapper whose git add fails (clean filter) → FAILED after write, nothing committed" "AUDIT: Phase 0.3 Case E-auto FAILED after write — git add 失敗" "$OUT"
-assert_contains "two: …HEAD is still the attrs commit (no half-staged pin commit)" "attrs" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
-# restore by content: the clean filter is DESIGNED to fail, so git checkout cannot be trusted to rewrite the files here
-( cd "$T/dev/fx-mp" || exit; git reset -q -- plugins/two 2>/dev/null; for w in all-wrapper.sh bot-wrapper.sh; do git show "HEAD:plugins/two/bin/$w" > "plugins/two/bin/$w"; done )   # reset also trips the failing filter: do not chain on it
-prep01 two
-OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
-assert_contains "two: …the same git add failure under zsh (the Bash tool's shell) still prints the AUDIT line" "AUDIT: Phase 0.3 Case E-auto FAILED after write — git add 失敗" "$OUT"
-assert_contains "two: …and under zsh HEAD is still the attrs commit" "attrs" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
-( cd "$T/dev/fx-mp" && git rm -q --cached .gitattributes && rm -f .gitattributes && git config --unset filter.pbmfail.clean; git config --unset filter.pbmfail.required; git reset -q -- plugins/two && git checkout -q -- plugins/two; git -c user.name=t -c user.email=t@t commit -qm "drop attrs" && git push -q origin HEAD:master 2>/dev/null )
-unset IDD_ALL_UNATTENDED
+run_both "two: after the bump, Step 2 reads 2.0.0 from both wrappers and release_ahead=no" 'BINARY_UNKNOWN_WHY' two "binary=2.0.0 pinsrc=wrapper:all-wrapper.sh,wrapper:bot-wrapper.sh"
 two_stub 3.0.0 "AllMCP BotMCP"; printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v3.0.0 --repo PsychQuant/msg "*"--json assets"*) printf "AllMCP\\nBotMCP\\n" ;; "release view "*"--json assets"*) exit 1 ;; *) echo v3.0.0 ;; esac\n' > "$T/gh-stub"
-( cd "$T/dev/fx-mp" && git remote set-url origin "$T/nonexistent-remote.git" )   # push will fail after the commit
-prep01 two
-f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='3.0.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
-OUT=$(cd "$T" && bash "$f" 2>&1)
-assert_contains "two: E-auto push failure prints an AUDIT line naming the local-only commit" "AUDIT: Phase 0.3 Case E-auto FAILED after write — push to origin/master failed; commit" "$OUT"
-assert_contains "two: …the commit exists locally" "chore(two): bump binary pin to v3.0.0 (DESIRED_VERSION)" "$(cd "$T/dev/fx-mp" && git log -1 --pretty=%s)"
-( cd "$T/dev/fx-mp" && git remote set-url origin "$T/remote.git" && git reset -q --hard origin/master )
-unset IDD_ALL_UNATTENDED
 echo
 echo "#22 R4 — Phase 5 must not dedupe by install name before comparing pins (two wrappers, one binary name, different pins)"
 mkdir -p "$T/dev/fx-mp/plugins/dup/.claude-plugin" "$T/dev/fx-mp/plugins/dup/bin"
@@ -512,7 +481,7 @@ prep01 kl
 run_both "kl: Step 2 → why=pin-unreadable with the key named" 'BINARY_UNKNOWN_WHY' kl "pinsrc=unreadable:binaryVersion unreleased=unknown why=pin-unreadable"
 run_both "kl: …the ⚠ line says the key is named by the wrapper but has no value (not 'wrapper reads nothing')" 'BINARY_UNKNOWN_WHY' kl "wrapper 讀 plugin.json 的 binaryVersion，但"
 echo
-echo "#22 R4 — hook-only layout WITH a pin (macdoc shape): the hook is the downloader, so Case E / E-auto / Phase 5 / Step 3 all reach it"
+echo "#22 R4 — hook-only layout WITH a pin (macdoc shape): the hook is the downloader, so Case E / Phase 5 / Step 3 all reach it"
 mkdir -p "$T/dev/fx-mp/plugins/hp/.claude-plugin" "$T/dev/fx-mp/plugins/hp/hooks"
 printf '{ "name": "hp", "version": "1.5.1", "binary_version": "0.7.0" }\n' > "$T/dev/fx-mp/plugins/hp/.claude-plugin/plugin.json"
 cat > "$T/dev/fx-mp/plugins/hp/hooks/session-start.sh" <<'SH'
@@ -551,13 +520,14 @@ run_both_ctx "hp: a not-done state names the hook as the thing to run, not the <
 printf '0.7.0\n' > "$T/bin/.hpbin.version"
 export IDD_ALL_UNATTENDED=1
 prep01 hp
-run_both "hp: unattended → Case E-auto (dedicated key)" 'BINARY_UNKNOWN_WHY' hp "→ Phase 0.3 sync intent: Case E-auto"
-prep01 hp
-f=$(prep "AUTO_PUSH='no'" hp); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
-OUT=$(cd "$T" && bash "$f" 2>&1)
-assert_contains "hp: E-auto bumps binary_version in the manifest, commits and pushes" "AUDIT: Phase 0.3 Case E-auto — pin bumped to v9.9.9 (binary_version), committed and pushed to origin/" "$OUT"
-assert_contains "hp: …manifest on disk" '"binary_version": "9.9.9"' "$(cat "$T/dev/fx-mp/plugins/hp/.claude-plugin/plugin.json")"
+run_both "hp: unattended → not bumped (AUDIT), even for a dedicated key" 'BINARY_UNKNOWN_WHY' hp "not bumped under unattended"
 unset IDD_ALL_UNATTENDED
+prep01 hp
+f=$(prep "ALSO_VERSION='no'" hp); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='9.9.9'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "hp: attended bump rewrites binary_version in the manifest" "binary_version: 0.7.0 → 9.9.9" "$OUT"
+assert_contains "hp: …manifest on disk" '"binary_version": "9.9.9"' "$(cat "$T/dev/fx-mp/plugins/hp/.claude-plugin/plugin.json")"
+( cd "$T/dev/fx-mp" && git add -A plugins/hp && git -c user.name=t -c user.email=t@t commit -qm "chore(hp): bump binary pin to v9.9.9 (binary_version)" && git push -q origin HEAD:master 2>/dev/null )
 echo
 echo "#22 R5 — Case E asset pre-check is monotone: a known-missing asset is not overwritten by a later row that cannot be checked"
 mkdir -p "$T/dev/fx-mp/plugins/lat/.claude-plugin" "$T/dev/fx-mp/plugins/lat/bin"
@@ -571,16 +541,11 @@ PYX
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm lat && git push -q origin HEAD:master 2>/dev/null )
 printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release view v2.0.0 --repo PsychQuant/lat "*"--json assets"*) echo AllMCP ;; "release view "*"--json assets"*) exit 1 ;; *) echo v2.0.0 ;; esac\n' > "$T/gh-stub"   # v2.0.0 exists but lacks BotMCP
 prep01 lat
-f=$(prep "AUTO_PUSH='no'" lat); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+f=$(prep "ALSO_VERSION='no'" lat); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "lat: first row missing, second row unknown → still REFUSED (state does not downgrade)" "✗ Case E: release v2.0.0 缺至少一支 wrapper 宣告的 asset" "$OUT"
 assert_contains "lat: …the missing asset was named" "✗ Case E: BotMCP not in PsychQuant/lat release v2.0.0" "$OUT"
 assert_contains "lat: …nothing written" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/lat/bin/bot-wrapper.sh")"
-prep01 lat
-f=$(prep "AUTO_PUSH='no'" lat); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
-OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1); RC=$?
-assert_contains "lat: E-auto × missing asset → AUDIT refused line (not a bare exit 1)" "AUDIT: Phase 0.3 Case E-auto refused — release v2.0.0 缺至少一支 wrapper 宣告的 asset" "$OUT"
-assert_contains "lat: …exit 75" "75" "$RC"
 echo
 echo "#22 R5 — two wrappers naming two different manifest keys with the same value: both keys (and version) are rewritten in ONE manifest buffer"
 mkdir -p "$T/dev/fx-mp/plugins/tk/.claude-plugin" "$T/dev/fx-mp/plugins/tk/bin"
@@ -596,7 +561,7 @@ printf '#!/bin/sh\n[ -n "${PBM_STUB_FAIL:-}" ] && exit 1\ncase "$*" in "release 
 prep01 tk
 run_both "tk: Step 2 lists both keys as sources, one value" 'BINARY_UNKNOWN_WHY' tk "binary=1.0.0 pinsrc=binary_version,binaryVersion"
 prep01 tk
-f=$(prep "AUTO_PUSH='no'" tk); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
+f=$(prep "ALSO_VERSION='no'" tk); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "tk: both keys and version bumped, manifest named once" "binary_version+binaryVersion: 1.0.0 → 2.0.0 in plugins/tk/.claude-plugin/plugin.json; version: 2.0.0" "$OUT"
 assert_contains "tk: …binary_version on disk" '"binary_version": "2.0.0"' "$(cat "$T/dev/fx-mp/plugins/tk/.claude-plugin/plugin.json")"
@@ -619,7 +584,7 @@ prep01 mr
 run_both "mr: Step 2 → release_ahead=unknown with the multi-repo reason (never Case E off the first repo's tag)" 'BINARY_UNKNOWN_WHY' mr "下載點不能歸屬到單一已知 repo（rc 2）— release-ahead 未核對"
 run_both "mr: …decision line" 'BINARY_UNKNOWN_WHY' mr "release_ahead=unknown"
 prep01 mr
-f=$(prep "AUTO_PUSH='no'" mr); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+f=$(prep "ALSO_VERSION='no'" mr); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "mr: the bump fence refuses a multi-repo plugin" "✗ Case E: wrapper 指向多個 repo（a/x|b/y）" "$OUT"
 assert_contains "mr: …nothing written" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/mr/bin/b.sh")"
@@ -684,6 +649,26 @@ run_both "selfp: Step 1 sees bin/selfp + binaryVersion" 'echo "→ Phase 0.3 Ste
 run_both "selfp: Step 2 → Case E with entry has no version" 'BINARY_UNKNOWN_WHY' selfp "→ Phase 0.3 sync intent: Case E"
 run_both "selfp: …entry has no version is named" 'BINARY_UNKNOWN_WHY' selfp "entry has no version"
 unset PBM_GH PLUGIN_BIN_DIR
+
+echo
+echo "#22 R12 — a literal pin under another variable name (VERSION=) is bumped on that line"
+mkdir -p "$T/dev/fx-mp/plugins/vn/.claude-plugin" "$T/dev/fx-mp/plugins/vn/bin"
+printf '{ "name": "vn", "version": "1.0.0" }\n' > "$T/dev/fx-mp/plugins/vn/.claude-plugin/plugin.json"
+printf '#!/bin/sh\nREPO="PsychQuant/vn"\nRELEASE_ASSET="VnBin"\nVERSION="1.2.3"\ncurl -L "https://github.com/$REPO/releases/download/v$VERSION/$RELEASE_ASSET"\n' > "$T/dev/fx-mp/plugins/vn/bin/w.sh"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"vn","version":"1.0.0","source":"./plugins/vn"}); json.dump(d,open(p,'w'))
+PYX
+( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm vn && git push -q origin HEAD:master 2>/dev/null )
+gh_stub 2.0.0 PsychQuant/vn VnBin
+prep01 vn
+run_both "vn: Step 2 reads the VERSION= literal as the pin and sees release v2.0.0 ahead" 'BINARY_UNKNOWN_WHY' vn "binary=1.2.3 pinsrc=wrapper:w.sh"
+prep01 vn
+f=$(prep "ALSO_VERSION='no'" vn); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+OUT=$(cd "$T" && zsh -c "$(cat "$f")" 2>&1)
+assert_contains "vn: the bump writes VERSION=\"2.0.0\" (the writer is not tied to the name DESIRED_VERSION)" 'VERSION="2.0.0"' "$(cat "$T/dev/fx-mp/plugins/vn/bin/w.sh")"
+assert_contains "vn: …and re-reads 2.0.0" "1.2.3 → 2.0.0" "$OUT"
+( cd "$T/dev/fx-mp" && git checkout -q -- plugins/vn )
 
 echo
 echo "plugin-debug version query (root-level manifest lookup):"

@@ -269,13 +269,15 @@ EOF
 # everything else. Run with `python3 -I` (isolated: no cwd / script-dir imports — wrapper dirs are third-party content).
 _pbm_core() {
   python3 -I - "$@" 2>/dev/null <<'PBM_CORE_PY'
-# pbm_core — closed-shape readers for plugin-binary-meta.sh (#22 verify R9 → R10 → R11).
+# pbm_core — closed-shape readers for plugin-binary-meta.sh (#22 verify R9 → R10 → R11 → R12).
 # Modes:  pin <wrapper> <manifest> <release-ERE> → prints "value|src" / "|src" ; exit 0 / 1 / 3 / 4
 #         repo <wrapper> <release-ERE>            → prints one repo per line, "?" for a download site whose repo is unknown ; exit 0
 #         mcp <.mcp.json>                        → exit 0 declares a plugin-local server / 1 does not / 4 cannot tell
 # The readers RECOGNISE a closed set of shapes and answer "cannot tell" (4) for everything else. They do not emulate shell
 # control flow: R5–R9 tried, and every round produced a counter-example; R10 left side paths open (a pin variable not named
-# DESIRED_VERSION, a repo variable overwritten later) and R11 closes them with the same rule.
+# DESIRED_VERSION, a repo variable overwritten later) and R11 closes them with the same rule. R12 replaces indentation with a
+# keyword block stack, accepts a manifest read only as the exact corpus pipeline over the plugin manifest, and treats every
+# version position it cannot read (an unknown token, a `gh release download <tag>`, a URL split over lines) as "cannot tell".
 import json, re, sys
 
 KEY_RE = re.compile(r'"(binary_version|binaryVersion|version)"[^"]*:')
@@ -331,10 +333,48 @@ def value_at(s, i):
     return s[i:j], j
 
 
+MANIFEST_OK = set()      # filled per file: variables whose every assignment ends in /.claude-plugin/plugin.json (+ an unassigned PLUGIN_JSON)
+STAGE_OK = [re.compile(r'^head\s+(-1|-n\s*1)$'), re.compile(r'^cut\s+-d\s*(\'"\'|\\")\s*-f\s*4$'),
+            re.compile(r'^sed\s+-E\s+\'s/\.\*"\(\[\^"\]\+\)"\$/\\1/\'$')]
+
+
+def split_pipe(t):
+    """split on unquoted `|` (not `||`)."""
+    out, cur, q, i = [], '', None, 0
+    while i < len(t):
+        c = t[i]
+        if q:
+            if c == q:
+                q = None
+        elif c in '\'"':
+            q = c
+        elif c == '|' and t[i:i + 2] != '||' and (i == 0 or t[i - 1] != '|'):
+            out.append(cur); cur = ''; i += 1; continue
+        cur += c; i += 1
+    out.append(cur)
+    return [x.strip() for x in out]
+
+
+def manifest_read(text):
+    """the exact corpus shape `$(grep -o[E] '<…"KEY"…>' "$MANIFEST" [2>/dev/null] [| head -1] [| cut -d'"' -f4 | sed …] [|| true])`
+    over a manifest variable → KEY; anything else → None (#22 verify R11: a key string in an assignment is not a manifest read)."""
+    if not (text.startswith('$(') and text.endswith(')')):
+        return None
+    body = re.sub(r'\s*\|\|\s*true\s*$', '', text[2:-1].strip())
+    stages = split_pipe(body)
+    m = re.match(r'^grep\s+-oE?\s+\'([^\']*)\'\s+"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?(\s+2>/dev/null)?$', stages[0])
+    if not m or m.group(2) not in MANIFEST_OK:
+        return None
+    k = KEY_RE.search(m.group(1))
+    if not k or not stages[1:] or not all(any(rx.match(st) for rx in STAGE_OK) for st in stages[1:]):
+        return None
+    return k.group(1)
+
+
 def classify(text):
-    m = KEY_RE.search(text)
-    if m:
-        return ('key', m.group(1))
+    key = manifest_read(text)
+    if key:
+        return ('key', key)
     inner = text
     if len(inner) >= 2 and inner[0] == inner[-1] and inner[0] in '\'"':
         inner = inner[1:-1]
@@ -345,10 +385,6 @@ def classify(text):
     return ('opaque', inner)
 
 
-def indent(l):
-    return len(l) - len(l.lstrip())
-
-
 def prev_code(lines, k):
     k -= 1
     while k >= 0 and lines[k].strip() == '':
@@ -356,74 +392,140 @@ def prev_code(lines, k):
     return k
 
 
-def opener(lines, k):
-    """the nearest preceding code line with smaller indentation (the block this line sits in), or -1 at top level."""
-    ind = indent(lines[k])
-    if ind == 0:
-        return -1
-    q = k - 1
-    while q >= 0:
-        if lines[q].strip() and indent(lines[q]) < ind:
-            return q
-        q -= 1
-    return -1
+def block_stacks(lines):
+    """for every logical line, the stack of enclosing blocks BEFORE that line, from shell keywords — never from indentation
+    (#22 verify R11: `if false; then` + an unindented assignment is not top level). Frames: ('func',) ('if', cond) ('elif', cond)
+    ('else', cond-of-its-if) ('case',) ('loop',) ('brace',)."""
+    stacks, st = [], []
+    for l in lines:
+        stacks.append(list(st))
+        t = l.strip()
+        if not t:
+            continue
+        if FUNC_DEF.match(t):
+            st.append(('func',)); continue
+        m = re.match(r'^if\s+(.*?)(\s*;\s*then)?\s*$', t)
+        if m and not re.search(r'(^|[;\s])fi\s*$', t):
+            st.append(('if', m.group(1))); continue
+        if re.match(r'^elif\b', t):
+            if st: st[-1] = ('elif', t)
+            continue
+        if t == 'else' or t.startswith('else '):
+            if st and st[-1][0] in ('if', 'elif'):
+                st[-1] = ('else', st[-1][1] if st[-1][0] == 'if' else '')
+            continue
+        if re.match(r'^fi\b', t):
+            if st: st.pop()
+            continue
+        if re.match(r'^case\b.*\bin$', t):
+            st.append(('case',)); continue
+        if re.match(r'^esac\b', t):
+            if st: st.pop()
+            continue
+        if re.match(r'^(for|while|until)\b', t) and not re.search(r'\bdone\b', t):
+            st.append(('loop',)); continue
+        if re.match(r'^done\b', t):
+            if st: st.pop()
+            continue
+        if t in ('{', '('):
+            st.append(('brace',)); continue
+        if t in ('}', ')') or t.startswith('} ') or t.startswith('};'):
+            if st: st.pop()
+            continue
+    return stacks
 
 
 def guard_res(var):
     dv = r'"?\$\{?' + var + r'\}?"?'
     return (re.compile(r'(\[\[?\s+-n\s+' + dv + r'\s+\]\]?\s*\|\||\[\[?\s+-z\s+' + dv + r'\s+\]\]?\s*&&)\s*$'),
-            re.compile(r'^if\s+\[\[?\s+-z\s+' + dv + r'\s+\]\]?\s*;\s*then\s*$'))
+            re.compile(r'^\[\[?\s+-z\s+' + dv + r'\s+\]\]?$'))
 
 
-MANIFEST_EXISTS = re.compile(r'^if\s+\[\[?\s+-[fr]\s+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?\s+\]\]?\s*;\s*then\s*$')
+MANIFEST_EXISTS = re.compile(r'^\[\[?\s+-[fr]\s+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?\s+\]\]?$')
 FUNC_DEF = re.compile(r'^(function\s+' + NAME + r'(\s*\(\))?|' + NAME + r'\s*\(\))\s*\{\s*$')
 
 
-def block_ok(lines, k, kind, val, elems, g_prev):
-    """is the block this assignment sits in one we recognise?  top level · a function body · `if [ -f "$X" ]` (manifest exists) ·
-    `if grep -q '"KEY"…'` around a read of KEY · the only-if-empty `if [[ -z ]]` · the `else` of `if grep -q '"PREVKEY"…'`."""
-    o = opener(lines, k)
-    if o < 0:
+def frame_ok(fr, zcond):
+    """a block we recognise: a function body · `if [[ -f "$X" ]]` (manifest exists) · `if grep -q '"KEY"…'` · the only-if-empty
+    `if [[ -z "$VAR" ]]` · the `else` of `if grep -q '"KEY"…'`. if uname / case / loops / elif / braces are not."""
+    if fr[0] == 'func':
         return True
-    s = lines[o].strip()
-    if FUNC_DEF.match(s) or MANIFEST_EXISTS.match(s) or g_prev.match(s):
-        return True
-    if s.startswith('if ') and 'grep -q' in s and kind == 'key' and ('"%s"' % val) in s:
-        return True
-    if s == 'else' and elems and elems[-1][0] == 'key':
-        return True
+    if fr[0] in ('if', 'else'):
+        c = fr[1]
+        if fr[0] == 'if' and (MANIFEST_EXISTS.match(c) or zcond.match(c)):
+            return True
+        if c.startswith('grep -q') and KEY_RE.search(c.replace("'", '')):
+            return True
     return False
 
 
-def else_guard(lines, k, elems):
-    p = prev_code(lines, k)
-    if p < 0 or lines[p].strip() != 'else' or not elems or elems[-1][0] != 'key':
-        return None
-    ind = indent(lines[p])
-    q = p - 1
-    while q >= 0 and not (re.match(r'\s*if\s', lines[q]) and indent(lines[q]) == ind):
-        q -= 1
-    if q >= 0 and 'grep -q' in lines[q] and ('"%s"' % elems[-1][1]) in lines[q]:
-        return ('absent', elems[-1][1])
-    return None
+def grep_key(cond):
+    m = KEY_RE.search(cond.replace("'", '')) if cond.startswith('grep -q') else None
+    return m.group(1) if m else None
 
 
-def version_vars(lines, rel):
-    """variables / literals at the VERSION position of release download lines."""
-    vars_, lits = [], []
-    rx = re.compile(r'/releases/(?:download|tags)/v?(\$\{?' + NAME + r'\}?|[0-9][A-Za-z0-9_.+-]*)(?=[/"\'\s}]|$)')
+GH_ARG_FLAGS = {'--repo', '-R', '-p', '--pattern', '-D', '--dir', '-O', '--output', '-A', '--archive'}
+
+
+def version_token(tok):
+    t = tok.strip('"\'')
+    t = t[1:] if t.startswith('v') and len(t) > 1 and (t[1].isdigit() or t[1] == '$') else t
+    m = re.match(r'^(\$\{?' + NAME + r'\}?|[0-9][A-Za-z0-9_.+-]*)$', t)
+    if not m:
+        return ('unknown',)
+    v = VAR_FULL.match(t)
+    return ('var', v.group(1)) if v else ('lit', t)
+
+
+def version_positions(lines, rel):
+    """every VERSION position on a release-download line: ('var', NAME) · ('lit', x.y.z) · ('latest',) · ('unknown',).
+    A position we cannot read — an unknown token, `/releases/download` with nothing after it (a URL split over lines),
+    `gh release download <tag>` with an unrecognised tag — is ('unknown',), never skipped (#22 verify R11)."""
+    out = []
     for l in lines:
         if not l.strip() or not rel.search(l):
             continue
-        for m in rx.finditer(l):
-            t = m.group(1)
-            v = VAR_FULL.match(t)
-            if v:
-                if v.group(1) not in vars_:
-                    vars_.append(v.group(1))
-            elif t not in lits:
-                lits.append(t)
-    return vars_, lits
+        for m in re.finditer(r'/releases/(latest|download|tags)\b(/?)', l):
+            if m.group(1) == 'latest':
+                out.append(('latest',)); continue
+            if not m.group(2):
+                out.append(('unknown',)); continue
+            rest = l[m.end():]
+            if rest.startswith('latest/') or rest.startswith('latest"'):
+                out.append(('latest',)); continue
+            t = re.match(r'v?(\$\{?' + NAME + r'\}?|[0-9][A-Za-z0-9_.+-]*)(?=[/"\'\s}]|$)', rest)
+            if not t:
+                out.append(('unknown',)); continue
+            out.append(version_token(t.group(1)))
+        for m in re.finditer(r'\bgh\s+release\s+download\b(.*)', l):
+            args = re.split(r'[;|&]', m.group(1))[0].split()
+            tag, skip = None, False
+            for a in args:
+                if skip:
+                    skip = False; continue
+                if a in GH_ARG_FLAGS:
+                    skip = True; continue
+                if a.startswith('-'):
+                    continue
+                tag = a; break
+            out.append(('latest',) if tag is None else version_token(tag))
+    return out
+
+
+def manifest_vars(lines):
+    """variables that name the plugin manifest: every assignment ends in `/.claude-plugin/plugin.json`; an unassigned
+    `PLUGIN_JSON` is the corpus convention and counts too (accepted trade-off, #22 verify R11)."""
+    seen = {}
+    AS = re.compile(r'(?<![^\s;&|{(])(?:export\s+|local\s+|readonly\s+)?(' + NAME + r')=')
+    for l in lines:
+        for m in AS.finditer(l):
+            text, _ = value_at(l, m.end())
+            inner = text.strip('"\'')
+            seen.setdefault(m.group(1), []).append(inner.endswith('/.claude-plugin/plugin.json'))
+    ok = {v for v, flags in seen.items() if flags and all(flags)}
+    if 'PLUGIN_JSON' not in seen:
+        ok.add('PLUGIN_JSON')
+    return ok
 
 
 def mode_pin(path, manifest, rel_re):
@@ -433,52 +535,75 @@ def mode_pin(path, manifest, rel_re):
     U = '|wrapper:%s' % base
     lines = logical_lines(path)
     rel = re.compile(rel_re.replace('[[:space:]]', r'\s'))
-    var = 'DESIRED_VERSION'
+    MANIFEST_OK.clear(); MANIFEST_OK.update(manifest_vars(lines))
+    pos = version_positions(lines, rel)
+    if any(p[0] == 'unknown' for p in pos) or any(p[0] == 'lit' for p in pos):
+        print(U); return 4                      # a version position we cannot read, or a literal version in the URL
+    pvars = []
+    for p in pos:
+        if p[0] == 'var' and p[1] not in pvars:
+            pvars.append(p[1])
     has_dv = any(re.search(r'(?<![^\s;&|{(])(?:export\s+|local\s+)?DESIRED_VERSION=', l) for l in lines)
-    if not has_dv:
-        # the pin variable is the one the release URL puts at the VERSION position (`/releases/download/v$WANT/`, macdoc);
-        # a literal version there, or more than one variable, is a pin we do not read (#22 verify R10)
-        vs, lits = version_vars(lines, rel)
-        if lits or len(vs) > 1:
+    if has_dv:
+        # DESIRED_VERSION must be what the URL uses: directly, or through a variable every assignment of which is built from it
+        # (`TAG="v$DESIRED_VERSION"`); assigned but unused (only /releases/latest), or another variable there → rc 4 (#22 verify R11)
+        derived = set()
+        for vname in pvars:
+            vals = []
+            for l in lines:
+                for m in re.finditer(r'(?<![^\s;&|{(])(?:export\s+|local\s+)?' + vname + r'=', l):
+                    vals.append(value_at(l, m.end())[0])
+            if vals and all(re.search(r'\$\{?DESIRED_VERSION\}?', v) for v in vals):
+                derived.add(vname)
+        if not pvars or any(v != 'DESIRED_VERSION' and v not in derived for v in pvars):
             print(U); return 4
-        if not vs:
+        var = 'DESIRED_VERSION'
+    else:
+        if len(pvars) > 1:
+            print(U); return 4
+        if not pvars:
             m = re.search(r'(?<![A-Za-z0-9_])(binary_version|binaryVersion)(?![A-Za-z0-9_])', '\n'.join(lines))
-            if m:                               # names a pin key it does not use at a version position: cannot tell
+            if m and not pos:                   # names a pin key but has no version position at all: cannot tell
                 print('|%s' % m.group(1)); return 4
-            print('|none'); return 1            # downloads latest: no pin
-        var = vs[0]
-    g_same, g_prev = guard_res(var)
+            print('|none'); return 1            # every download is /releases/latest (or a tag-less gh download): no pin
+        var = pvars[0]
+    g_same, g_cond = guard_res(var)
     ASSIGN = re.compile(r'(?<![^\s;&|{(])(?:export\s+|local\s+)?' + var + r'=')
+    stacks = block_stacks(lines)
     elems, seen = [], False
     for k, l in enumerate(lines):
         for m in ASSIGN.finditer(l):
             seen = True
+            frames = stacks[k]
+            if not all(frame_ok(fr, g_cond) for fr in frames):
+                print(U); return 4              # inside a block we do not recognise, at ANY level (keyword stack, not indentation)
             text, _ = value_at(l, m.end())
             kind, val = classify(text)
             pre = l[:m.start()]
+            inner = frames[-1] if frames else None
             if kind == 'empty':
-                if elems or pre.strip():        # a reset AFTER a value, or a conditional reset: not a shape we recognise
+                if elems or pre.strip():
                     print(U); return 4
                 continue
             if not elems:
-                # the FIRST value: nothing before it on the line, and in a block we recognise (R10 checked only later values)
-                if pre.strip() or not block_ok(lines, k, kind, val, elems, g_prev):
+                if pre.strip():
                     print(U); return 4
+                gk = grep_key(inner[1]) if inner and inner[0] in ('if', 'else') else None
+                if inner and inner[0] == 'else':
+                    print(U); return 4          # a FIRST value only in an else branch
+                if gk and (kind != 'key' or val != gk):
+                    print(U); return 4          # `if grep -q KEY` around something other than a read of KEY
                 g = 'first'
             elif g_same.search(pre):
-                if not block_ok(lines, k, kind, val, elems, g_prev):
-                    print(U); return 4
                 g = 'empty'
             elif pre.strip():
                 print(U); return 4
+            elif inner and inner[0] == 'if' and g_cond.match(inner[1]):
+                g = 'empty'
+            elif inner and inner[0] == 'else' and elems[-1][0] == 'key' and grep_key(inner[1]) == elems[-1][1]:
+                g = ('absent', elems[-1][1])
             else:
-                p = prev_code(lines, k)
-                if p >= 0 and g_prev.match(lines[p].strip()):
-                    g = 'empty'
-                else:
-                    g = else_guard(lines, k, elems)
-                    if not g:                   # a second value with no recognised only-if-empty guard
-                        print(U); return 4
+                print(U); return 4              # a second value with no recognised only-if-empty guard
             elems.append((kind, val, g))
     if not seen or not elems:
         print(U); return 4
@@ -560,7 +685,9 @@ def mode_mcp(path):
         return 4
     if not isinstance(d, dict):
         return 4
-    servers = d.get('mcpServers') if isinstance(d.get('mcpServers'), dict) else d
+    if 'mcpServers' in d and not isinstance(d['mcpServers'], dict):
+        return 4                                # a malformed mcpServers is "cannot tell", not "no server" (#22 verify R11)
+    servers = d['mcpServers'] if 'mcpServers' in d else d
     # a server BACKED BY A PLUGIN-LOCAL EXECUTABLE: its command lives under the plugin (`${CLAUDE_PLUGIN_ROOT}/…`, `./…`,
     # `bin/…`). A remote `url`, or `npx` / `uvx` / any PATH command, ships no release binary (#22 verify R10)
     for v in servers.values():
@@ -655,6 +782,10 @@ EOF
     key=$(plugin_binary_version_key "$manifest" 2>/dev/null); rc=$?
     if [ -n "$key" ]; then hits="${hits:+$hits }pin:$key"
     elif [ "$rc" = 4 ]; then unknown="${unknown:+$unknown }unknown:manifest"; fi
+  fi
+  # a symlink in bin/ or hooks/ is not scanned (it may point outside the plugin); with nothing else to go on that is "cannot tell"
+  if [ -z "$hits" ] && [ -n "$(find "$dir/bin" "$dir/hooks" -maxdepth 1 -type l 2>/dev/null | head -1)" ]; then
+    unknown="${unknown:+$unknown }unknown:symlink"
   fi
   if [ -n "$hits" ]; then printf '%s\n' "$hits"; return 0; fi
   if [ -n "$unknown" ]; then printf '%s\n' "$unknown"; return 4; fi

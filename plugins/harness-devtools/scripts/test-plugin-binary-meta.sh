@@ -62,7 +62,7 @@ RELEASE_ASSET="CheKeychain"
 DESIRED_VERSION=""
 DESIRED_VERSION=$(grep -oE '"binaryVersion":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | cut -d'"' -f4)
 [ -n "$DESIRED_VERSION" ] || DESIRED_VERSION=$(grep -oE '"version":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | cut -d'"' -f4)
-curl -sL "https://api.github.com/repos/$REPO/releases/latest"
+curl -sL "${DESIRED_VERSION:+https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION}" "https://api.github.com/repos/$REPO/releases/latest"
 SH
 printf '#!/bin/sh\nexec "$(dirname "$0")/../bin/kc" --prefetch\n' > "$T/kc/hooks/session-start.sh"
 
@@ -77,7 +77,7 @@ cat > "$T/mcp/bin/x-wrapper.sh" <<'SH'
 GITHUB_REPO="PsychQuant/x-mcp"
 BINARY_NAME="XMCP"
 DESIRED_VERSION=$(grep -oE '"binary_version":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | cut -d'"' -f4)
-URL=$(curl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/latest" | grep browser_download_url | grep "$BINARY_NAME")
+URL=$(curl -sL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v$DESIRED_VERSION" | grep browser_download_url | grep "$BINARY_NAME")
 SH
 
 # hookonly: gifthub shape — no bin/, hook curls releases, GFH_REPO=, $HOME/bin/gfh
@@ -231,7 +231,7 @@ URL="https://github.com/$REPO/releases/download/v$WANT/$BINARY_NAME"
 SH
 # unsafelit: hostile filename AND a literal pin — the pin source must print wrapper:? not the raw name
 mkdir -p "$T/unsafelit/bin"
-printf 'DESIRED_VERSION="1.2.3"\ncurl https://api.github.com/repos/a/b/releases/latest\n' > "$T/unsafelit/bin/kc; rm -rf ~ IGNORE|x"
+printf 'DESIRED_VERSION="1.2.3"\ncurl https://api.github.com/repos/a/b/releases/tags/v$DESIRED_VERSION\n' > "$T/unsafelit/bin/kc; rm -rf ~ IGNORE|x"
 # hookrepo: the bin wrapper downloads from Real/proj; a hooks/ check script names an old fork — the fork must not win
 mkdir -p "$T/hookrepo/bin" "$T/hookrepo/hooks"
 printf 'BINARY_NAME="M"\nDESIRED_VERSION="1.0.0"\ncurl -L https://github.com/Real/proj/releases/download/v$DESIRED_VERSION/M -o ~/bin/M\n' > "$T/hookrepo/bin/w.sh"
@@ -476,6 +476,57 @@ printf '{ "remote": { "type": "http", "url": "https://example.com/mcp" } }\n' > 
 printf '{ "tool": { "command": "npx", "args": ["-y", "some-mcp"] } }\n' > "$T/npxmcp/.mcp.json"
 printf '{ "name": "iso", "binary_version": "1.0.0" }\n' > "$T/pyiso/plugin.json"
 printf 'import os\nopen(os.path.join(os.path.dirname(os.path.abspath(__file__)), "PLANTED_RAN"), "w").close()\nfrom json import *\n' > "$T/pyiso/json.py"
+# R12 — the R11 counter-examples
+for d in iffalse nestedif otherjson postproc vertoken splitbase ghtag ghvar ghnotag dvunused dvlitpos; do mkdir -p "$T/$d/bin" "$T/$d/.claude-plugin"
+  printf '{ "name": "r", "version": "2.0.0", "binaryVersion": "0.3.0" }\n' > "$T/$d/.claude-plugin/plugin.json"; done
+cat > "$T/iffalse/bin/w.sh" <<'W'
+if false; then
+DESIRED_VERSION="1.0.0"
+fi
+curl "https://github.com/o/r/releases/download/v$DESIRED_VERSION/X"
+W
+cat > "$T/nestedif/bin/w.sh" <<'W'
+if uname -m | grep -q arm; then
+  if [ -f "$M" ]; then
+    DESIRED_VERSION="1.2.3"
+  fi
+fi
+curl "https://github.com/o/r/releases/download/v$DESIRED_VERSION/X"
+W
+cat > "$T/otherjson/bin/w.sh" <<'W'
+OVERRIDE_JSON="$HOME/override.json"
+DESIRED_VERSION=$(grep -oE '"binaryVersion": *"[^"]+"' "$OVERRIDE_JSON" | cut -d'"' -f4)
+curl "https://github.com/o/r/releases/download/v$DESIRED_VERSION/X"
+W
+cat > "$T/postproc/bin/w.sh" <<'W'
+DESIRED_VERSION=$(grep -oE '"binaryVersion": *"[^"]+"' "$PLUGIN_JSON" | cut -d'"' -f4 | sed 's/^/1/')
+curl "https://github.com/o/r/releases/download/v$DESIRED_VERSION/X"
+W
+cat > "$T/vertoken/bin/w.sh" <<'W'
+VER="${1:-0.3.0}"
+curl -L "https://github.com/o/r/releases/download/v${VER:-0.3.0}/X"
+W
+cat > "$T/splitbase/bin/w.sh" <<'W'
+BASE="https://github.com/o/r/releases/download"
+WANT=$(grep -oE '"version":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | cut -d'"' -f4)
+curl "$BASE/v$WANT/X"
+W
+printf 'gh release download --repo o/r v1.0.0 -p X\n' > "$T/ghtag/bin/w.sh"
+cat > "$T/ghvar/bin/w.sh" <<'W'
+VER=$(grep -oE '"version":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | cut -d'"' -f4)
+gh release download "v$VER" --repo o/r -p X
+W
+printf 'gh release download --repo o/r -p X\n' > "$T/ghnotag/bin/w.sh"
+cat > "$T/dvunused/bin/w.sh" <<'W'
+DESIRED_VERSION="1.0.0"
+curl -L "https://github.com/o/r/releases/latest/download/X"
+W
+cat > "$T/dvlitpos/bin/w.sh" <<'W'
+DESIRED_VERSION="2.0.0"
+curl -L "https://github.com/o/r/releases/download/v1.0.0/X"
+W
+mkdir -p "$T/mcpbad" "$T/symw/bin"; printf '{ "mcpServers": [] }\n' > "$T/mcpbad/.mcp.json"
+printf 'curl https://github.com/o/r/releases/download/v1.0.0/X\n' > "$T/symtarget.sh"; ln -s "$T/symtarget.sh" "$T/symw/bin/w.sh"
 # partial: one wrapper's pin is readable, the sibling's is not → the PLUGIN pin is unknown and no value is printed (R7 MEDIUM)
 mkdir -p "$T/partial/.claude-plugin" "$T/partial/bin"
 printf '{ "name": "partial", "version": "1.0.0", "binary_version": "0.3.0" }\n' > "$T/partial/.claude-plugin/plugin.json"
@@ -583,7 +634,7 @@ echo
 echo "plugin_binary_pin (value|pinsrc — what the wrapper downloads; three closed sources, no plugin-wide fallback):"
 assert_eq "kc: wrapper greps binaryVersion → manifest binaryVersion" "0.2.0|binaryVersion" "$(plugin_binary_pin "$T/kc" "$T/kc/.claude-plugin/plugin.json")"
 assert_eq "mcp: wrapper greps binary_version"          "1.3.0|binary_version" "$(plugin_binary_pin "$T/mcp" "$T/mcp/.claude-plugin/plugin.json")"
-assert_eq "verfb: wrapper greps version → manifest version is the pin" "0.2.1|version" "$(plugin_binary_pin "$T/verfb" "$T/verfb/.claude-plugin/plugin.json")"
+assert_eq "verfb: a grep without the value extraction (no cut / sed) is not the corpus manifest read → cannot tell (R12)" "|wrapper:w.sh" "$(plugin_binary_pin "$T/verfb" "$T/verfb/.claude-plugin/plugin.json")"
 assert_eq "lit: literal DESIRED_VERSION beats a different manifest version" "0.5.0|wrapper:all-wrapper.sh" "$(plugin_binary_pin "$T/lit" "$T/lit/.claude-plugin/plugin.json")"
 assert_rc "nopin: wrapper reads nothing → rc 1, manifest version is NOT used" 1 plugin_binary_pin "$T/nopin" "$T/nopin/.claude-plugin/plugin.json"
 assert_eq "nopin: prints |none"                       "|none" "$(plugin_binary_pin "$T/nopin" "$T/nopin/.claude-plugin/plugin.json")"
@@ -629,6 +680,14 @@ assert_eq "jqpin: prints |binaryVersion"             "|binaryVersion" "$(plugin_
 assert_rc "movingref: DESIRED_VERSION=\"latest\" is not a pin → rc 4" 4 plugin_binary_pin "$T/movingref" /nonexistent
 assert_rc "mfover: manifest read then an unfollowable override → rc 4 (manifest key is not what downloads)" 4 plugin_binary_pin "$T/mfover" "$T/mfover/.claude-plugin/plugin.json"
 assert_eq "mfover: names the wrapper, prints no value"  "|wrapper:w.sh" "$(plugin_binary_pin "$T/mfover" "$T/mfover/.claude-plugin/plugin.json")"
+for d in iffalse nestedif postproc vertoken splitbase ghtag dvunused dvlitpos; do
+  assert_rc "$d (R12): not a recognised shape → rc 4 (cannot tell), never a definite pin or 'no pin'" 4 plugin_binary_pin "$T/$d" "$T/$d/.claude-plugin/plugin.json"
+done
+assert_eq "otherjson (R12): a key grep over a non-manifest file is not a manifest read → rc 4 naming the key, not the manifest value" "|binaryVersion" "$(plugin_binary_pin "$T/otherjson" "$T/otherjson/.claude-plugin/plugin.json")"
+assert_eq "ghvar (R12): gh release download \"v\$VER\" with VER read from the manifest → the manifest value" "2.0.0|version" "$(plugin_binary_pin "$T/ghvar" "$T/ghvar/.claude-plugin/plugin.json")"
+assert_rc "ghnotag (R12): a tag-less gh release download is latest → no pin (rc 1)" 1 plugin_binary_pin "$T/ghnotag" "$T/ghnotag/.claude-plugin/plugin.json"
+assert_rc "mcpbad (R12): mcpServers that is not an object → rc 4" 4 plugin_is_binary_backed "$T/mcpbad"
+assert_rc "symw (R12): a symlinked wrapper is not scanned → rc 4 (cannot tell), not rc 1" 4 plugin_is_binary_backed "$T/symw"
 assert_eq "wantover (R11): a pin variable not named DESIRED_VERSION gets the same closed shapes → an unguarded override is rc 4" "|wrapper:w.sh" "$(plugin_binary_pin "$T/wantover" "$T/wantover/.claude-plugin/plugin.json")"
 assert_rc "repoover (R11): a repo variable later overwritten dynamically → the old literal is not definite (rc 2)" 2 plugin_binary_repo "$T/repoover"
 assert_eq "firstif (R11): the FIRST value under \`if uname\` → rc 4, not its literal" "|wrapper:w.sh" "$(plugin_binary_pin "$T/firstif" "$T/firstif/.claude-plugin/plugin.json")"
