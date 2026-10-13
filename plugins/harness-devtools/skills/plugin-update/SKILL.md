@@ -324,9 +324,11 @@ cd "$MP_ROOT" || exit 1
 # （REPO= 與 GITHUB_REPO= 都不是判準）。不掃 skills/ 散文——harness-devtools 自己的 SKILL.md 就會命中（#18 R4）。
 # helper 不用 glob（find 列檔），zsh nomatch 不會中止 fence（#18 R7）；不用 `ls | xargs grep | head` 那種退出碼恆 0 的 pipeline（#18 R5）。
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/plugin-binary-meta.sh" && command -v plugin_binary_pin >/dev/null 2>&1 || { echo "✗ 載不到 scripts/plugin-binary-meta.sh（plugin cache 不完整或檔案壞掉）— binary 判定無法進行；不得當成「非 binary-backed」" >&2; exit 1; }
-BINARY_HITS=$(plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST") && IS_BINARY_BACKED=true || IS_BINARY_BACKED=false
+BINARY_HITS=$(plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"); case $? in 0) IS_BINARY_BACKED=true ;; 4) IS_BINARY_BACKED=unknown ;; *) IS_BINARY_BACKED=false ;; esac
 echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=${IS_BINARY_BACKED}${BINARY_HITS:+ ($BINARY_HITS)}"
-[ "$IS_BINARY_BACKED" = true ] || echo "  （四個信號皆未命中：.mcp.json / bin/* 含 release URL / hooks/* 含 release URL / manifest 有 binary_version 或 binaryVersion。不等於一定沒有 binary——但已沒有其他結構信號可查；wrapper 不放在 bin/ 或 hooks/ 的佈局本 skill 不認）"
+# 判不出（.mcp.json 不是合法 JSON / manifest 讀不動）不是「沒有」：Step 2 會 abort，不讓它變成非 binary-backed 的 Case A（#22 verify R8）
+[ "$IS_BINARY_BACKED" != unknown ] || echo "  ⚠ 有探測點答不出來（${BINARY_HITS}）— 先修好那個檔案；這不是「非 binary-backed」"
+[ "$IS_BINARY_BACKED" != false ] || echo "  （四個信號皆未命中：.mcp.json / bin/* 含 release URL / hooks/* 含 release URL / manifest 有 binary_version 或 binaryVersion。不等於一定沒有 binary——但已沒有其他結構信號可查；wrapper 不放在 bin/ 或 hooks/ 的佈局本 skill 不認）"
 ```
 
 **非 binary-backed plugin（純 skill / rule / agent）也照跑 Step 2**（#19）：它們的 binary 信號為空（`BINARY_UNRELEASED` 空 → 不進 Case B），但 `MP_DRIFT`、`SHELL_RECENT_TOUCHES`、`SHELL_DIRTY` 這三個信號跟 binary 無關、只算在 Step 2 裡——跳過 Step 2 等於純 shell plugin 在 Phase 2 之前沒有任何地方判定「marketplace.json 落後了沒」，也沒有 no-op 早退。#19 之前這裡寫「跳過 Phase 0.3，直接走 Phase 0.5」，理由是「沒改 → Phase 0.5 自然 abort」；但 0.5 看的是**此刻**有沒有待推送，跟「30 天內改過、已 push、marketplace 還沒鏡像」是正交的（那正是 Case C 該接住的情境），而 2026-08-31 che-apple-mail-mcp 3.0.0 的誤攔就是兩道 gate 判準正交的結果。
@@ -361,8 +363,8 @@ case "$SHELL_VERSION" in *[!0-9A-Za-z.+-]*) echo "✗ Phase 0.3: $PLUGIN_MANIFES
 # 哪個 key（binary_version / binaryVersion / version，依它自己寫的優先序；che-keychain 讀 binaryVersion 再 version、che-apple-notes-mcp 只讀 version）；
 # (3) 都沒有 → no-pin。**沒有** manifest 層的全域回退——R1 不回退、R2 回退 version 都錯，因為兩者都用 manifest 猜 wrapper 在做什麼（#22 verify R2）。
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/plugin-binary-meta.sh" && command -v plugin_binary_pin >/dev/null 2>&1 || { echo "✗ 載不到 scripts/plugin-binary-meta.sh（plugin cache 不完整或檔案壞掉）— binary 判定無法進行；不得當成「非 binary-backed」" >&2; exit 1; }
-# Step 1 的判定不跨 fence：同一個 helper 重算（值不靠上一個 shell）
-BINARY_HITS=$(plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST") && IS_BINARY_BACKED=true || IS_BINARY_BACKED=false
+# Step 1 的判定不跨 fence：同一個 helper 重算（值不靠上一個 shell）；判不出（rc 4）→ abort，不當成非 binary-backed（#22 verify R8）
+BINARY_HITS=$(plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"); case $? in 0) IS_BINARY_BACKED=true ;; 4) echo "✗ Phase 0.3: binary-backed 判不出（${BINARY_HITS}：.mcp.json 不是合法 JSON 或 manifest 讀不動）— 先修好再重跑；不得當成非 binary-backed" >&2; exit 1 ;; *) IS_BINARY_BACKED=false ;; esac
 BINARY_VERSION=""; BINARY_PIN_SRC=""; PBP_RC=""
 if [ "$IS_BINARY_BACKED" = true ]; then
     PBP=$(plugin_binary_pin "$PLUGIN_DIR" "$PLUGIN_MANIFEST"); PBP_RC=$?
@@ -372,7 +374,7 @@ if [ "$IS_BINARY_BACKED" = true ]; then
       2) echo "⚠ $PLUGIN_DIR 的 wrapper 各自 pin 不同版本（$(plugin_binary_wrappers "$PLUGIN_DIR" "$PLUGIN_MANIFEST" | grep -v '|none$' | cut -d'|' -f2,6,7 | tr '\n' ' ')）— 不是單一 pin，視為 unknown"; BINARY_VERSION=""; BINARY_PIN_SRC=conflict ;;
       4) case "$BINARY_PIN_SRC" in
            *,*) echo "⚠ $PLUGIN_DIR 的 wrapper 各自的 pin 來源 ${BINARY_PIN_SRC} 中有讀不出的（字面被動態覆寫 / 移動 ref / manifest key 缺值）— plugin 的 pin unknown（不是 no-pin；不印任何一支的值）" ;;
-           wrapper:*) echo "⚠ $PLUGIN_DIR 的 ${BINARY_PIN_SRC#wrapper:} 對 DESIRED_VERSION 的最後一次賦值不是字面（引數 / 動態運算）— pin 讀不到（不是 no-pin：wrapper 有 pin 的概念，只是本 skill 讀不出值；要讓 Case E / Phase 5 可用，把 pin 寫成字面或讀 plugin.json 的 key）" ;;
+           wrapper:*) echo "⚠ $PLUGIN_DIR 的 ${BINARY_PIN_SRC#wrapper:} 對 DESIRED_VERSION 的賦值鏈裡有本 skill 讀不出的一環（引數 / 動態運算 / 有條件的覆寫，或不是 x.y.z 的字面如 latest、v1.2.3）— pin 讀不到（不是 no-pin：wrapper 有 pin 的概念，只是本 skill 讀不出值；要讓 Case E / Phase 5 可用，把 pin 寫成字面或讀 plugin.json 的 key）" ;;
            *) echo "⚠ $PLUGIN_DIR 的 wrapper 讀 plugin.json 的 ${BINARY_PIN_SRC}，但 $PLUGIN_MANIFEST 沒有可用的值（key 缺 / 值非法 / 讀不到）— pin unknown（不是 no-pin：key 已被 wrapper 點名，該做的是在 manifest 給它一個 x.y.z）" ;;
          esac; BINARY_VERSION=""; BINARY_PIN_SRC="unreadable:${BINARY_PIN_SRC}" ;;
     esac
@@ -733,6 +735,8 @@ EOF
 [ -z "$SKIPPED" ] || echo "ℹ Case E: ${SKIPPED} 本 skill 讀不出 pin（pinsrc=none：檔內沒有 DESIRED_VERSION 字面、也沒點名 plugin.json 的 key）— 未改；它實際下載什麼本 skill 不知道"
 # 多 repo：NEW_PIN 只是其中一個 repo 的 tag，卻會寫進每支 wrapper → 拒絕（Step 2 對這種 plugin 本來就印 release_ahead=unknown；#22 verify R4）
 case "$REPOS" in *"|"*) refuse "wrapper 指向多個 repo（${REPOS}）— v${NEW_PIN} 只屬於其中一個，不逐支自動改；手動逐 wrapper 處理" ;; esac
+# 同一支 wrapper 裡就有兩個下載 repo（primary || fallback）時，列的 repo 欄是空的——plugin 層的判定才看得到（#22 verify R8）
+plugin_binary_repo "$PLUGIN_DIR" >/dev/null; [ $? != 2 ] || refuse "有 wrapper 從多個 repo 下載 — v${NEW_PIN} 只屬於其中一個，不自動改；手動逐 wrapper 處理"
 TOUCHES_VERSION=no; case "$KEYS" in *"|version|"*) TOUCHES_VERSION=yes ;; esac
 KEYDESC=$(printf '%s' "$TARGETS" | sed 's/^.*|//' | awk '!seen[$0]++' | paste -sd+ -)
 if [ "$TOUCHES_VERSION" = yes ] && [ "$ALSO_VERSION" = yes ]; then echo "ℹ pin 就是 version 欄位本身；「一起 bump」與「只 bump pin」在這個 plugin 上是同一件事"; ALSO_VERSION=no; fi
@@ -763,6 +767,8 @@ EOF
 # unattended 自動 bump 的前提：asset 預檢全 ok、樹乾淨、與 upstream 分歧 0 0（沒有任何既有變更要人裁決）；否則拒絕、印 AUDIT、由 Step 2 的 shell case 決定
 if [ "$AUTO_PUSH" = yes ]; then
     [ "$TOUCHES_VERSION" != yes ] || refuse "pinsrc=version 不自動 bump（會改 published version）"
+    # unattended 的寫入範圍是封閉的：只改 pin。三個代入值組錯（ALSO_VERSION='yes'）時這裡是最後一道防線（#22 verify R8）
+    [ "$ALSO_VERSION" != yes ] || refuse "unattended 不連帶 bump published version（ALSO_VERSION 必須是 no）"
     [ "$ASSET_STATE" = ok ] || { echo "AUDIT: Phase 0.3 Case E-auto refused — asset pre-check for v${NEW_PIN} not conclusive (${ASSET_STATE}); pin v${OLD_PIN} left as is; continue as the shell-signal case"; exit 75; }
     UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || { echo "AUDIT: Phase 0.3 Case E-auto refused — no upstream"; exit 75; }
     DIV=$(git rev-list --left-right --count '@{u}...HEAD' 2>/dev/null | tr '\t' ' ')
@@ -1309,7 +1315,7 @@ cd "$MP_ROOT" || exit 1
 [ -n "$PLUGIN_MANIFEST" ] || { echo "✗ Phase 1.5: $PLUGIN_DIR 沒有 plugin manifest（Step 0.1 應已擋下）" >&2; exit 1; }
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/plugin-binary-meta.sh" && command -v plugin_binary_pin >/dev/null 2>&1 || { echo "✗ 載不到 scripts/plugin-binary-meta.sh（plugin cache 不完整或檔案壞掉）— binary 判定無法進行；不得當成「非 binary-backed」" >&2; exit 1; }
 # 不用 `for wrapper in "$PLUGIN_DIR"/bin/*-wrapper.sh`：zsh nomatch 會讓對不到的 glob 中止整個 fence（#18 R7）。
-# **逐 wrapper**：plugin_binary_wrappers 對 bin/ 下每個真的會下載 release 的檔案各給一列 `file|asset|install|repo`
+# **逐 wrapper**：plugin_binary_wrappers 對 bin/ 與 hooks/ 下每個真的會下載 release 的檔案各給一列 `dir|file|asset|install|repo|pin|pinsrc`（七欄；repo 欄空 = 抽不到或同檔多個 repo）
 # （不限 *-wrapper.sh；che-telegram-mcp 有兩支 wrapper / 兩個 binary，只驗第一個卻印「checked: N」是 R1 的 HIGH）。
 # 抽不到就每列各印一行（#17：沉默與「檢查過沒問題」不可區分）；名稱與 repo 都已過 allowlist。
 # 本 step 是 MCP 情境：沒有 bin/ 的 hook-only 佈局（gifthub）由 Step 3 處理——這裡明說並停住，不用 hooks 抽到的名字去查 MCP asset。
@@ -1342,10 +1348,10 @@ while IFS='|' read -r wdir wfile asset inst repo pin src; do
     # 「checked」= release 真的查到了；gh 查不到的列進 unchecked，不算 checked（#22 verify R6）
     TAGDESC="latest"; [ -n "$pin" ] && TAGDESC="v${pin} (${src})"
     if ASSETS=$(release_assets "$repo" "$pin"); then
-        CHECKED=$((CHECKED + 1))
-        if printf '%s\n' "$ASSETS" | grep -qxF -- "$asset"; then echo "✅ ${wfile}: ${asset} present in ${repo} release ${TAGDESC}"
-        elif printf '%s\n' "$ASSETS" | grep -qx '?'; then echo "❓ ${wfile}: ${repo} release ${TAGDESC} has asset names that cannot be shown; ${asset} not matched — Signal 1 未核對"
+        if printf '%s\n' "$ASSETS" | grep -qxF -- "$asset"; then CHECKED=$((CHECKED + 1)); echo "✅ ${wfile}: ${asset} present in ${repo} release ${TAGDESC}"
+        elif printf '%s\n' "$ASSETS" | grep -qx '?'; then UNCHK="${UNCHK:+$UNCHK }${wfile}"; echo "❓ ${wfile}: ${repo} release ${TAGDESC} has asset names that cannot be shown; ${asset} not matched — Signal 1 未核對（不算 checked）"
         else
+            CHECKED=$((CHECKED + 1))
             echo "⚠️  ${wfile}: ${asset} not in ${repo} release ${TAGDESC}"
             echo "   Plugin will install but wrapper auto-download will fail."
             if [ -n "$pin" ]; then echo "   → 補傳 asset 到既有的 release v${pin}（gh release upload），或 bump pin 到有 ${asset} 的 release；mcp-deploy 只會發**新** release，救不了這個 tag"
@@ -1569,12 +1575,18 @@ load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 # entry 缺 version 不是 KeyError（#22 第 4 點：che-keychain 的 entry 原本就沒有 version）——印 (missing — will be set from plugin.json)，Step 2 補上
 python3 -c '
-import json, sys
+import json, re, sys
 d = json.load(open(sys.argv[1]))
 for p in d.get("plugins") or []:
     if isinstance(p, dict):
         v = p.get("version")
-        print("  %s: %s" % (p.get("name", "?"), v if isinstance(v, str) and v else "(missing — will be set from plugin.json)"))
+        n = p.get("name")
+        n = n if isinstance(n, str) and re.fullmatch(r"[A-Za-z0-9._-]+", n) else "?"
+        if not (isinstance(v, str) and v):
+            v = "(missing — will be set from plugin.json)"
+        elif not re.fullmatch(r"[0-9A-Za-z.+-]+", v):
+            v = "(not a version string)"
+        print("  %s: %s" % (n, v))
 ' .claude-plugin/marketplace.json
 ```
 
@@ -1645,7 +1657,7 @@ clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]\\' | LC_ALL=C cut -c1-80;
 # 「已同步」要驗**版本**，不是驗「檔案沒被改過」：Step 2 / 3 的 Edit 是 agent 的手動步驟，漏做時檔案
 # 也是乾淨的——印一句肯定的「已同步」就是 #19 要治的那類假訊息（#19 R2）。用 Phase 0.3 (b) 同一個 helper，
 # 「entry 不存在」與「entry 缺 version」各給各的處方（#22）。
-source "${CLAUDE_PLUGIN_ROOT:?}/scripts/plugin-binary-meta.sh" && command -v plugin_binary_pin >/dev/null 2>&1 || { echo "✗ 載不到 scripts/plugin-binary-meta.sh（plugin cache 不完整或檔案壞掉）— binary 判定無法進行；不得當成「非 binary-backed」" >&2; exit 1; }
+source "${CLAUDE_PLUGIN_ROOT:?}/scripts/plugin-binary-meta.sh" && command -v marketplace_entry_version >/dev/null 2>&1 || { echo "✗ 載不到 scripts/plugin-binary-meta.sh（plugin cache 不完整或檔案壞掉）— marketplace entry 的版本讀取無法進行；不得當成「已同步」" >&2; exit 1; }
 MP_NOW=$(marketplace_entry_version "$MP_ROOT" "$PLUGIN_NAME"); MEV_RC=$?
 if [ "$MEV_RC" = 1 ]; then
     echo "✗ Phase 2: marketplace.json 沒有 '$PLUGIN_NAME' 的 entry — 回 Step 3 依範本新增整個 entry（name / version / description / author / source / category；source 是後續所有 phase 解析路徑的依據）後重跑本 fence。" >&2
@@ -2067,7 +2079,10 @@ load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 source "${CLAUDE_PLUGIN_ROOT:?}/scripts/plugin-binary-meta.sh" && command -v plugin_binary_pin >/dev/null 2>&1 || { echo "✗ 載不到 scripts/plugin-binary-meta.sh（plugin cache 不完整或檔案壞掉）— binary 判定無法進行；不得當成「非 binary-backed」" >&2; exit 1; }
 # 給使用者貼的驗證指令只用過 allowlist 的檔名（bin/ 裡的檔名是第三方內容；helper 對不合法檔名印 ?，這裡就印 <wrapper>）；hook-only 佈局沒有 bin/ 檔可執行
-if BINARY_HITS=$(plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"); then
+BINARY_HITS=$(plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"); PIB_BB=$?
+if [ "$PIB_BB" = 4 ]; then
+    echo "❓ Phase 5 Step 1.5: UNKNOWN — binary-backed 判不出（${BINARY_HITS}）— 不是 n/a；binary 是否到位**未驗證**"
+elif [ "$PIB_BB" = 0 ]; then
     ALL_ROWS=$(plugin_binary_wrappers "$PLUGIN_DIR" "$PLUGIN_MANIFEST") || ALL_ROWS=""
     EFF=hooks; printf '%s\n' "$ALL_ROWS" | grep -q '^bin|' && EFF=bin      # 會下載的列：bin/，沒有 bin/ 時是 hooks/（macdoc / gifthub）
     ROWS=$(printf '%s\n' "$ALL_ROWS" | grep "^${EFF}|" || true)
@@ -2100,7 +2115,7 @@ EOF
         CMD=${CMD:-<wrapper> --version}
         UNV="${MISSING:+; no sidecar: $MISSING}${UNRES:+; unresolved wrapper: $UNRES}${NOPIN:+; no pin: $NOPIN}${ODD:+; unreadable sidecar: $ODD}"
         TAIL="${PEND:+; PENDING-FETCH $PEND}${UNV}"
-        if [ -n "$BAD" ]; then echo "⚠️  Phase 5 Step 1.5: MISMATCH ${BAD}${TAIL} — 已安裝的不是 pin 指的版本（比 pin 新或不可比）；wrapper 下次啟動會抓它自己的 pin；要立刻驗證：${CMD}"
+        if [ -n "$BAD" ]; then echo "⚠️  Phase 5 Step 1.5: MISMATCH ${BAD}${TAIL} — ${OK_N}/${N_ALL} verified；已安裝的不是 pin 指的版本（比 pin 新或不可比）；wrapper 下次啟動會抓它自己的 pin；要立刻驗證：${CMD}"
         elif [ -n "$PEND" ]; then echo "⏳ Phase 5 Step 1.5: PENDING-FETCH ${PEND}${UNV} — ${OK_N}/${N_ALL} verified；pin 比已安裝新，wrapper 下次啟動才會抓（剛 bump 過 pin 時這是預期；release 若漏傳 asset 會在那時失敗——asset 只有在 Phase 1.5 Signal 1 對這個 tag 查到時才算核對過：hook-only 佈局與 gh 查不到時沒有）；要立刻驗證：${CMD}"
         elif [ -n "$MISSING$ODD$UNRES$NOPIN" ]; then echo "❓ Phase 5 Step 1.5: UNVERIFIED — ${OK_N}/${N_ALL} verified${MISSING:+; no sidecar: $MISSING}${UNRES:+; unresolved wrapper: $UNRES}${NOPIN:+; no pin: $NOPIN}${ODD:+; unreadable sidecar: $ODD}；binary 是否到位**未驗證**；要驗證：${CMD}"
         else echo "✅ Phase 5 Step 1.5: installed == pin for all ${OK_N} wrapper$([ "$OK_N" = 1 ] || printf 's')（逐 wrapper 列；同名 binary 的兩支各算一列）"; fi

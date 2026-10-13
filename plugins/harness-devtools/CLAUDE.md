@@ -76,7 +76,7 @@ plugin_binary_version "$PLUGIN_MANIFEST"        # 明確 manifest pin：binary_v
 plugin_binary_version_key "$PLUGIN_MANIFEST"    # 明確 pin 的 key；rc 1 沒有 / 2 兩個都有（印 binary_version）
 plugin_binary_wrappers "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # **逐 wrapper**：每個真的會下載 release 的檔案一列
                                                 #   dir|file|asset|install|repo|pin|pinsrc（dir ∈ bin|hooks；空欄 = 該檔沒宣告；檔名不合法印 ?）
-                                                #   pin 由**該 wrapper 自己**決定，三種來源封閉列舉：(1) 檔內字面 DESIRED_VERSION="x.y.z" 且它是檔內**最後一個** DESIRED_VERSION= 賦值（預設值後接 $(grep …) 的不算；最後一個既不是字面也不是 manifest 讀取——例如 manifest 讀取後接 `${PIN_OVERRIDE:-…}`——→ rc 4 `|wrapper:<file>`，不拿較早的 manifest key 當 pin）→ pinsrc=wrapper:<file>；
+                                                #   pin 由**該 wrapper 自己**決定，三種來源封閉列舉：(1) 依 DESIRED_VERSION 的**賦值鏈**（行首 = 無條件覆寫、縮排 / `||` 後 = 有條件 fallback；只提到它的 echo/grep 不算）求值：第一個有值的字面（預設值後接 $(grep …) 的不算；最後一個既不是字面也不是 manifest 讀取——例如 manifest 讀取後接 `${PIN_OVERRIDE:-…}`——→ rc 4 `|wrapper:<file>`，不拿較早的 manifest key 當 pin）→ pinsrc=wrapper:<file>；
                                                 #   (2) 檔內 grep 的 plugin.json key（binary_version / binaryVersion / version，依它自己的順序）→ pinsrc=<key>；
                                                 #   (3) 都沒有 → pin 空、pinsrc=none。**沒有** manifest 層的全域回退——本機 26 支 wrapper / hook：4 支字面、8 支讀 version、
                                                 #   6 支讀 binaryVersion/binary_version 再 version（含 macdoc 家族三支）、1 支 hook 只讀 binary_version 並自己下載（macdoc）、
@@ -86,7 +86,7 @@ plugin_binary_wrappers "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # **逐 wrapper**：�
 plugin_binary_pin "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # plugin 層的 pin = **會下載的列**（有 bin/ 時是 bin/，沒有時是 hooks/——macdoc 那種 hook 自己下載的佈局）的 pin：
                                                 #   印 value|pinsrc[,pinsrc…]（全部來源，che-telegram-mcp 兩支 wrapper → 兩個；bump 要每個都改）；rc 0 一致 /
                                                 #   1 沒有任何 wrapper 有 pin（no-pin，Case B 會問）/ 2 各 wrapper 不一致 / 4 任一會下載的 wrapper 的 pin 讀不出（點名的 key 沒值 / 字面被動態覆寫 / 移動 ref）——此時**只印 `|src[,src…]` 不印值**（partial 狀態不得漏出看起來合理的預設）
-plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # rc 0 + 命中清單 "mcp.json bin:<f> hook:<f> pin:<key>" / rc 1 空
+plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # rc 0 + 命中清單 "mcp.json bin:<f> hook:<f> pin:<key>" / rc 1 空 / rc 4 沒命中但有探測點答不出（"unknown:mcp.json" / "unknown:manifest"）——不是「沒有」
                                                 #   判準：.mcp.json（mcpServers 非空才算）∨ bin/ 任何一般檔案含 release URL ∨ hooks/ 任何檔案含同 pattern ∨ manifest pin
                                                 #   URL 形狀**逐字**是 idd-close has_binary_wrapper 的那一條（含 gh api …/releases）；不掃 skills/ 散文
 plugin_binary_repo "$PLUGIN_DIR"                # owner/repo，只看**會下載 release 的 wrapper 檔**（輔助檔的 REPO= 不算），且有 bin/ wrapper 時**只看 bin/**——
@@ -111,7 +111,7 @@ version_gt 0.3.0 0.2.0                          # rc 0 大於 / 1 否 / 2 不可
 不把「查不到」當「沒有」。`plugin-update` Phase 0.3（Step 1 / Step 2 (a)(b)(d)(e)、Case E bump fence）、
 Phase 1.5 Step 2 / 3、Phase 2 Step 4、Phase 5 Step 1.5 全部只消費這裡的輸出（Phase 2 Step 1 列全表用 inline python `.get('version')`，helper 只查單一 entry——那段不是 binary metadata）。`PBM_GH` / `PLUGIN_BIN_DIR` 是**測試座標**
 （stub gh、sidecar 目錄），只在 `PBM_TEST=1` **且** `PBM_TEST_ROOT` 是系統 temp 樹（/tmp、/var/folders、$TMPDIR）下的真實目錄（`/`、`$HOME` 不算；`$TMPDIR` 先解析、解析不到或為 `/` 即關）**且** 實體 `$PWD` 在其下時生效——這是縮小座標、不是 sandbox（PATH 本來就能換 gh）（production fence `cd "$MP_ROOT"`，正常放置的 marketplace 不在 temp 樹下；checkout 在 /tmp 的不受此保護），且 `PBM_GH` 只接受絕對路徑的可執行檔。測試：`scripts/test-plugin-binary-meta.sh`
-（157 斷言：partial 讀取只印來源不印值、manifest 讀取後動態覆寫 rc 4、TMPDIR 解析失敗即關座標、行內覆寫 rc 4、jq 讀 key rc 4、`latest` 非 pin、`PBM_TEST_ROOT=/` / `$HOME` 不開座標、逐檔 repo 合併、沒被用的 *_REPO= 不算、字面 pin 須為最後一個賦值、seam 三條件、asset 名的 `.` 不是萬用字元、註解行的 release URL / $HOME/bin/<name> 不算、只當 install 目標的 BINARY_NAME 不是 asset、兩種 key、四種 pin 來源、macdoc 家族的 grep 寫法、hook-only 有 pin、wrapper 不一致、共用 pin 的兩個來源、點名 key 無值 rc 4、
+（171 斷言：賦值鏈——兩次無條件 manifest 讀取取最後一個 key、manifest 讀取後縮排字面 fallback、echo/grep 提到 DESIRED_VERSION= 不算賦值；單檔雙 repo rc 2；帶引號的 gh --repo / gh api；非 *REPO 名的變數在 repo 位置；release URL host 錨定；壞 .mcp.json / manifest → is_binary_backed rc 4、partial 讀取只印來源不印值、manifest 讀取後動態覆寫 rc 4、TMPDIR 解析失敗即關座標、行內覆寫 rc 4、jq 讀 key rc 4、`latest` 非 pin、`PBM_TEST_ROOT=/` / `$HOME` 不開座標、逐檔 repo 合併、沒被用的 *_REPO= 不算、字面 pin 須為最後一個賦值、seam 三條件、asset 名的 `.` 不是萬用字元、註解行的 release URL / $HOME/bin/<name> 不算、只當 install 目標的 BINARY_NAME 不是 asset、兩種 key、四種 pin 來源、macdoc 家族的 grep 寫法、hook-only 有 pin、wrapper 不一致、共用 pin 的兩個來源、點名 key 無值 rc 4、
 無副檔名 wrapper、bin+hooks 混合、hooks 的 REPO= 不蓋 bin、文件連結 vs 賦值、註解行的 URL 不算下載、非 wrapper 的 REPO=、`${X}` 賦值、縮排 / export、
 `gh api` 形、多 binary、asset ≠ install 名、RELEASE_ASSET=、缺 version 的 entry、`.mcp.json` `{}`、sidecar 三態、不安全檔名（含帶字面 pin 的）、
 v 前綴 tag 與裸 tag 回退、stub gh 與 PBM_TEST 守門）。

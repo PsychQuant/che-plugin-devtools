@@ -227,6 +227,26 @@ run_both "kc: gh failure → release_ahead=unknown (printed, not silent)" 'BINAR
 run_both "kc: gh failure → NOT Case E (falls through to Case C: recent commit)" 'BINARY_UNKNOWN_WHY' kc "→ Phase 0.3 sync intent: Case C"
 unset PBM_STUB_FAIL
 echo
+echo "#22 R9 — binary-backed 'cannot tell' (an .mcp.json that does not parse) is not 'no':"
+printf '{ not json\n' > "$T/dev/fx-mp/plugins/pure/.mcp.json"
+prep01 pure
+run_both "pure + broken .mcp.json: Step 1 says unknown, not false" 'echo "→ Phase 0.3 Step 1: IS_BINARY_BACKED=' pure "IS_BINARY_BACKED=unknown (unknown:mcp.json)"
+run_both "pure + broken .mcp.json: Step 2 aborts instead of treating it as non-binary (Case A)" 'BINARY_UNKNOWN_WHY' pure "binary-backed 判不出"
+prep01 pure
+run_both_ctx "pure + broken .mcp.json: Phase 5 Step 1.5 is UNKNOWN, not n/a" 'if [ -z "$ROWS" ]' pure "UNKNOWN — binary-backed 判不出"
+rm -f "$T/dev/fx-mp/plugins/pure/.mcp.json"
+echo
+echo "#22 R9 — Phase 2 Step 1 prints marketplace names/versions only through an allowlist:"
+cp "$T/dev/fx-mp/.claude-plugin/marketplace.json" "$T/mp.bak"
+python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"evil\n✅ Phase 5 Step 1.5: installed == pin","source":"./plugins/none","version":"1.0 (beta)\nfake"})
+json.dump(d,open(p,'w'),indent=2)
+PY
+prep01 kc
+run_both "Phase 2 Step 1: a name with a newline prints as ?, a non-version string prints as such" 'will be set from plugin.json' kc "  ?: (not a version string)"
+cp "$T/mp.bak" "$T/dev/fx-mp/.claude-plugin/marketplace.json"; rm -f "$T/mp.bak"
+echo
 echo "#22 — Phase 2 Step 1 must not KeyError on an entry without version:"
 prep01 kc
 run_both "kc: Phase 2 Step 1 lists the entry as missing its version" 'will be set from plugin.json' kc "kc: (missing — will be set from plugin.json)"
@@ -247,6 +267,7 @@ printf '0.1.0\n' > "$T/bin/.che-keychain.version"
 run_both_ctx "kc: sidecar 0.1.0 < pin 0.2.0 → PENDING-FETCH (the wrapper has not fetched yet — the state right after a Case E bump)" 'if [ -z "$ROWS" ]' kc "PENDING-FETCH che-keychain=v0.1.0<v0.2.0"
 printf '0.9.0\n' > "$T/bin/.che-keychain.version"
 run_both_ctx "kc: sidecar 0.9.0 > pin 0.2.0 → MISMATCH (installed is not what the pin says and a fetch would not fix it)" 'if [ -z "$ROWS" ]' kc "MISMATCH che-keychain=v0.9.0≠v0.2.0"
+run_both_ctx "kc: …and the MISMATCH line says how many verified (0/1)" 'if [ -z "$ROWS" ]' kc "— 0/1 verified"
 rm -f "$T/bin/.che-keychain.version"
 run_both_ctx "kc: no sidecar → UNVERIFIED (never ✅)" 'if [ -z "$ROWS" ]' kc "UNVERIFIED — 0/1 verified; no sidecar: che-keychain"
 run_both_ctx "pure: Phase 5 Step 1.5 says n/a for a non-binary plugin" 'if [ -z "$ROWS" ]' pure "Phase 5 Step 1.5: n/a"
@@ -330,6 +351,10 @@ prep01 two
 run_both "two: Step 2 pin comes from the wrappers' literal DESIRED_VERSION, not from manifest version 1.3.2 — BOTH sources listed" 'BINARY_UNKNOWN_WHY' two "binary=1.0.0 pinsrc=wrapper:all-wrapper.sh,wrapper:bot-wrapper.sh"
 run_both "two: Phase 1.5 Step 2 checks BOTH wrappers (2 of 2), stub excluded" 'for wrapper in' two "→ Phase 1.5 Step 2: wrappers checked: 2 of 2 bin/ wrapper(s) (bin/ files: 3; hook wrappers: 0 → Step 3)"
 run_both "two: Signal 1 ✅ for the second binary too, against ITS pin tag" 'for wrapper in' two "✅ bot-wrapper.sh: BotMCP present in PsychQuant/msg release v1.0.0 (wrapper:bot-wrapper.sh)"
+printf '#!/bin/sh\ncase "$*" in "release view v1.0.0 --repo PsychQuant/msg "*"--json assets"*) printf "AllMCP\\nbad;name\\n" ;; "release view "*"--json assets"*) exit 1 ;; *) echo v1.0.0 ;; esac\n' > "$T/gh-stub"; chmod +x "$T/gh-stub"
+run_both "two: a release with unshowable asset names verified nothing for BotMCP → 1 of 2 checked, not 2" 'for wrapper in' two "wrappers checked: 1 of 2 bin/ wrapper(s)"
+run_both "two: …and that row is listed as unchecked" 'for wrapper in' two "unchecked (gh): bot-wrapper.sh"
+two_stub 1.0.0 "AllMCP BotMCP"
 printf '1.0.0\n' > "$T/bin/.AllMCP.version"; printf '0.9.0\n' > "$T/bin/.BotMCP.version"
 run_both_ctx "two: Phase 5 reads each sidecar against that wrapper's pin — one lagging binary is enough to flag" 'if [ -z "$ROWS" ]' two "PENDING-FETCH BotMCP=v0.9.0<v1.0.0"
 printf '1.0.0\n' > "$T/bin/.BotMCP.version"
@@ -343,6 +368,15 @@ printf '1.0.0\n' > "$T/bin/.BotMCP.version"
 run_both_ctx "two + an unresolvable third wrapper: never 'all N' — UNVERIFIED with the wrapper named" 'if [ -z "$ROWS" ]' two "UNVERIFIED — 2/3 verified; unresolved wrapper: c-wrapper.sh"
 run_both "two + unresolvable wrapper: Phase 1.5 counts it as unresolved, 2 of 3" 'for wrapper in' two "wrappers checked: 2 of 3 bin/ wrapper(s)"
 rm -f "$T/dev/fx-mp/plugins/two/bin/c-wrapper.sh"
+echo "#22 R9 — a wrapper that downloads from two repos (primary || fallback): Case E refuses"
+cp "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh" "$T/bot.bak"
+printf 'FB_REPO="Other/fallback"\ncurl -L https://github.com/$FB_REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' >> "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh"
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
+assert_contains "two + fallback repo in one wrapper: the bump fence refuses (multi-repo inside a file)" "有 wrapper 從多個 repo 下載" "$(cd "$T" && bash "$f" 2>&1)"
+assert_contains "two + fallback repo: …the wrapper is untouched" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
+cp "$T/bot.bak" "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh"; rm -f "$T/bot.bak"
+echo
 echo
 echo "#22 R4 — Case E on a plugin whose two wrappers share one literal pin: every source is rewritten, the asset is pre-checked, half-bumps cannot be committed"
 two_stub 2.0.0 "AllMCP"   # v2.0.0 released WITHOUT BotMCP
@@ -391,13 +425,19 @@ assert_contains "two: …written= lists the wrappers" "written=['$T/dev/fx-mp/pl
 assert_contains "two: …the ✗ line says 已經改了 and gives the revert" "已經改了" "$OUT"
 assert_contains "two: …and the wrappers really are changed on disk" 'DESIRED_VERSION="2.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two && rm -f plugins/two/.claude-plugin/*.pbm-* )
-export IDD_ALL_UNATTENDED=1; chmod 555 "$T/dev/fx-mp/plugins/two/.claude-plugin"
+export IDD_ALL_UNATTENDED=1
 prep01 two
 f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/; s/^AUTO_PUSH='no'/AUTO_PUSH='yes'/" "$f"
 OUT=$(cd "$T" && bash "$f" 2>&1)
-chmod 755 "$T/dev/fx-mp/plugins/two/.claude-plugin"; unset IDD_ALL_UNATTENDED
-assert_contains "two: E-auto write-stage failure prints FAILED after write with the rewritten files (never 'left as is')" "AUDIT: Phase 0.3 Case E-auto FAILED after write — 寫入階段失敗" "$OUT"
-assert_contains "two: …names the rewritten files" "files rewritten: plugins/two/bin/all-wrapper.sh plugins/two/bin/bot-wrapper.sh" "$OUT"
+assert_contains "two: E-auto with ALSO_VERSION=yes is refused before any write (unattended never touches the published version)" "AUDIT: Phase 0.3 Case E-auto refused — unattended 不連帶 bump published version" "$OUT"
+assert_contains "two: …nothing on disk changed" "count=0" "count=$(cd "$T/dev/fx-mp" && git status --porcelain -- plugins/two | wc -l | tr -d ' ')"
+unset IDD_ALL_UNATTENDED; chmod 555 "$T/dev/fx-mp/plugins/two/.claude-plugin"
+prep01 two
+f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/; s/^ALSO_VERSION='no'/ALSO_VERSION='yes'/" "$f"
+OUT=$(cd "$T" && bash "$f" 2>&1)
+chmod 755 "$T/dev/fx-mp/plugins/two/.claude-plugin"
+assert_contains "two: attended write-stage failure says 已改 and names the rewritten files (never 'left as is')" "已改的檔案：plugins/two/bin/all-wrapper.sh plugins/two/bin/bot-wrapper.sh" "$OUT"
+assert_contains "two: …and that it was the write stage" "寫入階段失敗" "$OUT"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/two && rm -f plugins/two/.claude-plugin/*.pbm-* )
 export IDD_ALL_UNATTENDED=1
 ( cd "$T/dev/fx-mp" && git push -q origin HEAD:master 2>/dev/null )

@@ -94,7 +94,7 @@
 #     allowlist and prints `?` instead — including the `wrapper:<file>` pin source.
 #   - Field names are read in BOTH spellings; writers preserve the file's own key.
 #   - Detection pattern for "this file downloads a release" is, verbatim, the one idd-close's
-#     has_binary_wrapper uses (references/distribution-detection.md). Detection is URL shape only;
+#     has_binary_wrapper uses (PsychQuant/issue-driven-development: plugins/issue-driven-dev/references/distribution-detection.md). Detection is URL shape only;
 #     the literal owner/repo is plugin_binary_repo's job (assignment beats URL; a bare
 #     `github.com/o/r` docs link is never a candidate).
 #   - PBM_GH / PLUGIN_BIN_DIR are TEST seams and are honoured only when PBM_TEST=1 AND PBM_TEST_ROOT is a real directory under
@@ -206,31 +206,32 @@ EOF
   return 1
 }
 
-_pbm_file_repo_tier1() {   # `<X>_REPO=` / `REPO=` assignments (validated) whose VARIABLE is used in a release download line, one per line
-  local file="$1" line v name
+_pbm_file_repo_tier1() {   # `NAME="owner/repo"` assignments (validated, ANY variable name) whose variable sits at the repo position of a release
+  local file="$1" line v name   # download line (`repos/$NAME/`, `github.com/$NAME/releases`, `--repo "$NAME"`), one per line
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    name=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?([A-Z_]*REPO)=.*$/\2/')
-    v=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?[A-Z_]*REPO=["'"'"']?//; s/["'"'"']?[[:space:]]*(;.*|#.*)?$//')
+    name=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*$/\2/')
+    v=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=["'"'"']?//; s/["'"'"']?[[:space:]]*(;.*|#.*)?$//')
     _pbm_repo_ok "$v" || continue
-    # the value is the repo only if the file downloads THROUGH that variable: `$NAME` / `${NAME}` on a non-comment line that is a
-    # release URL or a `--repo` argument. A DOCS_REPO= / MIRROR_REPO= that nothing fetches from is not a candidate (#22 verify R5:
-    # issue point 2 says "from the URL pattern, not the variable name" — the assignment is just the value of the variable in that URL)
-    LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -E "\\\$(\\{${name}\\}|${name}([^A-Za-z0-9_]|\$))" | LC_ALL=C grep -qE "$_PBM_RELEASE_RE|--repo" || continue
+    # the value is the repo only if the file downloads THROUGH that variable AT THE REPO POSITION: `$NAME` / `${NAME}` right after
+    # `repos/` or `github.com/` and followed by `/`, or as the `--repo` argument. Issue point 2 says "from the URL pattern, not the
+    # variable name" — the assignment is just the value of the variable in that URL (#22 verify R5 / R8: PROJ= counts, DOCS_REPO=
+    # that nothing fetches from does not, and BINARY_NAME="a/b" at the asset position is not a repo)
+    LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -qE "(repos/|github\\.com/)\\\$(\\{${name}\\}|${name})/|--repo[[:space:]]+[\"']?\\\$(\\{${name}\\}|${name})([^A-Za-z0-9_]|\$)" || continue
     printf '%s\n' "$v"
   done <<EOF
-$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?[A-Z_]*REPO=[\"']?[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*[\"']?([[:space:]]*(;|#).*)?[[:space:]]*\$")
+$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -E "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=[\"']?[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*[\"']?([[:space:]]*(;|#).*)?[[:space:]]*\$")
 EOF
   return 0
 }
-_pbm_file_repo_tier2() {   # RELEASE URLs / `gh … --repo o/r` / `gh api …repos/o/r/releases` (validated), one per line — non-comment lines only
-  local file="$1" cand v
-  while IFS= read -r cand; do
+_pbm_file_repo_tier2() {   # RELEASE URLs / `gh … --repo o/r` / `gh api …repos/o/r/releases` (validated), one per line — non-comment lines only;
+  local file="$1" cand v       # the gh forms accept the quoted idiom (`--repo "o/r"`, `gh api "repos/o/r/…"`) and the host is anchored
+  while IFS= read -r cand; do  # (`notgithub.example/o/r/releases/…` names no GitHub repo) — #22 verify R8
     [ -n "$cand" ] || continue
-    v=$(printf '%s' "$cand" | sed -E 's/^--repo[[:space:]]+//; s#^gh api[[:space:]]+/?repos/##; s#^api\.github\.com/repos/##; s#^github\.com/##; s#/releases.*$##')
+    v=$(printf '%s' "$cand" | sed -E 's/^[^A-Za-z0-9.-]//; s/^--repo[[:space:]]+["'"'"']?//; s#^gh api[[:space:]]+["'"'"']?/?repos/##; s#^api\.github\.com/repos/##; s#^github\.com/##; s#/releases.*$##')
     _pbm_repo_ok "$v" && printf '%s\n' "$v"
   done <<EOF
-$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE '(--repo[[:space:]]+[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*|gh api[[:space:]]+/?repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases|api\.github\.com/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases|github\.com/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases/(download|tags|latest))')
+$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE "(--repo[[:space:]]+[\"']?[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*|gh api[[:space:]]+[\"']?/?repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases|(^|[^A-Za-z0-9.-])api\\.github\\.com/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases|(^|[^A-Za-z0-9.-])github\\.com/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases/(download|tags|latest))")
 EOF
   return 0
 }
@@ -267,9 +268,9 @@ _pbm_file_install_name() {  # INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name
   v=$(_pbm_assign "$file" BINARY_NAME)  && _pbm_name_ok "$v" && { printf '%s\n' "$v"; return 0; }
   _pbm_file_home_bin_name "$file"
 }
-_pbm_file_repo() {          # tier 1 else tier 2, first valid
-  local file="$1" v
-  v=$(_pbm_file_repo_tier1 "$file" | head -1); [ -n "$v" ] || v=$(_pbm_file_repo_tier2 "$file" | head -1)
+_pbm_file_repo() {          # tier 1 else tier 2 — EVERY distinct candidate of the winning tier, one per line
+  local file="$1" v            # (a wrapper that downloads from a primary and a fallback repo prints two; #22 verify R8)
+  v=$(_pbm_file_repo_tier1 "$file" | awk '!seen[$0]++'); [ -n "$v" ] || v=$(_pbm_file_repo_tier2 "$file" | awk '!seen[$0]++')
   printf '%s\n' "$v"
 }
 
@@ -286,37 +287,67 @@ _pbm_file_repo() {          # tier 1 else tier 2, first valid
 #   a pin key mentioned without the `"key"…:` shape (jq / python readers)
 #                                                           → |<key>       rc 4 (the wrapper reads it in a way this helper cannot follow)
 _pbm_file_pin() {
-  local file="$1" manifest="${2:-}" v key first="" base last mention
+  local file="$1" manifest="${2:-}" base line tail elem chain="" key v first="" nassign=0 mention
   base=${file##*/}; _pbm_name_ok "$base" || base='?'
-  # the literal counts only when it is the LAST assignment to DESIRED_VERSION in the file — assignments ANYWHERE on a non-comment
-  # line count (`[ -z "$X" ] || DESIRED_VERSION="$X"` is an override too, #22 verify R6), and only a plain line-start literal
-  # qualifies as readable. A last assignment we cannot read → `|wrapper:<file>` rc 4, never the stale default (#22 verify R5).
-  last=$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -E '(^|[^A-Za-z0-9_])DESIRED_VERSION=' | tail -1)
-  if printf '%s\n' "$last" | LC_ALL=C grep -qE "^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?DESIRED_VERSION=[\"']?[A-Za-z0-9][A-Za-z0-9_./+-]*[\"']?([[:space:]]*(;|#).*)?[[:space:]]*\$"; then
-    v=$(printf '%s' "$last" | sed -E 's/^[[:space:]]*(export[[:space:]]+|local[[:space:]]+)?DESIRED_VERSION=["'"'"']?//; s/["'"'"']?[[:space:]]*(;.*|#.*)?$//')
-    if [ -n "$v" ] && _pbm_pin_ok "$v"; then printf '%s|wrapper:%s\n' "$v" "$base"; return 0; fi
-    printf '|wrapper:%s\n' "$base"; return 4    # a literal that is not a version (`latest`, `main`) — source known, value not a pin
-  fi
-  # the last assignment is not a literal: it must itself be a MANIFEST READ (the `"key"…:` shape on that line) for the key scan
-  # below to describe what the wrapper downloads — `DESIRED_VERSION="${PIN_OVERRIDE:-$DESIRED_VERSION}"` after a manifest read
-  # is an override the helper cannot follow, so the manifest key is NOT the pin (#22 verify R7)
-  if [ -n "$last" ] && ! printf '%s\n' "$last" | LC_ALL=C grep -qE '"(binary_version|binaryVersion|version)"[^"]*:'; then
-    printf '|wrapper:%s\n' "$base"; return 4
-  fi
-  while IFS= read -r key; do
-    [ -n "$key" ] || continue
-    [ -n "$first" ] || first="$key"
-    [ -n "$manifest" ] || continue
-    v=$(_pbm_json_field "$manifest" "$key") || { printf '|%s\n' "$first"; return 4; }
-    if [ -n "$v" ]; then
-      _pbm_pin_ok "$v" || { printf '|%s\n' "$key"; return 3; }
-      printf '%s|%s\n' "$v" "$key"; return 0
+  # Build the fallback CHAIN the wrapper evaluates, from every non-comment line that ASSIGNS DESIRED_VERSION (the token preceded by
+  # line start / whitespace / ; & | { ( — `echo "DESIRED_VERSION=…"` and `grep 'DESIRED_VERSION='` are mentions, not assignments,
+  # #22 verify R8). An UNCONDITIONAL assignment (the line begins with it, no leading whitespace) REPLACES the chain; a CONDITIONAL
+  # one (`[ -z "$X" ] || DESIRED_VERSION=…`, or indented inside if/case) is APPENDED as a fallback. Elements:
+  #   lit:<v>  readable literal      key:<k>  manifest read (the `"key"…:` shape on that line)
+  #   bad      literal that is not a version (latest / main / v1.2.3)      opaque   anything else ($(…), ${X:-…}, "$2")
+  #   DESIRED_VERSION=""  contributes nothing (unconditional → the chain restarts empty)
+  # The chain is then evaluated the way the shell would: the first element that yields a value is the pin; an element we cannot
+  # follow before that → rc 4 (`|wrapper:<file>`). So two unconditional manifest reads → the LAST key (#22 verify R8 HIGH); a
+  # manifest read followed by an indented literal default → the key when it has a value, the literal otherwise (#22 verify R8);
+  # a conditional override we cannot read (`[ -z "$X" ] || DESIRED_VERSION="$X"`) → rc 4 (#22 verify R6).
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    nassign=$((nassign + 1))
+    tail=$(printf '%s' "$line" | sed -E 's/^.*(^|[[:space:];&|{(])DESIRED_VERSION=//')
+    if printf '%s\n' "$line" | LC_ALL=C grep -qE '"(binary_version|binaryVersion|version)"[^"]*:'; then
+      elem="key:$(printf '%s\n' "$line" | LC_ALL=C grep -oE '"(binary_version|binaryVersion|version)"[^"]*:' | head -1 | sed -E 's/^"([A-Za-z_]+)".*$/\1/')"
+    elif printf '%s\n' "$tail" | LC_ALL=C grep -qE "^[\"']?[A-Za-z0-9][A-Za-z0-9_./+-]*[\"']?([[:space:]]|;|$)"; then
+      v=$(printf '%s' "$tail" | sed -E 's/^["'"'"']?//; s/["'"'"']?([[:space:]]|;).*$//; s/["'"'"']$//')
+      if _pbm_pin_ok "$v"; then elem="lit:$v"; else elem=bad; fi
+    elif printf '%s\n' "$tail" | LC_ALL=C grep -qE "^(\"\"|'')([[:space:]]|;|$)"; then
+      elem=""
+    else
+      elem=opaque
+    fi
+    if printf '%s\n' "$line" | LC_ALL=C grep -qE '^(export[[:space:]]+|local[[:space:]]+)?DESIRED_VERSION='; then
+      chain="$elem"                                        # unconditional: whatever came before is overwritten
+    else
+      [ -z "$elem" ] || chain="${chain:+$chain
+}$elem"                                                    # conditional: a fallback after the elements before it
     fi
   done <<EOF
-$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE '"(binary_version|binaryVersion|version)"[^"]*:' | sed -E 's/^"([A-Za-z_]+)".*$/\1/' | awk '!seen[$0]++')
+$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -E '(^|[[:space:];&|{(])DESIRED_VERSION=')
 EOF
-  if [ -n "$first" ]; then printf '|%s\n' "$first"; return 4; fi
-  if [ -n "$last" ]; then printf '|wrapper:%s\n' "$base"; return 4; fi   # DESIRED_VERSION is assigned but not readably (no literal last, no key)
+  # a wrapper that does not use DESIRED_VERSION at all but greps a manifest key into some other variable: the keys, in order
+  if [ "$nassign" = 0 ]; then
+    chain=$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE '"(binary_version|binaryVersion|version)"[^"]*:' | sed -E 's/^"([A-Za-z_]+)".*$/key:\1/' | awk '!seen[$0]++')
+  fi
+  # an element we cannot read ANYWHERE in the chain makes the pin unreadable — a conditional `DESIRED_VERSION="$X"` after a literal
+  # may override it at runtime (condover, #22 verify R6); a fallback we can read (indented literal / manifest key) is fine
+  if printf '%s\n' "$chain" | LC_ALL=C grep -qxE 'opaque|bad'; then printf '|wrapper:%s\n' "$base"; return 4; fi
+  while IFS= read -r elem; do
+    [ -n "$elem" ] || continue
+    case "$elem" in
+      lit:*) printf '%s|wrapper:%s\n' "${elem#lit:}" "$base"; return 0 ;;
+      key:*) key=${elem#key:}; [ -n "$first" ] || first="$key"
+             [ -n "$manifest" ] || { printf '|%s\n' "$first"; return 4; }
+             v=$(_pbm_json_field "$manifest" "$key") || { printf '|%s\n' "$first"; return 4; }
+             if [ -n "$v" ]; then
+               _pbm_pin_ok "$v" || { printf '|%s\n' "$key"; return 3; }
+               printf '%s|%s\n' "$v" "$key"; return 0
+             fi ;;
+      *) printf '|wrapper:%s\n' "$base"; return 4 ;;     # bad / opaque: the wrapper has a pin we cannot read
+    esac
+  done <<EOF
+$chain
+EOF
+  if [ -n "$first" ]; then printf '|%s\n' "$first"; return 4; fi              # named key(s), none has a value
+  if [ "$nassign" != 0 ]; then printf '|wrapper:%s\n' "$base"; return 4; fi   # assigned, but nothing readable survives the chain
   # the file names a binary pin key WITHOUT the `"key"…:` shape (jq -r .binaryVersion, python json[...]) — a reader we cannot
   # follow, not "reads nothing": rc 4 with the key (#22 verify R6)
   mention=$(LC_ALL=C grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | LC_ALL=C grep -oE '(^|[^A-Za-z0-9_])(binary_version|binaryVersion)([^A-Za-z0-9_]|$)' | head -1 | LC_ALL=C grep -oE 'binary_version|binaryVersion')
@@ -348,17 +379,22 @@ plugin_binary_version_key() {
 # ---- structure ----------------------------------------------------------------
 
 plugin_is_binary_backed() {
-  local dir="$1" manifest="${2:-}" hits="" f base key
+  local dir="$1" manifest="${2:-}" hits="" unknown="" f base key rc
   [ -d "$dir" ] || { printf '\n'; return 1; }
-  if [ -f "$dir/.mcp.json" ] && python3 -c '
+  # each probe answers yes / no / CANNOT TELL — an .mcp.json that does not parse or a manifest that cannot be read is not "no"
+  # (#22 verify R8): rc 4 with `unknown:<probe>` when nothing hit and some probe could not answer
+  if [ -f "$dir/.mcp.json" ]; then
+    python3 -c '
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
-    sys.exit(1)
+    sys.exit(4)
 s = d.get("mcpServers") if isinstance(d, dict) else None
 sys.exit(0 if isinstance(s, dict) and len(s) > 0 else 1)
-' "$dir/.mcp.json" 2>/dev/null; then hits="mcp.json"; fi
+' "$dir/.mcp.json" 2>/dev/null; rc=$?
+    case "$rc" in 0) hits="mcp.json" ;; 1) ;; *) unknown="unknown:mcp.json" ;; esac
+  fi
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     base=${f##*/}; _pbm_name_ok "$base" || base='?'
@@ -367,11 +403,13 @@ sys.exit(0 if isinstance(s, dict) and len(s) > 0 else 1)
 $(_pbm_wrapper_files "$dir")
 EOF
   if [ -n "$manifest" ]; then
-    key=$(plugin_binary_version_key "$manifest" 2>/dev/null)
-    [ -n "$key" ] && hits="${hits:+$hits }pin:$key"
+    key=$(plugin_binary_version_key "$manifest" 2>/dev/null); rc=$?
+    if [ -n "$key" ]; then hits="${hits:+$hits }pin:$key"
+    elif [ "$rc" = 4 ]; then unknown="${unknown:+$unknown }unknown:manifest"; fi
   fi
-  printf '%s\n' "$hits"
-  [ -n "$hits" ]
+  if [ -n "$hits" ]; then printf '%s\n' "$hits"; return 0; fi
+  if [ -n "$unknown" ]; then printf '%s\n' "$unknown"; return 4; fi
+  printf '\n'; return 1
 }
 
 plugin_binary_wrappers() {
@@ -383,7 +421,8 @@ plugin_binary_wrappers() {
     case "$f" in "$dir/bin/"*) where=bin ;; *) where=hooks ;; esac
     asset=$(_pbm_file_asset_name "$f") || asset=""
     inst=$(_pbm_file_install_name "$f") || inst=""
-    repo=$(_pbm_file_repo "$f")
+    repo=$(_pbm_file_repo "$f"); case "$repo" in *"
+"*) repo="" ;; esac                                       # two repos in one file: ambiguous → empty (the plugin-level call says rc 2)
     pin=$(_pbm_file_pin "$f" "$manifest") || pin="${pin:-|none}"
     printf '%s|%s|%s|%s|%s|%s\n' "$where" "$base" "$asset" "$inst" "$repo" "$pin"; n=$((n + 1))
   done <<EOF
@@ -435,9 +474,13 @@ EOF
   # one file's assignment must not hide another file's URL that names a different repo (#22 verify R5)
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    cand=$(_pbm_file_repo "$f"); [ -n "$cand" ] || continue
-    case "$seen" in *"|$cand|"*) continue ;; esac
-    seen="${seen:-|}$cand|"; n=$((n + 1)); [ -n "$first" ] || first="$cand"
+    while IFS= read -r cand; do
+      [ -n "$cand" ] || continue
+      case "$seen" in *"|$cand|"*) continue ;; esac
+      seen="${seen:-|}$cand|"; n=$((n + 1)); [ -n "$first" ] || first="$cand"
+    done <<EOC
+$(_pbm_file_repo "$f")
+EOC
   done <<EOF
 $files
 EOF

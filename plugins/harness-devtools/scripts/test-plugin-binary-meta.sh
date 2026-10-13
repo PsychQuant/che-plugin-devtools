@@ -286,6 +286,34 @@ printf 'BINARY_NAME="M"\nREPO="a/m"\nDESIRED_VERSION="latest"\ncurl https://gith
 mkdir -p "$T/mfover/.claude-plugin" "$T/mfover/bin"
 printf '{ "name": "mfover", "version": "1.0.0", "binaryVersion": "2.0.0" }\n' > "$T/mfover/.claude-plugin/plugin.json"
 printf 'BINARY_NAME="F"\nREPO="a/f"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\nDESIRED_VERSION="${PIN_OVERRIDE:-$DESIRED_VERSION}"\ncurl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/mfover/bin/w.sh"
+# twouncond: TWO unconditional manifest reads — the LAST one is what downloads; the earlier key must not win (R8 HIGH #1)
+mkdir -p "$T/twouncond/.claude-plugin" "$T/twouncond/bin"
+printf '{ "name": "twouncond", "version": "2.0.0", "binary_version": "1.0.0" }\n' > "$T/twouncond/.claude-plugin/plugin.json"
+printf 'BINARY_NAME="U"\nREPO="a/u"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\ncurl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' "'\"binary_version\":[[:space:]]*\"[^\"]+\"'" "'\"'" "'\"version\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/twouncond/bin/w.sh"
+# indentfb: manifest read, then an INDENTED literal default inside `if [ -z … ]` — a fallback, not the pin (R8 MEDIUM #4)
+mkdir -p "$T/indentfb/.claude-plugin" "$T/indentfb/bin" "$T/indentfb2/.claude-plugin" "$T/indentfb2/bin"
+printf '{ "name": "indentfb", "version": "9.0.0", "binaryVersion": "0.3.0" }\n' > "$T/indentfb/.claude-plugin/plugin.json"
+printf '{ "name": "indentfb2", "version": "9.0.0" }\n' > "$T/indentfb2/.claude-plugin/plugin.json"
+for d in indentfb indentfb2; do printf 'BINARY_NAME="I"\nREPO="a/i"\nDESIRED_VERSION=$(grep -oE %s "$PLUGIN_JSON" | cut -d%s -f4)\nif [ -z "$DESIRED_VERSION" ]; then\n    DESIRED_VERSION="0.0.0"        # fallback default\nfi\ncurl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' "'\"binaryVersion\":[[:space:]]*\"[^\"]+\"'" "'\"'" > "$T/$d/bin/w.sh"; done
+# mention: lines that merely MENTION `DESIRED_VERSION=` (echo / grep) are not assignments (R8 LOW #11)
+mkdir -p "$T/mention/bin"
+printf 'BINARY_NAME="N"\nREPO="a/n"\nDESIRED_VERSION="1.2.3"\necho "DESIRED_VERSION=$DESIRED_VERSION"\ngrep -q %s "$0"\ncurl https://github.com/$REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' "'DESIRED_VERSION='" > "$T/mention/bin/w.sh"
+# tworepo1: ONE wrapper that downloads from two repos (primary || fallback) — a multi-repo plugin, not "a/one" (R8 HIGH #2)
+mkdir -p "$T/tworepo1/bin"
+printf 'BINARY_NAME="P"\nPRIMARY_REPO="a/one"\nFALLBACK_REPO="b/two"\nDESIRED_VERSION="1.0.0"\ncurl https://github.com/$PRIMARY_REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME || curl https://github.com/$FALLBACK_REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' > "$T/tworepo1/bin/w.sh"
+# quotedrepo: the gh idiom with QUOTES — `--repo "o/q"` and `gh api "repos/o/q/…"` (R8 MEDIUM #9)
+mkdir -p "$T/quotedrepo/bin"
+printf 'BINARY_NAME="Q"\nDESIRED_VERSION="1.0.0"\ngh release download "v$DESIRED_VERSION" --repo "o/q" -p "$BINARY_NAME"\n' > "$T/quotedrepo/bin/a.sh"
+printf 'DESIRED_VERSION="1.0.0"\ngh api "repos/o/q/releases/latest"\n' > "$T/quotedrepo/bin/b.sh"
+# projvar: the repo lives in a variable NOT named *REPO, interpolated into the release URL (issue point 2; R8 LOW #10)
+mkdir -p "$T/projvar/bin"
+printf 'BINARY_NAME="V"\nPROJ="Owner/Repo"\nDESIRED_VERSION="1.0.0"\ncurl https://github.com/$PROJ/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' > "$T/projvar/bin/w.sh"
+# nothost: `notgithub.example/o/r/releases/download` — a release-shaped URL on another host names NO GitHub repo (R8 LOW #15)
+mkdir -p "$T/nothost/bin"
+printf 'DESIRED_VERSION="1.0.0"\ncurl -sL "https://notgithub.example/PsychQuant/che-keychain/releases/download/v$DESIRED_VERSION/B"\n' > "$T/nothost/bin/w.sh"
+# unkmcp: .mcp.json that does not parse — "cannot answer", not "no" (R8 LOW #19)
+mkdir -p "$T/unkmcp"; printf '{ not json\n' > "$T/unkmcp/.mcp.json"
+mkdir -p "$T/unkmf"; printf '{ "name": "unkmf"\n' > "$T/unkmf/bad.json"
 # partial: one wrapper's pin is readable, the sibling's is not → the PLUGIN pin is unknown and no value is printed (R7 MEDIUM)
 mkdir -p "$T/partial/.claude-plugin" "$T/partial/bin"
 printf '{ "name": "partial", "version": "1.0.0", "binary_version": "0.3.0" }\n' > "$T/partial/.claude-plugin/plugin.json"
@@ -439,6 +467,20 @@ assert_eq "jqpin: prints |binaryVersion"             "|binaryVersion" "$(plugin_
 assert_rc "movingref: DESIRED_VERSION=\"latest\" is not a pin → rc 4" 4 plugin_binary_pin "$T/movingref" /nonexistent
 assert_rc "mfover: manifest read then an unfollowable override → rc 4 (manifest key is not what downloads)" 4 plugin_binary_pin "$T/mfover" "$T/mfover/.claude-plugin/plugin.json"
 assert_eq "mfover: names the wrapper, prints no value"  "|wrapper:w.sh" "$(plugin_binary_pin "$T/mfover" "$T/mfover/.claude-plugin/plugin.json")"
+assert_eq "twouncond: two unconditional manifest reads → the LAST key is the pin" "2.0.0|version" "$(plugin_binary_pin "$T/twouncond" "$T/twouncond/.claude-plugin/plugin.json")"
+assert_eq "indentfb: manifest read + indented literal fallback → the manifest key (it has a value)" "0.3.0|binaryVersion" "$(plugin_binary_pin "$T/indentfb" "$T/indentfb/.claude-plugin/plugin.json")"
+assert_eq "indentfb2: …and the literal only when the manifest key is empty" "0.0.0|wrapper:w.sh" "$(plugin_binary_pin "$T/indentfb2" "$T/indentfb2/.claude-plugin/plugin.json")"
+assert_eq "mention: echo/grep lines mentioning DESIRED_VERSION= are not assignments" "1.2.3|wrapper:w.sh" "$(plugin_binary_pin "$T/mention" /nonexistent)"
+assert_rc "tworepo1: one wrapper, two download repos → rc 2 (multi-repo)" 2 plugin_binary_repo "$T/tworepo1"
+assert_eq "tworepo1: the wrapper row's repo column is empty (ambiguous), not the first repo" "bin|w.sh|P|P||1.0.0|wrapper:w.sh" "$(plugin_binary_wrappers "$T/tworepo1" /nonexistent)"
+assert_eq "quotedrepo: --repo \"o/q\" and gh api \"repos/o/q/…\" both resolve" "o/q" "$(plugin_binary_repo "$T/quotedrepo")"
+assert_rc "quotedrepo: …and agree (rc 0)" 0 plugin_binary_repo "$T/quotedrepo"
+assert_eq "projvar: a variable not named *REPO, used in the release URL, is the repo" "Owner/Repo" "$(plugin_binary_repo "$T/projvar")"
+assert_rc "nothost: release URL on another host names no repo → rc 1" 1 plugin_binary_repo "$T/nothost"
+assert_rc "unkmcp: unparseable .mcp.json → rc 4 (cannot answer), not rc 1" 4 plugin_is_binary_backed "$T/unkmcp"
+assert_eq "unkmcp: …and says which probe" "unknown:mcp.json" "$(plugin_is_binary_backed "$T/unkmcp")"
+assert_rc "unkmf: unreadable manifest → rc 4" 4 plugin_is_binary_backed "$T/unkmf" "$T/unkmf/bad.json"
+assert_eq "unkmf: …names the manifest probe" "unknown:manifest" "$(plugin_is_binary_backed "$T/unkmf" "$T/unkmf/bad.json")"
 assert_eq "kc: a manifest read that IS the last assignment still resolves (rush / che-keychain shape)" "0.2.0|binaryVersion" "$(plugin_binary_pin "$T/kc" "$T/kc/.claude-plugin/plugin.json")"
 assert_rc "partial: one readable pin + one unreadable sibling → rc 4" 4 plugin_binary_pin "$T/partial" "$T/partial/.claude-plugin/plugin.json"
 assert_eq "partial: prints the sources and NO value (never a plausible default)" "|binary_version,wrapper:b.sh" "$(plugin_binary_pin "$T/partial" "$T/partial/.claude-plugin/plugin.json")"
