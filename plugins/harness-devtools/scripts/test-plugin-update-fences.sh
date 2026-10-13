@@ -232,6 +232,9 @@ run_both "kc: …and the decision line carries release_ahead=9.9.9 + pinsrc" 'BI
 run_both "kc: …release_ahead=9.9.9" 'BINARY_UNKNOWN_WHY' kc "release_ahead=9.9.9"
 run_both "kc: …and the missing marketplace version is named as missing, not as drift from ''" 'BINARY_UNKNOWN_WHY' kc "entry has no version"
 run_both "kc: Phase 1.5 Signal 1 queries tag v0.2.0 (pin is bare, tag is v-prefixed) and finds the DECLARED RELEASE_ASSET" 'for wrapper in' kc "✅ kc: CheKeychain present in PsychQuant/che-keychain release v0.2.0 (binaryVersion)"
+cp "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json" "$T/kc-manifest.bak"; printf '{ "name": "kc" }\n' > "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json"
+run_both "kc without binaryVersion (R11): a pin that exists but cannot be read is not 'no pin' — Signal 1 does not query latest instead" 'for wrapper in' kc "❓ kc: pin 讀不出"
+cp "$T/kc-manifest.bak" "$T/dev/fx-mp/plugins/kc/.claude-plugin/plugin.json"; rm -f "$T/kc-manifest.bak"
 export PBM_STUB_FAIL=1; prep01 kc
 run_both "kc: gh failure → release_ahead=unknown (printed, not silent)" 'BINARY_UNKNOWN_WHY' kc "release_ahead=unknown"
 run_both "kc: gh failure → NOT Case E (falls through to Case C: recent commit)" 'BINARY_UNKNOWN_WHY' kc "→ Phase 0.3 sync intent: Case C"
@@ -377,7 +380,7 @@ cp "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh" "$T/bot.bak"
 printf 'FB_REPO="Other/fallback"\ncurl -L https://github.com/$FB_REPO/releases/download/v$DESIRED_VERSION/$BINARY_NAME\n' >> "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh"
 prep01 two
 f=$(prep "AUTO_PUSH='no'" two); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
-assert_contains "two + fallback repo in one wrapper: the bump fence refuses (multi-repo inside a file)" "有 wrapper 從多個 repo 下載" "$(cd "$T" && bash "$f" 2>&1)"
+assert_contains "two + fallback repo in one wrapper: the bump fence refuses (multi-repo inside a file)" "下載點指向多個 repo 或 repo 判不出" "$(cd "$T" && bash "$f" 2>&1)"
 assert_contains "two + fallback repo: …the wrapper is untouched" 'DESIRED_VERSION="1.0.0"' "$(cat "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh")"
 cp "$T/bot.bak" "$T/dev/fx-mp/plugins/two/bin/bot-wrapper.sh"; rm -f "$T/bot.bak"
 echo
@@ -534,6 +537,8 @@ run_both "hp: Step 3 with no local CLI reports ❓ and counts 0 of 1 (checked = 
 run_both "hp: …the comparison names the pin" 'hooks checked:' hp "pin (binary_version) v0.7.0"
 printf '#!/bin/sh\necho "hpbin 0.7.0"\n' > "$T/bin/hpbin"; chmod +x "$T/bin/hpbin"
 run_both "hp: Step 3 runs the local CLI from plugin_bin_dir (test seam) and compares it to the PIN" 'hooks checked:' hp "✅ hpbin local v0.7.0 == pin (binary_version) v0.7.0（PsychQuant/macdoc）; latest v9.9.9 ≠ pin — Phase 0.3 Case E 管 bump"
+printf '#!/bin/sh\necho "hpbin 0.7.0+abc"\n' > "$T/bin/hpbin"
+run_both "hp: +build metadata does not distinguish versions (semver) — 0.7.0+abc == pin 0.7.0" 'hooks checked:' hp "✅ hpbin local v0.7.0+abc == pin (binary_version) v0.7.0"
 printf '#!/bin/sh\necho "hpbin 0.7.0-rc1"\n' > "$T/bin/hpbin"
 run_both "hp: a local prerelease 0.7.0-rc1 is NOT reported equal to pin 0.7.0 (no x.y.z truncation)" 'hooks checked:' hp "⚠️  hpbin local v0.7.0-rc1, pin (binary_version) v0.7.0"
 printf '#!/bin/sh\necho "hpbin 0.7.0"\n' > "$T/bin/hpbin"
@@ -611,7 +616,7 @@ p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"mr","version":
 PYX
 ( cd "$T/dev/fx-mp" && git add -A && git -c user.name=t -c user.email=t@t commit -qm mr && git push -q origin HEAD:master 2>/dev/null )
 prep01 mr
-run_both "mr: Step 2 → release_ahead=unknown with the multi-repo reason (never Case E off the first repo's tag)" 'BINARY_UNKNOWN_WHY' mr "wrapper 指向多個 repo — release-ahead 無法歸屬到單一 repo"
+run_both "mr: Step 2 → release_ahead=unknown with the multi-repo reason (never Case E off the first repo's tag)" 'BINARY_UNKNOWN_WHY' mr "下載點不能歸屬到單一已知 repo（rc 2）— release-ahead 未核對"
 run_both "mr: …decision line" 'BINARY_UNKNOWN_WHY' mr "release_ahead=unknown"
 prep01 mr
 f=$(prep "AUTO_PUSH='no'" mr); sed -i '' "s/^NEW_PIN='<release_ahead-from-step-2>'/NEW_PIN='2.0.0'/" "$f"
@@ -622,7 +627,7 @@ echo
 echo "#22 R5 — binary-backed by declaration only (manifest pin + .mcp.json, nothing downloads) → why=no-wrapper, not the false 'wrapper has no pin'"
 mkdir -p "$T/dev/fx-mp/plugins/nw/.claude-plugin"
 printf '{ "name": "nw", "version": "1.0.0", "binaryVersion": "0.1.0" }\n' > "$T/dev/fx-mp/plugins/nw/.claude-plugin/plugin.json"
-printf '{ "mcpServers": { "nw": { "command": "nw" } } }\n' > "$T/dev/fx-mp/plugins/nw/.mcp.json"
+printf '{ "mcpServers": { "nw": { "command": "${CLAUDE_PLUGIN_ROOT}/bin/nw" } } }\n' > "$T/dev/fx-mp/plugins/nw/.mcp.json"
 python3 - "$T/dev/fx-mp/.claude-plugin/marketplace.json" <<'PYX'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d['plugins'].append({"name":"nw","version":"1.0.0","source":"./plugins/nw"}); json.dump(d,open(p,'w'))

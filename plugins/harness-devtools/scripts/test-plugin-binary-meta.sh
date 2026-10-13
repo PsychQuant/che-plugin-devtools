@@ -396,6 +396,86 @@ curl https://notgithub.com/$PROJ/releases/download/v1.0.0/x
 W
 printf '{ "zotero": { "type": "stdio", "command": "${CLAUDE_PLUGIN_ROOT}/bin/w.sh" } }\n' > "$T/flatmcp/.mcp.json"
 printf '{}\n' > "$T/emptymcp/.mcp.json"
+# R11 — the R10 counter-examples: side paths the closed shapes did not cover yet
+for d in wantover repoover firstif firstand firstcase ownername jsonwrite verlit urllit condrepo binhookpin onlyunk; do mkdir -p "$T/$d/bin" "$T/$d/.claude-plugin"
+  printf '{ "name": "r", "version": "2.0.0", "binary_version": "0.3.0", "binaryVersion": "0.3.0" }\n' > "$T/$d/.claude-plugin/plugin.json"; done
+cat > "$T/wantover/bin/w.sh" <<'W'
+REPO="owner/tool"
+WANT=$(grep -oE '"binary_version":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" | cut -d'"' -f4)
+WANT="1.0.0"
+curl "https://github.com/$REPO/releases/download/v$WANT/Tool"
+W
+cat > "$T/repoover/bin/w.sh" <<'W'
+REPO="owner/old"
+REPO="${DOWNLOAD_REPO}"
+DESIRED_VERSION="1.0.0"
+curl "https://github.com/$REPO/releases/download/v$DESIRED_VERSION/Tool"
+W
+cat > "$T/firstif/bin/w.sh" <<'W'
+REPO="o/f"
+if [ "$(uname -m)" = x86_64 ]; then
+  DESIRED_VERSION="1.0.0"
+fi
+[ -n "$DESIRED_VERSION" ] || DESIRED_VERSION=$(grep -o '"binaryVersion": *"[^"]*"' "$PJ" | cut -d'"' -f4)
+curl "https://github.com/$REPO/releases/download/v$DESIRED_VERSION/T"
+W
+cat > "$T/firstand/bin/w.sh" <<'W'
+REPO="o/f"
+[ -n "$DEV" ] && DESIRED_VERSION="9.9.9"
+curl "https://github.com/$REPO/releases/download/v$DESIRED_VERSION/T"
+W
+cat > "$T/firstcase/bin/w.sh" <<'W'
+REPO="o/f"
+case "$1" in --pin) DESIRED_VERSION="2.0.0" ;; esac
+curl "https://github.com/$REPO/releases/download/v$DESIRED_VERSION/T"
+W
+cat > "$T/ownername/bin/w.sh" <<'W'
+OWNER="o"; NAME="n"
+DESIRED_VERSION="1.0.0"
+curl -L "https://github.com/$OWNER/$NAME/releases/download/v$DESIRED_VERSION/x"
+curl -s https://api.github.com/repos/PsychQuant/old-foo/releases/latest
+W
+cat > "$T/jsonwrite/bin/w.sh" <<'W'
+REPO="o/j"
+PIN="1.2.3"
+curl -L "https://github.com/$REPO/releases/download/v$PIN/X"
+printf '{"version": "%s"}\n' "$PIN" > "$HOME/bin/.x.json"
+W
+cat > "$T/verlit/bin/w.sh" <<'W'
+REPO="o/v"
+VERSION="1.2.3"
+curl -L "https://github.com/$REPO/releases/download/v$VERSION/X"
+W
+cat > "$T/urllit/bin/w.sh" <<'W'
+curl -L "https://github.com/o/u/releases/download/v1.2.3/X"
+W
+cat > "$T/condrepo/bin/w.sh" <<'W'
+REPO="PsychQuant/foo"
+[ -n "$FORK" ] && REPO="$FORK"
+DESIRED_VERSION="1.0.0"
+curl "https://github.com/$REPO/releases/download/v$DESIRED_VERSION/T"
+W
+mkdir -p "$T/binhookpin/hooks"
+cat > "$T/binhookpin/bin/x-wrapper.sh" <<'W'
+REPO="o/h"
+DESIRED_VERSION="1.0.0"
+curl "https://github.com/$REPO/releases/download/v$DESIRED_VERSION/x" -o "$HOME/bin/x"
+W
+cat > "$T/binhookpin/hooks/session-start.sh" <<'W'
+REPO="o/h"
+DESIRED_VERSION="0.9.0"
+curl "https://github.com/$REPO/releases/download/v$DESIRED_VERSION/x" -o "$HOME/bin/x"
+W
+cat > "$T/onlyunk/bin/w.sh" <<'W'
+R=$(cat repo.txt)
+DESIRED_VERSION="1.0.0"
+curl "https://github.com/$R/releases/download/v$DESIRED_VERSION/x"
+W
+mkdir -p "$T/urlmcp" "$T/npxmcp" "$T/pyiso"
+printf '{ "remote": { "type": "http", "url": "https://example.com/mcp" } }\n' > "$T/urlmcp/.mcp.json"
+printf '{ "tool": { "command": "npx", "args": ["-y", "some-mcp"] } }\n' > "$T/npxmcp/.mcp.json"
+printf '{ "name": "iso", "binary_version": "1.0.0" }\n' > "$T/pyiso/plugin.json"
+printf 'import os\nopen(os.path.join(os.path.dirname(os.path.abspath(__file__)), "PLANTED_RAN"), "w").close()\nfrom json import *\n' > "$T/pyiso/json.py"
 # partial: one wrapper's pin is readable, the sibling's is not → the PLUGIN pin is unknown and no value is printed (R7 MEDIUM)
 mkdir -p "$T/partial/.claude-plugin" "$T/partial/bin"
 printf '{ "name": "partial", "version": "1.0.0", "binary_version": "0.3.0" }\n' > "$T/partial/.claude-plugin/plugin.json"
@@ -448,13 +528,13 @@ assert_eq "tworepos: first one printed"              "a/one" "$(plugin_binary_re
 assert_rc "tworepos: two ASSIGNMENTS → rc 2"         2 plugin_binary_repo "$T/tworepos"
 assert_eq "docslink: assignment beats an earlier docs link" "PsychQuant/real-thing" "$(plugin_binary_repo "$T/docslink")"
 assert_rc "docslink: the docs link is not a candidate → rc 0, not 2" 0 plugin_binary_repo "$T/docslink"
-assert_rc "dyn: REPO=\"owner/tool\${FLAVOR}\" → rc 1 (no truncated prefix)" 1 plugin_binary_repo "$T/dyn"
+assert_rc "dyn: REPO=\"owner/tool\${FLAVOR}\" → cannot tell (rc 4, R11), no truncated prefix" 4 plugin_binary_repo "$T/dyn"
 assert_eq "dyn: prints empty"                        "" "$(plugin_binary_repo "$T/dyn")"
 assert_eq "indented: assignment inside a function / export form" "PsychQuant/che-keychain" "$(plugin_binary_repo "$T/indented")"
 assert_eq "ghapi: repo from gh api repos/o/r/releases" "PsychQuant/ghapi" "$(plugin_binary_repo "$T/ghapi")"
 assert_eq "two: same repo in both wrappers, docs link ignored → one value" "PsychQuant/msg" "$(plugin_binary_repo "$T/two")"
 assert_rc "two: rc 0 (not a spurious multi-repo warning)" 0 plugin_binary_repo "$T/two"
-assert_rc "badrepo: traversal segment rejected → rc 1" 1 plugin_binary_repo "$T/badrepo"
+assert_rc "badrepo: traversal segment rejected → cannot tell (rc 4, R11)" 4 plugin_binary_repo "$T/badrepo"
 assert_eq "badrepo: prints empty"                    "" "$(plugin_binary_repo "$T/badrepo")"
 
 echo
@@ -482,7 +562,7 @@ assert_eq "mixed: bin and hooks rows, both wrappers"  "bin|m-wrapper.sh|M|M|a/m|
 hooks|prefetch|||a/m||none" "$(plugin_binary_wrappers "$T/mixed")"
 assert_rc "pure: no wrappers → rc 1"                  1 plugin_binary_wrappers "$T/pure"
 assert_eq "unsafe: shell-significant filename is printed as ?" "bin|?|||a/b||none" "$(plugin_binary_wrappers "$T/unsafe")"
-assert_eq "hijack: the non-wrapper helper is not a row" "bin|real-wrapper.sh|RealBin|RealBin|real/thing||none" "$(plugin_binary_wrappers "$T/hijack")"
+assert_eq "hijack: the non-wrapper helper is not a row (its URL pins a literal v1 → pin unreadable, R11)" "bin|real-wrapper.sh|RealBin|RealBin|real/thing||wrapper:real-wrapper.sh" "$(plugin_binary_wrappers "$T/hijack")"
 assert_eq "hijack: plugin_binary_repo ignores REPO= in a non-wrapper file" "real/thing" "$(plugin_binary_repo "$T/hijack")"
 assert_rc "hijack: rc 0 (no spurious conflict)"      0 plugin_binary_repo "$T/hijack"
 assert_eq "emptymcp: .mcp.json {} is not a signal"    "" "$(plugin_is_binary_backed "$T/emptymcp")"
@@ -528,10 +608,10 @@ assert_rc "badpin: illegal manifest value → rc 4 at the plugin level" 4 plugin
 assert_rc "commentonly: a release URL in a # line is not a download → no wrapper rows" 1 plugin_binary_wrappers "$T/commentonly"
 assert_eq "mixedpin: a literal-pinned wrapper next to an unpinned sibling → the literal, rc 0" "1.0.0|wrapper:a.sh" "$(plugin_binary_pin "$T/mixedpin" /nonexistent)"
 assert_rc "mixedpin: rc 0"                            0 plugin_binary_pin "$T/mixedpin" /nonexistent
-assert_rc "cmtrepo: a release URL in a # line is not a repo candidate → rc 1" 1 plugin_binary_repo "$T/cmtrepo"
+assert_rc "cmtrepo: a release URL in a # line is not a repo candidate; the real site is dynamic → cannot tell (rc 4, R11)" 4 plugin_binary_repo "$T/cmtrepo"
 assert_eq "cmtrepo: prints empty (dynamic REPO= is not a literal either)" "" "$(plugin_binary_repo "$T/cmtrepo")"
 assert_rc "cmtbin: \$HOME/bin/<name> in a comment is not an install name → rc 1" 1 plugin_install_names "$T/cmtbin"
-assert_eq "installonly: BINARY_NAME= used only as the install target → asset undeclared, install name kept" "bin|w.sh||che-latex-mcp|a/latex||none" "$(plugin_binary_wrappers "$T/installonly")"
+assert_eq "installonly: BINARY_NAME= used only as the install target → asset undeclared, install name kept" "bin|w.sh||che-latex-mcp|a/latex||wrapper:w.sh" "$(plugin_binary_wrappers "$T/installonly")"
 assert_eq "two: BINARY_NAME= used in the download URL IS the asset" "AllMCP" "$(plugin_binary_name "$T/two")"
 assert_eq "hijack: the literal asset name in the download URL declares BINARY_NAME as the asset" "RealBin" "$(plugin_binary_name "$T/hijack")"
 assert_rc "mixrepo: assignment in one file + a different URL literal in the other → rc 2 (per-file tiering, then merge)" 2 plugin_binary_repo "$T/mixrepo"
@@ -549,6 +629,24 @@ assert_eq "jqpin: prints |binaryVersion"             "|binaryVersion" "$(plugin_
 assert_rc "movingref: DESIRED_VERSION=\"latest\" is not a pin → rc 4" 4 plugin_binary_pin "$T/movingref" /nonexistent
 assert_rc "mfover: manifest read then an unfollowable override → rc 4 (manifest key is not what downloads)" 4 plugin_binary_pin "$T/mfover" "$T/mfover/.claude-plugin/plugin.json"
 assert_eq "mfover: names the wrapper, prints no value"  "|wrapper:w.sh" "$(plugin_binary_pin "$T/mfover" "$T/mfover/.claude-plugin/plugin.json")"
+assert_eq "wantover (R11): a pin variable not named DESIRED_VERSION gets the same closed shapes → an unguarded override is rc 4" "|wrapper:w.sh" "$(plugin_binary_pin "$T/wantover" "$T/wantover/.claude-plugin/plugin.json")"
+assert_rc "repoover (R11): a repo variable later overwritten dynamically → the old literal is not definite (rc 2)" 2 plugin_binary_repo "$T/repoover"
+assert_eq "firstif (R11): the FIRST value under \`if uname\` → rc 4, not its literal" "|wrapper:w.sh" "$(plugin_binary_pin "$T/firstif" "$T/firstif/.claude-plugin/plugin.json")"
+assert_eq "firstand (R11): \`[ -n \"\$DEV\" ] && DESIRED_VERSION=…\` → rc 4" "|wrapper:w.sh" "$(plugin_binary_pin "$T/firstand" "$T/firstand/.claude-plugin/plugin.json")"
+assert_eq "firstcase (R11): a value inside \`case\` → rc 4" "|wrapper:w.sh" "$(plugin_binary_pin "$T/firstcase" "$T/firstcase/.claude-plugin/plugin.json")"
+assert_rc "ownername (R11): \$OWNER/\$NAME at the repo position is unknown, not skipped → rc 2 beside the other site" 2 plugin_binary_repo "$T/ownername"
+assert_eq "jsonwrite (R11): a \"version\": text that is not a manifest read does not become the pin; PIN at the URL version position is" "1.2.3|wrapper:w.sh" "$(plugin_binary_pin "$T/jsonwrite" "$T/jsonwrite/.claude-plugin/plugin.json")"
+assert_eq "verlit (R11): VERSION=\"1.2.3\" used at the version position is the pin, not 'no pin'" "1.2.3|wrapper:w.sh" "$(plugin_binary_pin "$T/verlit" "$T/verlit/.claude-plugin/plugin.json")"
+assert_rc "urllit (R11): a literal version in the release URL is a pin we do not read → rc 4, not rc 1 no-pin" 4 plugin_binary_pin "$T/urllit" "$T/urllit/.claude-plugin/plugin.json"
+assert_rc "condrepo (R11): a conditional reassignment of the repo variable → rc 2, not the default as certain" 2 plugin_binary_repo "$T/condrepo"
+assert_rc "binhookpin (R11): a downloading hook with its own pin beside bin/ → plugin pin cannot tell (rc 4), not bin's value" 4 plugin_binary_pin "$T/binhookpin" "$T/binhookpin/.claude-plugin/plugin.json"
+assert_rc "onlyunk (R11): only a download site with an unknown repo → rc 4 (cannot tell), not rc 1 (none)" 4 plugin_binary_repo "$T/onlyunk"
+assert_rc "urlmcp (R11): a remote-url MCP server ships no release binary → .mcp.json does not count" 1 plugin_is_binary_backed "$T/urlmcp"
+assert_rc "npxmcp (R11): an npx MCP server ships no release binary → .mcp.json does not count" 1 plugin_is_binary_backed "$T/npxmcp"
+chmod 000 "$T/wantover/bin/w.sh"
+assert_eq "unreadable wrapper (R11): the reader failing is cannot-tell, never |none" "|wrapper:w.sh" "$(_pbm_file_pin "$T/wantover/bin/w.sh" "$T/wantover/.claude-plugin/plugin.json")"
+chmod 644 "$T/wantover/bin/w.sh"
+assert_eq "pyiso (R11): JSON reads run python3 -I — a json.py in the cwd is not imported" "1.0.0|absent" "$( cd "$T/pyiso" && v=$(_pbm_json_field "$T/pyiso/plugin.json" binary_version); printf '%s|%s' "$v" "$([ -e "$T/pyiso/PLANTED_RAN" ] && echo ran || echo absent)" )"
 assert_eq "fnindent: two unconditional literals inside a function (indented) → rc 4, not the first" "|wrapper:w.sh" "$(plugin_binary_pin "$T/fnindent" "$T/fnindent/.claude-plugin/plugin.json")"
 assert_eq "sameline: \$(…) || \"1.0.0\" on one line → rc 4 (the opaque primary is not ignored)" "|wrapper:w.sh" "$(plugin_binary_pin "$T/sameline" "$T/sameline/.claude-plugin/plugin.json")"
 assert_eq "archover: a readable override under \`if uname\` → rc 4 (not an only-if-empty guard)" "|wrapper:w.sh" "$(plugin_binary_pin "$T/archover" "$T/archover/.claude-plugin/plugin.json")"

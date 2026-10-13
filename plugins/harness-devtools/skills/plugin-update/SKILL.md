@@ -354,7 +354,7 @@ cd "$MP_ROOT" || exit 1
 # 與 resolver 承認目錄時用的同一套查法）——不要自己組 .claude-plugin/plugin.json（#18 R6：safari-browser
 # 等根目錄佈局 resolver 認、消費端讀不到）。
 [ -n "$PLUGIN_MANIFEST" ] || { echo "✗ Phase 0.3: $PLUGIN_DIR 沒有 plugin manifest — 沒有 version 可同步（Step 0.1 應已擋下）" >&2; exit 1; }
-SHELL_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
+SHELL_VERSION=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
 # 讀不到 ≠ 已同步：空版本號不能拿去比對
 [ -n "$SHELL_VERSION" ] || { echo "✗ Phase 0.3: 讀不到 $PLUGIN_MANIFEST 的 version — 無法判定 sync intent" >&2; exit 1; }
 case "$SHELL_VERSION" in *[!0-9A-Za-z.+-]*) echo "✗ Phase 0.3: $PLUGIN_MANIFEST 的 version 含非法字元（只接受 [0-9A-Za-z.+-]）— 第三方值不進決定行" >&2; exit 1 ;; esac
@@ -425,9 +425,13 @@ REPO_UNPUSHED=$(git rev-list --count "$UPSTREAM..HEAD" 2>/dev/null) || { echo "�
 # 兩段都過 allowlist（不靠 *-wrapper.sh 檔名、不靠固定變數名）；跨檔合併，不同 repo → rc 2（(e) 印 unknown、bump 拒絕）。
 # detect_binary_repo 定義在本 fence 內（函式也不跨 Bash 呼叫存活）：在三個常見路徑找 local clone；找不到 → 空（best-effort）。
 BINARY_REPO=$(plugin_binary_repo "$PLUGIN_DIR"); PBR_RC=$?
-# rc 2 只在同一層級（*_REPO= 賦值 vs 賦值）多值時出現——文件連結不是候選；印 file|repo 兩欄（che-things-mcp 那種 wrapper 指 PsychQuant/x、
-# hook 指舊 fork 現在不是衝突：有 bin/ wrapper 時 hook 不被諮詢）
-[ "$PBR_RC" = 2 ] && echo "⚠ $PLUGIN_DIR 的 wrapper 各自指向不同 repo（$(plugin_binary_wrappers "$PLUGIN_DIR" | cut -d'|' -f2,5 | tr '\n' ' ')）— 取第一個（${BINARY_REPO}），其餘不核對；請統一"
+# repo 逐個 release 下載點讀（字面 o/r，或檔內每次賦值都是字面 o/r 的變數；其餘記為未知）：rc 0 恰一個已知 repo /
+# rc 1 沒有下載點 / rc 2 多個 repo，或已知 repo 旁還有未知的下載點 / rc 4 只有未知的下載點。文件與 issues 連結不是下載點；
+# 有 bin/ wrapper 時 hook 不被諮詢（che-things-mcp 那種 hook 指舊 fork 不是衝突）。rc 2 / 4 都不比對 release-ahead（見 (e)）
+case "$PBR_RC" in
+  2) echo "⚠ $PLUGIN_DIR 的下載點指向多個 repo，或有下載點的 repo 判不出（$(plugin_binary_wrappers "$PLUGIN_DIR" | cut -d'|' -f2,5 | tr '\n' ' ')；repo 欄空 = 該檔不只一個或判不出）— 不歸屬到單一 repo；請統一" ;;
+  4) echo "⚠ $PLUGIN_DIR 的 release 下載點 repo 判不出（變數被動態賦值、\$OWNER/\$NAME 這類組合、或非字面的值）— 不是「沒有 repo」" ;;
+esac
 detect_binary_repo() {
     local repo="$1" base c
     [ -n "$repo" ] || return 1
@@ -472,9 +476,9 @@ fi
 # （Phase 1.5 Signal 2 只看反方向：main 超前 release）。走 gh（帶認證、失敗回 rc）；取不到 → unknown：印一行、不阻擋、
 # 不進 Case E——「查不到」不是「已是最新」。測試用 PBM_GH 注入 stub，不打網路。
 RELEASE_LATEST=""; RELEASE_AHEAD=""
-if [ "$IS_BINARY_BACKED" = true ] && [ -n "$BINARY_VERSION" ] && [ "$PBR_RC" = 2 ]; then
+if [ "$IS_BINARY_BACKED" = true ] && [ -n "$BINARY_VERSION" ] && { [ "$PBR_RC" = 2 ] || [ "$PBR_RC" = 4 ]; }; then
     # wrapper 指向多個 repo：latest 只能來自其中一個，bump 卻會改每支 wrapper 的 pin → 不比對、不進 Case E（bump fence 也拒絕；#22 verify R4）
-    RELEASE_AHEAD=unknown; echo "ℹ $PLUGIN_DIR 的 wrapper 指向多個 repo — release-ahead 無法歸屬到單一 repo，未核對；要 bump 請手動逐 wrapper 改"
+    RELEASE_AHEAD=unknown; echo "ℹ $PLUGIN_DIR 的下載點不能歸屬到單一已知 repo（rc ${PBR_RC}）— release-ahead 未核對；要 bump 請手動逐 wrapper 改"
 elif [ "$IS_BINARY_BACKED" = true ] && [ -n "$BINARY_VERSION" ] && [ -n "$BINARY_REPO" ]; then
     RELEASE_LATEST=$(latest_release_version "$BINARY_REPO") || RELEASE_LATEST=""
     if [ -z "$RELEASE_LATEST" ]; then
@@ -488,7 +492,7 @@ elif [ "$IS_BINARY_BACKED" = true ] && [ -n "$BINARY_VERSION" ] && [ -n "$BINARY
         esac
     fi
 elif [ "$IS_BINARY_BACKED" = true ] && [ -n "$BINARY_VERSION" ]; then
-    RELEASE_AHEAD=unknown; echo "ℹ 抽不到 $PLUGIN_DIR 的 binary repo（bin/ 與 hooks/ 沒有 *_REPO= 賦值或 release URL 字面）— release-ahead 信號未核對"
+    RELEASE_AHEAD=unknown; echo "ℹ $PLUGIN_DIR 沒有可讀出 repo 的 release 下載點 — release-ahead 信號未核對"
 fi
 
 # ── Step 3 + Step 4 的判定在同一個 shell 完成（值不跨 fence）；印出 Case 與數字，
@@ -569,7 +573,7 @@ case "$SYNC_CASE" in
 esac
 ```
 
-> **`detect_binary_repo` heuristic**：吃 Step 2 由 `plugin_binary_repo` 抽出的 owner/repo（wrapper 內被用進 release 下載的 `*_REPO=` 賦值或 URL 字面，e.g. `PsychQuant/che-apple-mail-mcp`），然後在常見路徑下找 local clone：`$HOME/Developer/<repo>` / `$HOME/Developer/che-mcps/<repo>` / `$HOME/code/<repo>`。找不到就跳過 binary-repo-drift 信號（不 fail-stop — 信號是 best-effort）。
+> **`detect_binary_repo` heuristic**：吃 Step 2 由 `plugin_binary_repo` 抽出的 owner/repo（每個 release 下載點 repo 位置上的字面，或檔內每次賦值都是字面 o/r 的變數，e.g. `PsychQuant/che-apple-mail-mcp`），然後在常見路徑下找 local clone：`$HOME/Developer/<repo>` / `$HOME/Developer/che-mcps/<repo>` / `$HOME/code/<repo>`。找不到就跳過 binary-repo-drift 信號（不 fail-stop — 信號是 best-effort）。
 
 ### Step 3: Sync intent 判斷
 
@@ -707,7 +711,7 @@ case "$PBP_RC" in 0) ;; 2) refuse "wrapper 各自 pin 不同版本 — 先手動
 # NEW_PIN 是 agent 代入的值：只往前——回退到舊 release 是把修掉的漏洞裝回去，要 rollback 請手動改（#22 verify R6）
 version_gt "$NEW_PIN" "$OLD_PIN"; VG_RC=$?
 [ "$VG_RC" = 0 ] || { [ "$VG_RC" = 1 ] && refuse "NEW_PIN v${NEW_PIN} 不比目前 pin v${OLD_PIN} 新 — 不做 rollback（要回退請手動改 pin）"; refuse "NEW_PIN '${NEW_PIN}' 或目前 pin '${OLD_PIN}' 不是 x.y.z 形，無法確認不是 rollback"; }
-CUR_VERSION=$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get("version"); print(v if isinstance(v,str) else "")' "$PLUGIN_MANIFEST" 2>/dev/null)
+CUR_VERSION=$(python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get("version"); print(v if isinstance(v,str) else "")' "$PLUGIN_MANIFEST" 2>/dev/null)
 case "$CUR_VERSION" in *[!0-9A-Za-z.+-]*) refuse "$PLUGIN_MANIFEST 的 version 含非法字元 — 先手動修好" ;; esac
 # 目標清單（path|key，每行一個）：逐 wrapper 列決定——會下載的列是 bin/（沒有 bin/ 時是 hooks/）；字面 pin → 那支 wrapper 檔的 DESIRED_VERSION；
 # manifest key → manifest 該 key（同一 key 只算一次）。**每個有 pin 的列都要改**：兩支 wrapper 共用同一字面 pin 時改兩支（#22 verify R3）
@@ -736,7 +740,7 @@ EOF
 # 多 repo：NEW_PIN 只是其中一個 repo 的 tag，卻會寫進每支 wrapper → 拒絕（Step 2 對這種 plugin 本來就印 release_ahead=unknown；#22 verify R4）
 case "$REPOS" in *"|"*) refuse "wrapper 指向多個 repo（${REPOS}）— v${NEW_PIN} 只屬於其中一個，不逐支自動改；手動逐 wrapper 處理" ;; esac
 # 同一支 wrapper 裡就有兩個下載 repo（primary || fallback）時，列的 repo 欄是空的——plugin 層的判定才看得到（#22 verify R8）
-plugin_binary_repo "$PLUGIN_DIR" >/dev/null; [ $? != 2 ] || refuse "有 wrapper 從多個 repo 下載 — v${NEW_PIN} 只屬於其中一個，不自動改；手動逐 wrapper 處理"
+plugin_binary_repo "$PLUGIN_DIR" >/dev/null; case $? in 2|4) refuse "下載點指向多個 repo 或 repo 判不出 — v${NEW_PIN} 不能歸屬到單一 repo，不自動改；手動逐 wrapper 處理" ;; esac
 TOUCHES_VERSION=no; case "$KEYS" in *"|version|"*) TOUCHES_VERSION=yes ;; esac
 KEYDESC=$(printf '%s' "$TARGETS" | sed 's/^.*|//' | awk '!seen[$0]++' | paste -sd+ -)
 if [ "$TOUCHES_VERSION" = yes ] && [ "$ALSO_VERSION" = yes ]; then echo "ℹ pin 就是 version 欄位本身；「一起 bump」與「只 bump pin」在這個 plugin 上是同一件事"; ALSO_VERSION=no; fi
@@ -781,7 +785,7 @@ FILES=$(printf '%s' "$TARGETS" | sed 's/|[^|]*$//' | awk '!seen[$0]++'); [ "$ALS
 REL=$(printf '%s\n' "$FILES" | sed "s|^$MP_ROOT/||" | tr '\n' ' ' | sed 's/ $//')
 # 逐檔單行字面替換：只動 `"<key>": "<old>"`（manifest）或 `DESIRED_VERSION="<old>"`（wrapper）那一行；**先全部驗、每個目標恰一命中才一起寫**，
 # 不 json.dump、不重排（#22 verify R2）。ALSO_VERSION 的 version 永遠在 manifest（wrapper 字面 pin 時就是第二個檔，#22 verify R3）
-python3 - "$OLD_PIN" "$NEW_PIN" "$ALSO_VERSION" "$CUR_VERSION" "$PLUGIN_MANIFEST" "$TARGETS" <<'PY'
+python3 -I - "$OLD_PIN" "$NEW_PIN" "$ALSO_VERSION" "$CUR_VERSION" "$PLUGIN_MANIFEST" "$TARGETS" <<'PY'
 import re, sys
 old, new, also, cur, manifest, targets = sys.argv[1:7]
 # one buffer per FILE: every key that lives in the same file is replaced in that buffer, and each file is written once —
@@ -883,7 +887,7 @@ fi
 
 當 plugin-update 在 `idd-all` orchestrator 下 invoke：
 - Nothing to sync (Case A) → 同樣 abort（idd-all 在最終 report 標 "plugin-update skipped: no sync intent"）
-- Binary 狀態是唯一信號 (Case B，含 unknown 兩個子態) → auto-abort（unattended 不該 force shell sync，也不該把「未核對」當「沒問題」）+ structured error，並 `remove_plugin_ctx`
+- Binary 狀態是唯一信號 (Case B，含 unknown 的五個子態：no-wrapper / no-pin / pin-unreadable / pin-conflict / no-clone) → auto-abort（unattended 不該 force shell sync，也不該把「未核對」當「沒問題」）+ structured error，並 `remove_plugin_ctx`
 - Latest release 比 pin 新 (Case E) → 依 pin 來源：專用 key / wrapper 字面 → **Case E-auto** 自動 bump + commit + push（只在樹乾淨、分歧 0 0 時；否則印 AUDIT refused 照 shell case）；`version` → 不 bump、印 `AUDIT: … not bumped under unattended`，照 shell 信號的 case（C / B / A）繼續（#22）
 - Sync intent confirmed (Case C) → 繼續 Phase 0.5（0.5 自己有 unattended handler）
 
@@ -1290,7 +1294,7 @@ Plugin 如果依賴外部 binary（MCP server、CLI 工具），plugin-update �
 
 | 訊號 | 類型 | 判斷方式 |
 |------|------|---------|
-| `.mcp.json` 存在 | **MCP binary** | `<PLUGIN_DIR>/.mcp.json` 存在 |
+| `.mcp.json` 宣告 plugin 內的 server | **MCP binary** | `mcpServers` 或扁平格式裡有 server 的 `command` 指向 plugin 內（`${CLAUDE_PLUGIN_ROOT}/…`、`./…`、`bin/…`）；`{}`、只有遠端 `url`、`npx` / `uvx` 不算 |
 | `bin/` 下任何一般檔案含 release URL | **MCP binary**（wrapper）| `gh release download` / `api.github.com/repos/…/releases` / `github.com/…/releases/(download\|tags\|latest)`——URL 形狀，不是檔名後綴（`bin/che-keychain` 也算）、不是變數名（`REPO=` / `GITHUB_REPO=` 都不是判準）|
 | `hooks/` 下任何一般檔案含同一 URL pattern（不限 `*.sh`） | **CLI tool**（hook-only 佈局：gifthub、macdoc） | 同上；hook 只委派給 wrapper、不自己 curl 的佈局由上一列接住；有 bin/ wrapper 的 plugin 其 hooks 是 check script |
 | manifest 有 `binary_version` / `binaryVersion` | 由宣告 | 兩種拼法都讀；不回退 `version` |
@@ -1347,11 +1351,13 @@ while IFS='|' read -r wdir wfile asset inst repo pin src; do
     TOTAL=$((TOTAL + 1))
     if [ -z "$asset" ] || [ -z "$repo" ]; then
         MISS=""; [ -z "$asset" ] && MISS="asset 名"; [ -z "$repo" ] && MISS="${MISS:+$MISS 與 }repo"
-        echo "❓ ${wfile}: 判定不出 ${MISS}（asset 名只認宣告的 RELEASE_ASSET= / ASSET_NAME= / BINARY_NAME=，不從 install 名猜——猜錯會變成假的「asset 缺 → mcp-deploy」；repo 認 *_REPO=\"owner/repo\" 或 release URL 字面）— Signal 1 對它沒驗證任何東西"
+        echo "❓ ${wfile}: 判定不出 ${MISS}（asset 名只認宣告的 RELEASE_ASSET= / ASSET_NAME= / BINARY_NAME=，不從 install 名猜——猜錯會變成假的「asset 缺 → mcp-deploy」；repo 認每個 release 下載點 repo 位置上的字面 o/r，或每次賦值都是字面 o/r 的變數）— Signal 1 對它沒驗證任何東西"
         UNRES="${UNRES:+$UNRES }${wfile}"; continue
     fi
     # === Signal 1: asset present in the release this wrapper downloads? ===（有 pin 就查 pin 的 tag，沒 pin 才查 latest；走 gh，查不到說 UNKNOWN 不說「缺」）
     # 「checked」= release 真的查到了；gh 查不到的列進 unchecked，不算 checked（#22 verify R6）
+    # pin 欄空有兩種意思：src=none（wrapper 下載 latest，查 latest 才對）與 src≠none（有 pin、但讀不出）——後者不能拿 latest 代替
+    if [ -z "$pin" ] && [ "$src" != none ]; then UNRES="${UNRES:+$UNRES }${wfile}"; echo "❓ ${wfile}: pin 讀不出（${src}）— Signal 1 不查 latest 代替，未核對"; continue; fi
     TAGDESC="latest"; [ -n "$pin" ] && TAGDESC="v${pin} (${src})"
     if ASSETS=$(release_assets "$repo" "$pin"); then
         if printf '%s\n' "$ASSETS" | grep -qxF -- "$asset"; then CHECKED=$((CHECKED + 1)); echo "✅ ${wfile}: ${asset} present in ${repo} release ${TAGDESC}"
@@ -1448,7 +1454,8 @@ CHECKED=0; TOTAL=0
 while IFS='|' read -r wdir wfile asset inst repo pin src; do
     [ "$wdir" = hooks ] || continue
     TOTAL=$((TOTAL + 1))
-    [ -n "$repo" ] || { echo "❓ ${wfile}: 判定不出 repo（只認 *_REPO=\"owner/repo\" 賦值、gh api …/repos/owner/repo/releases、api.github.com/repos/owner/repo/releases、github.com/owner/repo/releases 字面）— CLI 版本比對沒驗證任何東西"; continue; }
+    [ -n "$repo" ] || { echo "❓ ${wfile}: 判定不出 repo（下載點 repo 位置不是字面 o/r，也不是每次賦值都是字面 o/r 的變數；或有多個）— CLI 版本比對沒驗證任何東西"; continue; }
+    [ -n "$pin" ] || [ "$src" = none ] || { echo "❓ ${wfile}: pin 讀不出（${src}）— 不拿 latest 代替，CLI 版本比對沒驗證任何東西"; continue; }
     [ -n "$inst" ] || { echo "❓ ${wfile}: 判定不出 \$HOME/bin/<name>（也沒有 INSTALL_NAME= / BINARY_NAME=）— CLI 版本比對沒驗證任何東西"; continue; }
     # helper 已過 allowlist；exec 前再擋一次——這個名字接下來會被執行（#22 verify R3）
     case "$inst" in ''|.*|-*|*[!A-Za-z0-9._-]*) echo "❓ ${wfile}: 本機名含非法字元 — 不執行"; continue ;; esac
@@ -1463,7 +1470,7 @@ while IFS='|' read -r wdir wfile asset inst repo pin src; do
     WANT="$LATEST_VERSION"; WANTDESC="latest"; [ -n "$pin" ] && { WANT=$(printf '%s\n' "$pin" | grep -xE '[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?' | head -1); WANTDESC="pin (${src})"; }
     if [ -z "$WANT" ]; then if [ -n "$pin" ]; then echo "❓ ${wfile} 的 pin '${pin}' 不是 x.y.z[-pre] 形 — ${inst} 無法比對"; else echo "❓ 取不到 $repo 的 latest release（網路 / 沒有 release / rate limit）— ${inst} 無法比對"; fi
     elif [ -z "$LOCAL_VERSION" ]; then echo "❓ 取不到本機 $inst 的版本（${WANTDESC} v${WANT}）— 無法比對"
-    elif CHECKED=$((CHECKED + 1)) && [ "$LOCAL_VERSION" != "$WANT" ]; then
+    elif CHECKED=$((CHECKED + 1)) && [ "${LOCAL_VERSION%%+*}" != "${WANT%%+*}" ]; then   # +build 不區分版本（semver），-prerelease 區分
         echo "⚠️  $inst local v$LOCAL_VERSION, ${WANTDESC} v$WANT"
         if [ -n "$pin" ]; then echo "   → hook 下次 session-start 會抓 pin 的版本；要立刻驗證就執行 $PLUGIN_DIR/hooks/${wfile}"; else echo "   → /harness-devtools:cli-upgrade $inst"; fi
     else
@@ -1582,7 +1589,7 @@ source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 # entry 缺 version 不是 KeyError（#22 第 4 點：che-keychain 的 entry 原本就沒有 version）——印 (missing — will be set from plugin.json)，Step 2 補上
-python3 -c '
+python3 -I -c '
 import json, re, sys
 d = json.load(open(sys.argv[1]))
 for p in d.get("plugins") or []:
@@ -1612,7 +1619,7 @@ source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 [ -n "$PLUGIN_MANIFEST" ] || { echo "✗ $PLUGIN_DIR 沒有 plugin manifest — 沒有 version 可同步" >&2; exit 1; }
-V=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
+V=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
 [ -n "$V" ] || { echo "✗ 讀不到 $PLUGIN_MANIFEST 的 version" >&2; exit 1; }
 echo "plugin.json ($PLUGIN_MANIFEST): $V"
 ```
@@ -1658,7 +1665,7 @@ source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 [ -n "$PLUGIN_MANIFEST" ] || { echo "✗ $PLUGIN_DIR 沒有 plugin manifest — 沒有 version 可同步" >&2; exit 1; }
-NEW_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
+NEW_VERSION=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
 [ -n "$NEW_VERSION" ] || { echo "✗ 讀不到 $PLUGIN_MANIFEST 的 version" >&2; exit 1; }
 case "$NEW_VERSION" in *[!0-9A-Za-z.+-]*) echo "✗ plugin.json 的 version 含非法字元（只接受 [0-9A-Za-z.+-]）" >&2; exit 1 ;; esac
 clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]\\' | LC_ALL=C cut -c1-80; }
@@ -1759,7 +1766,7 @@ SKIPPED=""
 # 讀不到 version 就 abort：空的 NEW_VERSION 會讓下面信號 1 的 pattern 變成 `v\|`（空 alternation
 # 匹配每一行）→ README 永遠「沒有 stale」——這正是 #18 要消滅的「偵測落空被讀成沒有」。
 [ -n "$PLUGIN_MANIFEST" ] || { echo "✗ Phase 2.5: $PLUGIN_DIR 沒有 plugin manifest — README 六信號無法判定" >&2; exit 1; }
-NEW_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
+NEW_VERSION=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PLUGIN_MANIFEST" 2>/dev/null)
 [ -n "$NEW_VERSION" ] || { echo "✗ Phase 2.5: 讀不到 $PLUGIN_MANIFEST 的 version — README 六信號無法判定" >&2; exit 1; }
 
 # README 是否有任何版本追蹤標記（給 Suppression A 用）
@@ -1865,7 +1872,7 @@ fi
 # README 多半會在標題寫「(N tools)」「N MCP Tools」「Tool 數量: N」。
 # 把這個 N 抓出來跟 plugin.json description 中宣稱的 tool 數比對。
 # README 落後最容易在這露餡（che-ical-mcp v0.8.2 → v1.7.2 README 寫 20 tools 實際 28）。
-DESC=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("description", ""))' "$PLUGIN_MANIFEST" 2>/dev/null)
+DESC=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("description", ""))' "$PLUGIN_MANIFEST" 2>/dev/null)
 DESC_TOOLS=$(echo "$DESC" | grep -oE '[0-9]+ ?(?:個 )?(?:MCP )?(?:tools|工具)' | head -1 | grep -oE '^[0-9]+')
 README_TOOLS=$(grep -oE 'Available Tools \([0-9]+\)|\([0-9]+ (?:MCP )?tools\)|\*\*[0-9]+ MCP Tools\*\*|[0-9]+ 個工具' "$README" 2>/dev/null | grep -oE '[0-9]+' | head -1)
 { [ -n "$DESC_TOOLS" ] && [ -n "$README_TOOLS" ]; } || SKIPPED="$SKIPPED 5(無 tool count 可比)"
@@ -2103,7 +2110,7 @@ elif [ "$PIB_BB" = 0 ]; then
         while IFS='|' read -r wdir wfile asset inst repo pin src; do
             [ "$wdir" = "$EFF" ] || continue
             N_ALL=$((N_ALL + 1))
-            [ -n "$CMD" ] || { [ "$wfile" != '?' ] && { if [ "$EFF" = bin ]; then CMD="(cd / && $PLUGIN_DIR/bin/$wfile --version)"; else CMD="$PLUGIN_DIR/hooks/${wfile}（hook-only 佈局：執行下載器）"; fi; }; }
+            [ -n "$CMD" ] || { [ "$wfile" != '?' ] && { if [ "$EFF" = bin ]; then CMD="(cd / && $(printf '%q' "$PLUGIN_DIR/bin/$wfile") --version)"; else CMD="$(printf '%q' "$PLUGIN_DIR/hooks/$wfile")（hook-only 佈局：執行下載器）"; fi; }; }
             if [ -z "$inst" ]; then UNRES="${UNRES:+$UNRES }${wfile}"; echo "  ❓ ${wfile}: 抽不到 install 名（無 INSTALL_NAME= / BINARY_NAME= / \$HOME/bin/<name>）— 這支 wrapper 裝的 binary 無法對 sidecar"; continue; fi
             # sidecar 每個 install 名讀一次即可，但**每一列都要對自己的 pin**——同名 binary、不同 pin 的第二支不能被去重吃掉（#22 verify R3）
             INSTALLED=$(plugin_installed_binary_version "$PLUGIN_DIR" "$inst"); PIB_RC=$?

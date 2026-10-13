@@ -76,12 +76,15 @@ plugin_binary_version "$PLUGIN_MANIFEST"        # 明確 manifest pin：binary_v
 plugin_binary_version_key "$PLUGIN_MANIFEST"    # 明確 pin 的 key；rc 1 沒有 / 2 兩個都有（印 binary_version）
 plugin_binary_wrappers "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # **逐 wrapper**：每個真的會下載 release 的檔案一列
                                                 #   dir|file|asset|install|repo|pin|pinsrc（dir ∈ bin|hooks；空欄 = 該檔沒宣告；檔名不合法印 ?）
-                                                #   pin 由**該 wrapper 自己**決定，三種來源封閉列舉：**只認封閉列舉的形狀，其餘一律 rc 4**（R5–R9 用規則模擬 shell 控制流程，每輪都被舉出新反例；R10 改成辨識）：
+                                                #   pin 由**該 wrapper 自己**決定，三種來源封閉列舉：**只認封閉列舉的形狀，其餘一律 rc 4**（R5–R9 用規則模擬 shell 控制流程，每輪都被舉出新反例；R10 改成辨識；R11 把旁路也收進同一規則）。
+                                                #   pin **變數**：檔內有 `DESIRED_VERSION=` 賦值就是它；否則是 release 網址**版本位置**（`/releases/download/v$X/`）用的那個
+                                                #   變數（macdoc 的 `WANT`）——版本位置是字面版本或不只一個變數 → rc 4；都沒有 → no-pin（下載 latest）。對該變數：
                                                 #   (1) DESIRED_VERSION 恰一個值賦值——x.y.z 字面（pinsrc=wrapper:<file>）或 manifest 讀取（`"key"…:` 形，pinsrc=<key>）；
                                                 #   (2) 可先 `DESIRED_VERSION=""`，之後的值賦值**每一個**都要有明確的「空才補」守門：同行 `[ -n "$DESIRED_VERSION" ] ||`
                                                 #       / `[ -z … ] &&`、上一行 `if [[ -z "$DESIRED_VERSION" ]]; then`，或與 `if grep -q '"KEY"…'` 同縮排的 `else`
                                                 #       （只在 KEY **不存在**時走；KEY 存在但空 → rc 4，che-pdf 此時拒絕下載）——取第一個有值的；
-                                                #   無守門的第二個值（兩次無條件讀取、`if uname` 覆寫、同行 `$(…) || "1.0.0"`）、opaque 值（`$(…)` 無 key、`${2:-}`、
+                                                #   **每個**值（含第一個）同一行前面不得有東西，且所在區塊必須是頂層、函式本體、`if [[ -f "$X" ]]`、包著讀 KEY 的 `if grep -q KEY`、
+                                                #   -z 守門或上述 `else`——`if uname` / `case` / `[ -n "$X" ] &&` 裡的值都 rc 4；無守門的第二個值（兩次無條件讀取、`if uname` 覆寫、同行 `$(…) || "1.0.0"`）、opaque 值（`$(…)` 無 key、`${2:-}`、
                                                 #   `"$X"`）、非 x.y.z 字面（latest、v1.2.3）、值之後又 `=""` → rc 4。縮排沒有意義；echo / grep 提到不算賦值；
                                                 #   反斜線續行先接起來；值以 shell word 邊界截取（尾隨註解裡的 `"version":` 不算）。讀取器是內嵌的 `python3 -I`；
                                                 #   (3) 都沒有 → pin 空、pinsrc=none。**沒有** manifest 層的全域回退——本機 26 支 wrapper / hook：4 支字面、8 支讀 version、
@@ -93,14 +96,14 @@ plugin_binary_pin "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # plugin 層的 pin = **會
                                                 #   印 value|pinsrc[,pinsrc…]（全部來源，che-telegram-mcp 兩支 wrapper → 兩個；bump 要每個都改）；rc 0 一致 /
                                                 #   1 沒有任何 wrapper 有 pin（no-pin，Case B 會問）/ 2 各 wrapper 不一致 / 4 任一會下載的 wrapper 的 pin 讀不出（點名的 key 沒值 / 字面被動態覆寫 / 移動 ref）——此時**只印 `|src[,src…]` 不印值**（partial 狀態不得漏出看起來合理的預設）
 plugin_is_binary_backed "$PLUGIN_DIR" "$PLUGIN_MANIFEST"   # rc 0 + 命中清單 "mcp.json bin:<f> hook:<f> pin:<key>" / rc 1 空 / rc 4 沒命中但有探測點答不出（"unknown:mcp.json" / "unknown:manifest"）——不是「沒有」
-                                                #   判準：.mcp.json（`mcpServers` 非空，或真實 plugin 用的扁平格式 `{"<server>": {"command": …}}`；`{}` 不算；不是合法 JSON → rc 4）∨ bin/ 任何一般檔案含 release URL ∨ hooks/ 任何檔案含同 pattern ∨ manifest pin
+                                                #   判準：.mcp.json（`mcpServers` 或真實 plugin 用的扁平格式裡，有 server 的 `command` 指向 plugin 內——`${CLAUDE_PLUGIN_ROOT}/…`、`./…`、`bin/…`；`{}`、遠端 `url`、`npx` / `uvx` 不算；不是合法 JSON → rc 4）∨ bin/ 任何一般檔案含 release URL ∨ hooks/ 任何檔案含同 pattern ∨ manifest pin
                                                 #   URL 形狀**逐字**是 idd-close has_binary_wrapper 的那一條（含 gh api …/releases）；不掃 skills/ 散文
 plugin_binary_repo "$PLUGIN_DIR"                # owner/repo，只看**會下載 release 的 wrapper 檔**（輔助檔的 REPO= 不算），且有 bin/ wrapper 時**只看 bin/**——
                                                 #   hooks/ 的 check script 指向舊 fork（che-things-mcp / che-zotero-mcp）不能決定 Case E-auto 追哪個 remote 的 tag；
                                                 #   hook-only 佈局才看 hooks/。**逐個下載點**：每一行 release 下載（`_PBM_RELEASE_RE`）的 repo 位置——`api.github.com/repos/X/…/releases`、
                                                 #   `github.com/X/releases/(download|tags|latest)`（host 錨定，notgithub.com 不算）、`gh api repos/X/…/releases`、`--repo X` /
-                                                #   `--repo=X` / `-R X`——X 是字面 o/r，或檔內 `NAME="o/r"` 賦值的變數（任何變數名）；解不出的變數記為 `?`。非下載行
-                                                #   （issues 連結、文件連結）不算。合併：rc 0 恰一個已知 repo / 1 沒有 / 2 多個，或已知 repo 旁還有 `?`（印第一個）；
+                                                #   `--repo=X` / `-R X`——X 是字面 o/r，或檔內**每次**賦值都是字面 o/r 的變數（任何變數名；有任何一次是動態值 → `?`）；`$OWNER/$NAME` 等其他形式記為 `?`。非下載行
+                                                #   （issues 連結、文件連結）不算。合併：rc 0 恰一個已知 repo / 1 沒有下載點 / 2 多個，或已知 repo 旁還有 `?`（印第一個）/ 4 只有 `?`（判不出，不是「沒有」）；
                                                 #   列的 repo 欄只在該檔恰一個已知 repo 時才填
 plugin_binary_name "$PLUGIN_DIR"                # 第一個**宣告**的 ASSET 名：RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME=（後者只在非註解行用它下載時算：
                                                 #   releases/download/…/$BINARY_NAME、--pattern、browser_download_url；只當 install 目標的不算）；不從 install 名猜；rc 1 沒有
@@ -119,7 +122,7 @@ version_gt 0.3.0 0.2.0                          # rc 0 大於 / 1 否 / 2 不可
 不把「查不到」當「沒有」。`plugin-update` Phase 0.3（Step 1 / Step 2 (a)(b)(d)(e)、Case E bump fence）、
 Phase 1.5 Step 2 / 3、Phase 2 Step 4、Phase 5 Step 1.5 全部只消費這裡的輸出（Phase 2 Step 1 列全表用 inline python `.get('version')`，helper 只查單一 entry——那段不是 binary metadata）。`PBM_GH` / `PLUGIN_BIN_DIR` 是**測試座標**
 （stub gh、sidecar 目錄），只在 `PBM_TEST=1` **且** `PBM_TEST_ROOT` 是系統 temp 樹（/tmp、/var/folders、$TMPDIR）下的真實目錄（`/`、`$HOME` 不算；`$TMPDIR` 先解析、解析不到或為 `/` 即關）**且** 實體 `$PWD` 在其下時生效——這是縮小座標、不是 sandbox（PATH 本來就能換 gh）（production fence `cd "$MP_ROOT"`，正常放置的 marketplace 不在 temp 樹下；checkout 在 /tmp 的不受此保護），且 `PBM_GH` 只接受絕對路徑的可執行檔。測試：`scripts/test-plugin-binary-meta.sh`
-（185 斷言：封閉形狀——函式內縮排的兩個無條件賦值、同行 `$(…) || 字面`、`if uname` 覆寫、兩次無守門讀取皆 rc 4；語料形狀 mail（續行 + if -z 守門）與 pdf（if grep -q / else，KEY 存在但空 → rc 4）可讀；尾隨註解的 key 形不算；變數主 repo + 字面備援 repo rc 2；issues 連結不選 repo；`-R` / `--repo=`；變數 URL 的 host 錨定；扁平 `.mcp.json` 命中、`{}` 不命中；echo/grep 提到 DESIRED_VERSION= 不算賦值；單檔雙 repo rc 2；帶引號的 gh --repo / gh api；非 *REPO 名的變數在 repo 位置；release URL host 錨定；壞 .mcp.json / manifest → is_binary_backed rc 4、partial 讀取只印來源不印值、manifest 讀取後動態覆寫 rc 4、TMPDIR 解析失敗即關座標、行內覆寫 rc 4、jq 讀 key rc 4、`latest` 非 pin、`PBM_TEST_ROOT=/` / `$HOME` 不開座標、逐檔 repo 合併、沒被用的 *_REPO= 不算、字面 pin 須為最後一個賦值、seam 三條件、asset 名的 `.` 不是萬用字元、註解行的 release URL / $HOME/bin/<name> 不算、只當 install 目標的 BINARY_NAME 不是 asset、兩種 key、四種 pin 來源、macdoc 家族的 grep 寫法、hook-only 有 pin、wrapper 不一致、共用 pin 的兩個來源、點名 key 無值 rc 4、
+（201 斷言：R11——非 DESIRED_VERSION 的 pin 變數同受封閉形狀、第一個值在 `if uname` / `&&` / `case` 裡 rc 4、repo 變數後續動態覆寫或條件重賦值 rc 2、`$OWNER/$NAME` 下載點、只有未知下載點 rc 4、網址字面版本 rc 4、`VERSION=` / `PIN=` 在版本位置即 pin、bin 旁帶 pin 的 hook rc 4、遠端 url / npx 的 .mcp.json 不算、讀取器失敗為判不出、JSON 讀取 `python3 -I`；封閉形狀——函式內縮排的兩個無條件賦值、同行 `$(…) || 字面`、`if uname` 覆寫、兩次無守門讀取皆 rc 4；語料形狀 mail（續行 + if -z 守門）與 pdf（if grep -q / else，KEY 存在但空 → rc 4）可讀；尾隨註解的 key 形不算；變數主 repo + 字面備援 repo rc 2；issues 連結不選 repo；`-R` / `--repo=`；變數 URL 的 host 錨定；扁平 `.mcp.json` 命中、`{}` 不命中；echo/grep 提到 DESIRED_VERSION= 不算賦值；單檔雙 repo rc 2；帶引號的 gh --repo / gh api；非 *REPO 名的變數在 repo 位置；release URL host 錨定；壞 .mcp.json / manifest → is_binary_backed rc 4、partial 讀取只印來源不印值、manifest 讀取後動態覆寫 rc 4、TMPDIR 解析失敗即關座標、行內覆寫 rc 4、jq 讀 key rc 4、`latest` 非 pin、`PBM_TEST_ROOT=/` / `$HOME` 不開座標、逐檔 repo 合併、沒被用的 *_REPO= 不算、字面 pin 須為最後一個賦值、seam 三條件、asset 名的 `.` 不是萬用字元、註解行的 release URL / $HOME/bin/<name> 不算、只當 install 目標的 BINARY_NAME 不是 asset、兩種 key、四種 pin 來源、macdoc 家族的 grep 寫法、hook-only 有 pin、wrapper 不一致、共用 pin 的兩個來源、點名 key 無值 rc 4、
 無副檔名 wrapper、bin+hooks 混合、hooks 的 REPO= 不蓋 bin、文件連結 vs 賦值、註解行的 URL 不算下載、非 wrapper 的 REPO=、`${X}` 賦值、縮排 / export、
 `gh api` 形、多 binary、asset ≠ install 名、RELEASE_ASSET=、缺 version 的 entry、`.mcp.json` `{}`、sidecar 三態、不安全檔名（含帶字面 pin 的）、
 v 前綴 tag 與裸 tag 回退、stub gh 與 PBM_TEST 守門）。

@@ -11,8 +11,10 @@
 #                                               # acts on comes from plugin_binary_pin — the key the WRAPPER names, no cross-spelling alias,
 #                                               # because the wrapper itself would not find the other spelling (#22 point 1; verify R4)
 #   plugin_binary_version_key <manifest>        # which explicit pin key the file uses; rc 1 none / 2 both (binary_version printed) / 4
-#   plugin_is_binary_backed <dir> [manifest]    # rc 0 + hit list "mcp.json bin:<f> hook:<f> pin:<key>" / rc 1 empty
-#                                               #   .mcp.json counts only when its mcpServers object is non-empty
+#   plugin_is_binary_backed <dir> [manifest]    # rc 0 + hit list "mcp.json bin:<f> hook:<f> pin:<key>" / rc 1 empty / rc 4 nothing hit
+#                                               #   but a probe cannot answer ("unknown:mcp.json" / "unknown:manifest"). .mcp.json counts when a
+#                                               #   server (mcpServers or the flat plugin format) has a plugin-local `command` (${CLAUDE_PLUGIN_ROOT}/…,
+#                                               #   ./…, bin/…); `{}`, a remote `url`, npx / uvx do not
 #   plugin_binary_wrappers <dir> [manifest]     # one row per file that DOWNLOADS a release:
 #                                               #   "dir|file|asset|install|repo|pin|pinsrc"   dir ∈ bin|hooks; empty field = unknown
 #                                               #   pinsrc ∈ wrapper:<file> | binary_version | binaryVersion | version | none
@@ -20,12 +22,15 @@
 #                                               #   hooks/ rows (hook-only layouts such as macdoc / gifthub) — "value|pinsrc[,pinsrc…]":
 #                                               #   every distinct source in row order (two wrappers sharing one literal pin → two sources);
 #                                               #   rc 0 every pinned wrapper agrees / 1 no wrapper has a pin / 2 wrappers disagree (first printed)
-#                                               #   / 4 some downloading wrapper's pin cannot be read (missing / illegal key value, unreadable
-#                                               #     override, moving ref) — prints "|src[,src…]" with NO value, even if a sibling wrapper's pin is readable
+#                                               #   / 4 some downloading wrapper's pin cannot be read (an unrecognised shape, missing / illegal key
+#                                               #     value, moving ref), or a hooks/ row next to bin/ carries a pin of its own — prints
+#                                               #     "|src[,src…]" with NO value, even if a sibling wrapper's pin is readable
 #   plugin_binary_repo <dir>                    # owner/repo from the DOWNLOADING wrapper files (bin/ when any exist, else hooks/ — a
-#                                               #   check hook can never re-point a plugin that has a bin/ wrapper). PER FILE: a *_REPO=
-#                                               #   assignment whose variable is used in a release download line beats a release-URL literal;
-#                                               #   the files' answers are then merged — rc 0 one / 1 none / 2 the files disagree (first printed)
+#                                               #   check hook can never re-point a plugin that has a bin/ wrapper). PER DOWNLOAD SITE: the
+#                                               #   value at the repo position of each release line — a literal o/r, or a variable (any name)
+#                                               #   whose EVERY assignment is a literal o/r; anything else is "?" — merged over all files:
+#                                               #   rc 0 exactly one known repo / 1 no download site / 2 several, or a known one beside "?"
+#                                               #   (first printed) / 4 only "?" sites (cannot tell, not "none")
 #   plugin_binary_name <dir>                    # first DECLARED asset name: RELEASE_ASSET= → ASSET_NAME= → BINARY_NAME= (the last only when a
 #                                               #   non-comment line downloads BY that name); rc 1 none — never guessed from the install name,
 #                                               #   a guess would turn into a false "asset missing" that now BLOCKS the Case E bump
@@ -111,7 +116,7 @@ _PBM_RELEASE_RE='gh release download|gh api[[:space:]]+.*/releases|api\.github\.
 _pbm_json_field() {
   local file="$1" key="$2" out rc
   [ -f "$file" ] && [ -r "$file" ] || return 4
-  out=$(python3 -c '
+  out=$(python3 -I -c '
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -240,50 +245,45 @@ _pbm_file_install_name() {  # INSTALL_NAME= → BINARY_NAME= → $HOME/bin/<name
   _pbm_file_home_bin_name "$file"
 }
 _pbm_file_repo() {          # every repo this file downloads from, one per line; "?" = a download site whose repo is unknown
-  local file="$1" v           # (per release line: the repo position of api.github.com/repos/… · github.com/…/releases/… ·
-  while IFS= read -r v; do    #  gh api repos/… · --repo / --repo= / -R — a literal o/r, or a variable assigned `X="o/r"` in the file)
+  local file="$1" v out rc    # (per release line, the value at the repo position of api.github.com/repos/… · github.com/…/releases/… ·
+  out=$(_pbm_core repo "$file" "$_PBM_RELEASE_RE"); rc=$?   # gh api repos/… · --repo / --repo= / -R: a literal o/r, or a variable
+  [ "$rc" = 0 ] || { printf '?\n'; return 0; }              # whose EVERY assignment is a literal o/r; anything else is "?")
+  while IFS= read -r v; do    # a reader crash is "?" (cannot tell), never "no repo" (#22 verify R10)
     [ -n "$v" ] || continue
-    if [ "$v" = '?' ] || _pbm_repo_ok "$v"; then printf '%s\n' "$v"; fi
+    if [ "$v" = '?' ] || _pbm_repo_ok "$v"; then printf '%s\n' "$v"; else printf '?\n'; fi
   done <<EOF
-$(_pbm_core repo "$file" "$_PBM_RELEASE_RE")
+$out
 EOF
   return 0
 }
 
-# _pbm_file_pin <file> [manifest] → "value|pinsrc" — what THIS wrapper downloads (closed list of three sources)
-#   (1) literal DESIRED_VERSION="x.y.z" that is the LAST DESIRED_VERSION= assignment in the file
-#                                                           → value|wrapper:<basename>   (basename through the allowlist, else ?)
-#   (2) the manifest key(s) the file names on non-comment lines, in file order
-#                                                           → value|<key>   (first key with a non-empty manifest value)
-#   (3) neither                                             → |none        rc 1
-#   (2) applies but no named key has a usable value          → |<first key> rc 4 (manifest missing / unreadable / key absent)
-#   (2) applies and the first present value is illegal       → |<key>       rc 3
-#   DESIRED_VERSION= assigned (anywhere on a line) but the last assignment is not a readable literal, or the literal is not a
-#   version (`latest`), and no key is named               → |wrapper:<basename> rc 4 (source known, value not)
-#   a pin key mentioned without the `"key"…:` shape (jq / python readers)
-#                                                           → |<key>       rc 4 (the wrapper reads it in a way this helper cannot follow)
+# _pbm_file_pin <file> [manifest] → "value|pinsrc" — what THIS wrapper downloads; the closed shapes are in the function body.
+#   a literal pin                  → value|wrapper:<basename> rc 0   (basename through the allowlist, else ?)
+#   a manifest read                → value|<key>              rc 0   (first key with a non-empty manifest value)
+#   no pin variable, no literal version in the release URL → |none rc 1 (downloads latest)
+#   key named, no usable value     → |<first key> rc 4  ·  first present value illegal → |<key> rc 3
+#   any unrecognised shape / opaque value / non-x.y.z literal / literal version in the URL → |wrapper:<basename> rc 4
+#   an opaque read that names a pin key (jq -r .binaryVersion) → |<key> rc 4  ·  the reader failing → |wrapper:<basename> rc 4
 # _pbm_core <mode> <args…> → the closed-shape readers (pin / repo / mcp). #22 verify R9: R5–R9 emulated shell control flow
 # with sed/grep and every round produced a counter-example; R10 RECOGNISES a closed set of shapes and answers "cannot tell" for
 # everything else. Run with `python3 -I` (isolated: no cwd / script-dir imports — wrapper dirs are third-party content).
 _pbm_core() {
   python3 -I - "$@" 2>/dev/null <<'PBM_CORE_PY'
-# pbm_core — closed-shape readers for plugin-binary-meta.sh (#22 verify R9 → R10).
-# Modes:  pin <wrapper> [manifest]  → prints "value|src" / "|src" ; exit 0 / 1 / 3 / 4
-#         repo <wrapper>            → prints one repo per line, "?" for a download site whose repo is unknown ; exit 0
-#         mcp <.mcp.json>           → exit 0 declares servers / 1 does not / 4 cannot tell
-# The readers RECOGNISE a closed set of shapes and answer "cannot tell" (4) for everything else. They never emulate shell
-# control flow beyond the guards listed below — R5..R9 tried, and every round produced a new counter-example.
+# pbm_core — closed-shape readers for plugin-binary-meta.sh (#22 verify R9 → R10 → R11).
+# Modes:  pin <wrapper> <manifest> <release-ERE> → prints "value|src" / "|src" ; exit 0 / 1 / 3 / 4
+#         repo <wrapper> <release-ERE>            → prints one repo per line, "?" for a download site whose repo is unknown ; exit 0
+#         mcp <.mcp.json>                        → exit 0 declares a plugin-local server / 1 does not / 4 cannot tell
+# The readers RECOGNISE a closed set of shapes and answer "cannot tell" (4) for everything else. They do not emulate shell
+# control flow: R5–R9 tried, and every round produced a counter-example; R10 left side paths open (a pin variable not named
+# DESIRED_VERSION, a repo variable overwritten later) and R11 closes them with the same rule.
 import json, re, sys
 
 KEY_RE = re.compile(r'"(binary_version|binaryVersion|version)"[^"]*:')
 VER_OK = re.compile(r'^[0-9A-Za-z.+-]+$')
 LIT_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_./+-]*$')
-REPO_RE = r'[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*'
-VAR_RE = r'\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?'
-DV = r'"?\$\{?DESIRED_VERSION\}?"?'
-G_SAME = re.compile(r'(\[\[?\s+-n\s+' + DV + r'\s+\]\]?\s*\|\||\[\[?\s+-z\s+' + DV + r'\s+\]\]?\s*&&)\s*$')
-G_PREV = re.compile(r'^if\s+\[\[?\s+-z\s+' + DV + r'\s+\]\]?\s*;\s*then\s*$')
-ASSIGN = re.compile(r'(?<![^\s;&|{(])(?:export\s+|local\s+)?DESIRED_VERSION=')
+REPO_FULL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$')
+VAR_FULL = re.compile(r'^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$')
+NAME = r'[A-Za-z_][A-Za-z0-9_]*'
 
 
 def logical_lines(path):
@@ -332,8 +332,9 @@ def value_at(s, i):
 
 
 def classify(text):
-    if KEY_RE.search(text):
-        return ('key', KEY_RE.search(text).group(1))
+    m = KEY_RE.search(text)
+    if m:
+        return ('key', m.group(1))
     inner = text
     if len(inner) >= 2 and inner[0] == inner[-1] and inner[0] in '\'"':
         inner = inner[1:-1]
@@ -344,6 +345,10 @@ def classify(text):
     return ('opaque', inner)
 
 
+def indent(l):
+    return len(l) - len(l.lstrip())
+
+
 def prev_code(lines, k):
     k -= 1
     while k >= 0 and lines[k].strip() == '':
@@ -351,73 +356,141 @@ def prev_code(lines, k):
     return k
 
 
-def guarded(lines, k, pre, elems):
-    if G_SAME.search(pre):
-        return 'empty'
-    if pre.strip():
-        return None
+def opener(lines, k):
+    """the nearest preceding code line with smaller indentation (the block this line sits in), or -1 at top level."""
+    ind = indent(lines[k])
+    if ind == 0:
+        return -1
+    q = k - 1
+    while q >= 0:
+        if lines[q].strip() and indent(lines[q]) < ind:
+            return q
+        q -= 1
+    return -1
+
+
+def guard_res(var):
+    dv = r'"?\$\{?' + var + r'\}?"?'
+    return (re.compile(r'(\[\[?\s+-n\s+' + dv + r'\s+\]\]?\s*\|\||\[\[?\s+-z\s+' + dv + r'\s+\]\]?\s*&&)\s*$'),
+            re.compile(r'^if\s+\[\[?\s+-z\s+' + dv + r'\s+\]\]?\s*;\s*then\s*$'))
+
+
+MANIFEST_EXISTS = re.compile(r'^if\s+\[\[?\s+-[fr]\s+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?\s+\]\]?\s*;\s*then\s*$')
+FUNC_DEF = re.compile(r'^(function\s+' + NAME + r'(\s*\(\))?|' + NAME + r'\s*\(\))\s*\{\s*$')
+
+
+def block_ok(lines, k, kind, val, elems, g_prev):
+    """is the block this assignment sits in one we recognise?  top level · a function body · `if [ -f "$X" ]` (manifest exists) ·
+    `if grep -q '"KEY"…'` around a read of KEY · the only-if-empty `if [[ -z ]]` · the `else` of `if grep -q '"PREVKEY"…'`."""
+    o = opener(lines, k)
+    if o < 0:
+        return True
+    s = lines[o].strip()
+    if FUNC_DEF.match(s) or MANIFEST_EXISTS.match(s) or g_prev.match(s):
+        return True
+    if s.startswith('if ') and 'grep -q' in s and kind == 'key' and ('"%s"' % val) in s:
+        return True
+    if s == 'else' and elems and elems[-1][0] == 'key':
+        return True
+    return False
+
+
+def else_guard(lines, k, elems):
     p = prev_code(lines, k)
-    if p < 0:
+    if p < 0 or lines[p].strip() != 'else' or not elems or elems[-1][0] != 'key':
         return None
-    if G_PREV.match(lines[p].strip()):
-        return 'empty'
-    # `if grep -q '"KEY"…' file; then <read KEY> else <read another key> fi` — the else runs only when KEY is absent (che-pdf)
-    # the `if` this `else` belongs to is the nearest preceding `if` at the SAME indentation (an inner `if [[ -z … ]]` in the
-    # then-branch is not it — che-pdf has exactly that)
-    if lines[p].strip() == 'else' and elems and elems[-1][0] == 'key':
-        ind = len(lines[p]) - len(lines[p].lstrip())
-        q = p - 1
-        while q >= 0 and not (re.match(r'\s*if\s', lines[q]) and len(lines[q]) - len(lines[q].lstrip()) == ind):
-            q -= 1
-        if q >= 0 and 'grep -q' in lines[q] and ('"%s"' % elems[-1][1]) in lines[q]:
-            return ('absent', elems[-1][1])
+    ind = indent(lines[p])
+    q = p - 1
+    while q >= 0 and not (re.match(r'\s*if\s', lines[q]) and indent(lines[q]) == ind):
+        q -= 1
+    if q >= 0 and 'grep -q' in lines[q] and ('"%s"' % elems[-1][1]) in lines[q]:
+        return ('absent', elems[-1][1])
     return None
 
 
-def mode_pin(path, manifest):
+def version_vars(lines, rel):
+    """variables / literals at the VERSION position of release download lines."""
+    vars_, lits = [], []
+    rx = re.compile(r'/releases/(?:download|tags)/v?(\$\{?' + NAME + r'\}?|[0-9][A-Za-z0-9_.+-]*)(?=[/"\'\s}]|$)')
+    for l in lines:
+        if not l.strip() or not rel.search(l):
+            continue
+        for m in rx.finditer(l):
+            t = m.group(1)
+            v = VAR_FULL.match(t)
+            if v:
+                if v.group(1) not in vars_:
+                    vars_.append(v.group(1))
+            elif t not in lits:
+                lits.append(t)
+    return vars_, lits
+
+
+def mode_pin(path, manifest, rel_re):
     base = path.rsplit('/', 1)[-1]
     if not re.match(r'^[A-Za-z0-9_][A-Za-z0-9._-]*$', base):
         base = '?'
+    U = '|wrapper:%s' % base
     lines = logical_lines(path)
-    elems, seen_assign = [], False
+    rel = re.compile(rel_re.replace('[[:space:]]', r'\s'))
+    var = 'DESIRED_VERSION'
+    has_dv = any(re.search(r'(?<![^\s;&|{(])(?:export\s+|local\s+)?DESIRED_VERSION=', l) for l in lines)
+    if not has_dv:
+        # the pin variable is the one the release URL puts at the VERSION position (`/releases/download/v$WANT/`, macdoc);
+        # a literal version there, or more than one variable, is a pin we do not read (#22 verify R10)
+        vs, lits = version_vars(lines, rel)
+        if lits or len(vs) > 1:
+            print(U); return 4
+        if not vs:
+            m = re.search(r'(?<![A-Za-z0-9_])(binary_version|binaryVersion)(?![A-Za-z0-9_])', '\n'.join(lines))
+            if m:                               # names a pin key it does not use at a version position: cannot tell
+                print('|%s' % m.group(1)); return 4
+            print('|none'); return 1            # downloads latest: no pin
+        var = vs[0]
+    g_same, g_prev = guard_res(var)
+    ASSIGN = re.compile(r'(?<![^\s;&|{(])(?:export\s+|local\s+)?' + var + r'=')
+    elems, seen = [], False
     for k, l in enumerate(lines):
         for m in ASSIGN.finditer(l):
-            seen_assign = True
+            seen = True
             text, _ = value_at(l, m.end())
             kind, val = classify(text)
             pre = l[:m.start()]
             if kind == 'empty':
-                if elems:                       # an empty reset AFTER a value: the chain is not one we recognise
-                    print('|wrapper:%s' % base); return 4
+                if elems or pre.strip():        # a reset AFTER a value, or a conditional reset: not a shape we recognise
+                    print(U); return 4
                 continue
-            g = guarded(lines, k, pre, elems) if elems else 'first'
-            if not g:                           # a second value with no recognised "only if empty" guard
-                print('|wrapper:%s' % base); return 4
+            if not elems:
+                # the FIRST value: nothing before it on the line, and in a block we recognise (R10 checked only later values)
+                if pre.strip() or not block_ok(lines, k, kind, val, elems, g_prev):
+                    print(U); return 4
+                g = 'first'
+            elif g_same.search(pre):
+                if not block_ok(lines, k, kind, val, elems, g_prev):
+                    print(U); return 4
+                g = 'empty'
+            elif pre.strip():
+                print(U); return 4
+            else:
+                p = prev_code(lines, k)
+                if p >= 0 and g_prev.match(lines[p].strip()):
+                    g = 'empty'
+                else:
+                    g = else_guard(lines, k, elems)
+                    if not g:                   # a second value with no recognised only-if-empty guard
+                        print(U); return 4
             elems.append((kind, val, g))
-    if not seen_assign:
-        keys = []
-        for l in lines:
-            for m in KEY_RE.finditer(l):
-                if m.group(1) not in keys:
-                    keys.append(m.group(1))
-        if keys:
-            elems = [('key', k, 'empty') for k in keys]
-        else:
-            m = re.search(r'(?<![A-Za-z0-9_])(binary_version|binaryVersion)(?![A-Za-z0-9_])', '\n'.join(lines))
-            if m:
-                print('|%s' % m.group(1)); return 4
-            print('|none'); return 1
-    if not elems:
-        print('|wrapper:%s' % base); return 4
-    if any(e[0] in ('opaque', 'bad') for e in elems):
-        print('|wrapper:%s' % base); return 4
+    if not seen or not elems:
+        print(U); return 4
+    for e in elems:
+        if e[0] in ('opaque', 'bad'):
+            m = re.search(r'(?<![A-Za-z0-9_])(binary_version|binaryVersion)(?![A-Za-z0-9_])', e[1])
+            print('|%s' % m.group(1) if m else U); return 4
     first_key = next((e[1] for e in elems if e[0] == 'key'), '')
     data = None
-    for i, (kind, val, g) in enumerate(elems):
-        # an `else` that runs only when the previous KEY is absent: KEY present but empty/unusable → the wrapper takes neither
-        # branch's value (che-pdf refuses to download) → cannot tell, never the other key
+    for kind, val, g in elems:
         if isinstance(g, tuple) and isinstance(data, dict) and g[1] in data:
-            print('|%s' % g[1]); return 4
+            print('|%s' % g[1]); return 4       # `else` taken only when KEY is absent; KEY present but empty → wrapper refuses
         if kind == 'lit':
             print('%s|wrapper:%s' % (val, base)); return 0
         if not manifest:
@@ -440,29 +513,41 @@ def mode_pin(path, manifest):
 
 def mode_repo(path, rel_re):
     lines = logical_lines(path)
-    assigns = {}
-    for l in lines:
-        m = re.match(r'^\s*(?:export\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=["\']?(' + REPO_RE + r')["\']?\s*(?:[;#].*)?$', l)
-        if m:
-            assigns.setdefault(m.group(1), []).append(m.group(2))
     rel = re.compile(rel_re.replace('[[:space:]]', r'\s'))   # the shell ERE uses POSIX classes; python's re does not
+    # EVERY assignment to every variable: a readable `o/r` literal, or "?" (`${X:-…}`, `$F`, `$(…)`) — a later dynamic
+    # overwrite must not leave the earlier literal looking definite (#22 verify R10)
+    assigns = {}
+    AS = re.compile(r'(?<![^\s;&|{(])(?:export\s+|local\s+|readonly\s+)?(' + NAME + r')=')
+    for l in lines:
+        for m in AS.finditer(l):
+            text, _ = value_at(l, m.end())
+            inner = text[1:-1] if len(text) >= 2 and text[0] == text[-1] and text[0] in '\'"' else text
+            assigns.setdefault(m.group(1), []).append(inner if REPO_FULL.match(inner) else '?')
     sites = [
-        re.compile(r'(?<![A-Za-z0-9.-])api\.github\.com/repos/(?:(' + REPO_RE + r')|' + VAR_RE + r')/releases'),
-        re.compile(r'(?<![A-Za-z0-9.-])github\.com/(?:(' + REPO_RE + r')|' + VAR_RE + r')/releases/(?:download|tags|latest)'),
-        re.compile(r'\bgh\s+api\s+["\']?/?repos/(?:(' + REPO_RE + r')|' + VAR_RE + r')/releases'),
-        re.compile(r'(?:--repo(?:=|\s+)|(?<![A-Za-z0-9-])-R\s+)["\']?(?:(' + REPO_RE + r')|' + VAR_RE + r')'),
+        re.compile(r'(?<![A-Za-z0-9.-])api\.github\.com/repos/([^\s"\'<>]+?)/releases'),
+        re.compile(r'(?<![A-Za-z0-9.-])github\.com/([^\s"\'<>]+?)/releases/(?:download|tags|latest)'),
+        re.compile(r'\bgh\s+api\s+["\']?/?repos/([^\s"\'<>]+?)/releases'),
+        re.compile(r'(?:--repo(?:=|\s+)|(?<![A-Za-z0-9-])-R\s+)["\']?([^\s"\';|&)]+)'),
     ]
     out = []
+    def add(v):
+        if v not in out:
+            out.append(v)
     for l in lines:
         if not l.strip() or not rel.search(l):
             continue
         for rx in sites:
             for m in rx.finditer(l):
-                lit, var = m.group(1), m.group(2)
-                vals = [lit] if lit else assigns.get(var, ['?'])
-                for v in vals:
-                    if v not in out:
-                        out.append(v)
+                seg = m.group(1)
+                if REPO_FULL.match(seg):
+                    add(seg)
+                    continue
+                v = VAR_FULL.match(seg)
+                if v:                           # one variable: every value it is ever assigned ("?" if any is not a literal)
+                    for val in assigns.get(v.group(1), ['?']):
+                        add(val)
+                else:                           # `$OWNER/$NAME`, `${REPO:-x}`, anything else: unknown, never silently skipped
+                    add('?')
     for v in out:
         print(v)
     return 0
@@ -475,17 +560,21 @@ def mode_mcp(path):
         return 4
     if not isinstance(d, dict):
         return 4
-    s = d.get('mcpServers')
-    if isinstance(s, dict):
-        return 0 if s else 1
-    # the flat plugin format every real plugin uses: { "<server>": { "command": … } }
-    return 0 if any(isinstance(v, dict) and ('command' in v or 'url' in v) for v in d.values()) else 1
+    servers = d.get('mcpServers') if isinstance(d.get('mcpServers'), dict) else d
+    # a server BACKED BY A PLUGIN-LOCAL EXECUTABLE: its command lives under the plugin (`${CLAUDE_PLUGIN_ROOT}/…`, `./…`,
+    # `bin/…`). A remote `url`, or `npx` / `uvx` / any PATH command, ships no release binary (#22 verify R10)
+    for v in servers.values():
+        if isinstance(v, dict) and isinstance(v.get('command'), str):
+            c = v['command']
+            if 'CLAUDE_PLUGIN_ROOT' in c or c.startswith('./') or c.startswith('bin/'):
+                return 0
+    return 1
 
 
 try:
     mode = sys.argv[1]
     if mode == 'pin':
-        rc = mode_pin(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else '')
+        rc = mode_pin(sys.argv[2], sys.argv[3], sys.argv[4])
     elif mode == 'repo':
         rc = mode_repo(sys.argv[2], sys.argv[3])
     elif mode == 'mcp':
@@ -493,24 +582,31 @@ try:
     else:
         rc = 2
 except Exception:
-    rc = 4
+    rc = 9
 sys.exit(rc)
 PBM_CORE_PY
 }
 
 _pbm_file_pin() {
-  # Pin of ONE wrapper file, from a closed set of shapes (anything else → rc 4 `|wrapper:<file>`, never a guess):
-  #   (1) exactly one value assignment to DESIRED_VERSION — a literal x.y.z, or a manifest read (the `"key"…:` shape);
-  #   (2) `DESIRED_VERSION=""` and/or a first value, then further values ONLY under a recognised "only if still empty" guard:
-  #       same line `[ -n "$DESIRED_VERSION" ] ||` / `[ -z … ] &&`, previous line `if [[ -z "$DESIRED_VERSION" ]]; then`,
-  #       or the `else` of `if grep -q '"KEY"…'` right after reading KEY (che-pdf) — evaluated as "first one with a value";
-  #   (3) no assignment at all but the file greps manifest keys (macdoc hook) — the keys in file order.
-  # A second value with no recognised guard (two unconditional reads, an `if uname` override, `$(…) || "1.0.0"`), an opaque
-  # value (`$(…)` without a key, `${2:-}`, `"$X"`), a non-x.y.z literal (`latest`, `v1.2.3`) → rc 4. Indentation means nothing.
+  # Pin of ONE wrapper file, from a closed set of shapes (anything else → rc 4 `|wrapper:<file>`, never a guess). The pin VARIABLE
+  # is DESIRED_VERSION when the file assigns it, otherwise the one variable the release URL puts at the version position
+  # (`/releases/download/v$WANT/`, macdoc); none there and no literal version → `|none` rc 1 (downloads latest).
+  #   (1) exactly one value assignment — an x.y.z literal, or a manifest read (the `"key"…:` shape);
+  #   (2) an optional `VAR=""`, then values where EVERY value after the first carries a recognised only-if-still-empty guard:
+  #       same line `[ -n "$VAR" ] ||` / `[ -z … ] &&`, previous line `if [[ -z "$VAR" ]]; then`, or the `else` at the same
+  #       indentation as `if grep -q '"KEY"…'` right after reading KEY (only when KEY is absent; present-but-empty → rc 4).
+  # Every value — the FIRST one included — must sit with nothing before it on its line and inside a recognised block: top level,
+  # a function body, `if [[ -f "$X" ]]; then`, `if grep -q '"KEY"'` around a read of KEY, the -z guard, that `else`.
+  # Anything else (an `if uname` / `case` / `[ -n "$X" ] &&` value, two unguarded values, `$(…) || "1.0.0"`, an opaque value,
+  # a non-x.y.z literal, a reset to "" after a value, a literal version in the URL) → rc 4. Indentation alone means nothing.
   local file="$1" manifest="${2:-}" out rc
-  out=$(_pbm_core pin "$file" "$manifest"); rc=$?
-  case "$rc" in 0|1|3|4) ;; *) out="|wrapper:?"; rc=4 ;; esac
-  printf '%s\n' "${out:-|none}"
+  out=$(_pbm_core pin "$file" "$manifest" "$_PBM_RELEASE_RE"); rc=$?
+  case "$rc" in
+    0|1|3|4) [ -n "$out" ] || { out="|wrapper:${file##*/}"; rc=4; } ;;
+    *) out="|wrapper:${file##*/}"; rc=4 ;;  # the reader crashed or python3 is missing: cannot tell — never "no pin" (#22 verify R10)
+  esac
+  case "$out" in "|wrapper:"*) _pbm_name_ok "${out#|wrapper:}" || out="|wrapper:?" ;; esac
+  printf '%s\n' "$out"
   return "$rc"
 }
 
@@ -543,8 +639,8 @@ plugin_is_binary_backed() {
   # each probe answers yes / no / CANNOT TELL — an .mcp.json that does not parse or a manifest that cannot be read is not "no"
   # (#22 verify R8): rc 4 with `unknown:<probe>` when nothing hit and some probe could not answer
   if [ -f "$dir/.mcp.json" ]; then
-    # declares a server: `{"mcpServers": {…non-empty}}` OR the flat plugin format every real plugin uses, `{"<server>": {"command": …}}`
-    # (#22 verify R9: R3–R9 required mcpServers, which no real plugin .mcp.json has); `{}` declares nothing; unparseable → cannot tell
+    # declares a plugin-local server: `mcpServers` or the flat plugin format every real plugin uses, with a `command` under the
+    # plugin (#22 verify R9 / R10); `{}`, remote `url`, npx / uvx declare no release binary; unparseable → cannot tell
     _pbm_core mcp "$dir/.mcp.json"; rc=$?
     case "$rc" in 0) hits="mcp.json" ;; 1) ;; *) unknown="unknown:mcp.json" ;; esac
   fi
@@ -592,7 +688,10 @@ plugin_binary_pin() {
 $rows
 EOF
   while IFS='|' read -r where _ _ _ _ pin src; do
-    [ "$where" = "$eff" ] || continue
+    # a hooks/ row next to bin/ is normally a check script (src none). One that carries a pin downloads a pinned binary of its
+    # own: the plugin pin then spans bin/ and hooks/, which no single bump can keep in step → cannot tell (#22 verify R10)
+    [ -n "$where" ] || continue
+    if [ "$where" != "$eff" ]; then [ "$src" = none ] || unread="${unread:-hooks:$src}"; [ "$src" = none ] || srcs="${srcs:+$srcs,}hooks:$src"; continue; fi
     [ "$src" = none ] || case ",$srcs," in *",$src,"*) ;; *) srcs="${srcs:+$srcs,}$src" ;; esac
     if [ -z "$pin" ]; then [ "$src" = none ] || unread="${unread:-$src}"; continue; fi
     case "$seen" in *"|$pin|"*) continue ;; esac
@@ -623,8 +722,8 @@ plugin_binary_repo() {
 $files
 EOF
   [ -z "$binfiles" ] || files="$binfiles"
-  # tiering (assignment > URL literal) is decided PER FILE by _pbm_file_repo, then the files' answers are merged:
-  # one file's assignment must not hide another file's URL that names a different repo (#22 verify R5)
+  # every download site of every file is merged: one site's repo must not hide another site that names a different repo or an
+  # unknown one (#22 verify R5 / R9 / R10)
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     while IFS= read -r cand; do
@@ -639,7 +738,7 @@ EOC
 $files
 EOF
   printf '%s\n' "$first"
-  [ "$n" -ge 1 ] || return 1
+  [ "$n" -ge 1 ] || { [ "$unk" = 0 ] || return 4; return 1; }   # only unknown download sites: cannot tell (4), not "none" (1)
   [ "$n" = 1 ] && [ "$unk" = 0 ] || return 2      # a download site with an unknown repo next to a known one: not "the" repo
 }
 
@@ -686,7 +785,7 @@ plugin_installed_binary_version() {
 marketplace_entry_version() {
   local root="$1" plugin="$2" manifest="$1/.claude-plugin/marketplace.json" out rc
   [ -f "$manifest" ] && [ -r "$manifest" ] || { printf '\n'; return 4; }
-  out=$(python3 -c '
+  out=$(python3 -I -c '
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
