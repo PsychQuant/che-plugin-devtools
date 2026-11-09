@@ -529,7 +529,50 @@ check "no quoted version (hatch cannot parse it either) → exit 21" "$RC" 21
 if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
 hatch_repo "$(printf '# -*- coding: latin-1 -*-\n# caf\xe9\n__version__ = "1.0.0"')"
 run "$W" --dir . --commit HEAD --name-style v --dry-run
-check "a byte that is not UTF-8 in a comment → exit 0, no traceback" "$RC" 0
+# hatchling opens the file with encoding="utf-8" (strict), so it cannot build this
+# project; the helper must not tag a version the build cannot read (verify R7)
+check "a byte that is not UTF-8 → exit 21, as hatchling fails to read it" "$RC" 21
+has "…says why" "not UTF-8"
+if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
+hatch_repo "$(printf '\xef\xbb\xbf__version__ = "1.0.0"')"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a BOM right before __version__ on line 1 → exit 21 (hatch's ^ does not match after U+FEFF)" "$RC" 21
+
+echo "== hatch path is normalised the way hatchling does it (verify R7)"
+for hp in './x/__init__.py' 'x//__init__.py' 'x/./__init__.py'; do
+  new_repo; plugin_json "$W" "plugins/foo/" 1.0.0
+  printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "%s"\n' "$hp" > "$W/pyproject.toml.tmp"
+  mkdir -p "$W/plugins/foo"; mv "$W/pyproject.toml.tmp" "$W/plugins/foo/pyproject.toml"
+  put "$W" plugins/foo/x/__init__.py '__version__ = "1.0.0"'; commit "$W"
+  run "$W" --dir plugins/foo --commit HEAD --name-style plugin --plugin foo --dry-run
+  check "[$hp] in a plugin directory → exit 0" "$RC" 0
+  has "…read as x/__init__.py" "hatch:x/__init__.py"
+done
+new_repo; plugin_json "$W" "" 1.0.0
+printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "/x/__init__.py"\n' > "$W/pyproject.toml"
+put "$W" x/__init__.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "an absolute hatch path (not a file in the repository) → exit 21" "$RC" 21
+
+echo "== --at-bump follows the branch's own (first-parent) history across a merge (verify R7, Codex)"
+new_repo
+pj() { printf '{\n  "name": "p",\n  "version": "%s",\n  "k1": "1",\n  "k2": "2",\n  "k3": "3",\n  "fa": "%s",\n  "k4": "4",\n  "k5": "5",\n  "k6": "6",\n  "fb": "%s"\n}\n' "$1" "$2" "$3" > "$W/.claude-plugin/plugin.json"; }
+at() { GIT_AUTHOR_DATE="$1" GIT_COMMITTER_DATE="$1" git -C "$W" "${@:2}"; }
+mkdir -p "$W/.claude-plugin"; pj 1.0.0 0 0
+git -C "$W" add -A; at 2026-01-01T00:00:00+0000 commit -qm C0
+git -C "$W" checkout -qb feat
+pj 2.0.0 0 1; git -C "$W" add -A; at 2026-01-02T00:00:00+0000 commit -qm F1   # older bump, on the feature branch
+F1=$(git -C "$W" rev-parse HEAD)
+git -C "$W" checkout -q main
+pj 2.0.0 1 0; git -C "$W" add -A; at 2026-01-03T00:00:00+0000 commit -qm M1   # newer bump, on main
+M1=$(git -C "$W" rev-parse HEAD)
+at 2026-01-04T00:00:00+0000 merge -q --no-ff --no-edit feat
+git -C "$W" push -q origin main 2>/dev/null
+check "fixture: the merged plugin.json equals neither parent" "$(git -C "$W" diff --quiet HEAD^1 HEAD -- .claude-plugin/plugin.json || git -C "$W" diff --quiet HEAD^2 HEAD -- .claude-plugin/plugin.json || echo neither)" neither
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "exit 0" "$RC" 0
+has "…on main's bump commit" "commit=$(git -C "$W" rev-parse --short "$M1")"
+if printf '%s' "$OUT" | grep -qF "commit=$(git -C "$W" rev-parse --short "$F1")"; then bad "…not the feature branch's bump" "$OUT"; else ok "…not the feature branch's bump"; fi
 
 echo "== a root plugin.json without a version field is not a source (verify R5)"
 new_repo; put "$W" .claude-plugin/plugin.json '{ "name": "p", "description": "d" }'; put "$W" mcpb/manifest.json '{ "version": "1.2.3" }'; commit "$W"

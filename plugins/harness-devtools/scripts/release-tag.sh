@@ -13,7 +13,7 @@
 #   --dir         directory whose version files are read (a plugin directory, or
 #                 a binary repo's root); must be inside a git work tree
 #   --commit      the commit to start from; versions are read from commits with
-#                 `git show`, never from the work tree (which may be dirty)
+#                 `git cat-file blob`, never from the work tree (which may be dirty)
 #   --name-style  v       → tag `v<version>`
 #                 plugin  → tag `<plugin>-v<version>`
 #   --remote      remote to push to (default: origin)
@@ -22,8 +22,10 @@
 #                 version source at all (the version is computed at build time),
 #                 the tag uses this value.
 #   --at-bump     tag the commit that set the version, not --commit itself:
-#                 walking back from --commit over commits that touch any path of
-#                 the closed list below (deleted ones included), the oldest commit
+#                 walking back along the FIRST-PARENT history of --commit (the
+#                 branch's own commits: with merge-commit PRs the tag goes on the
+#                 merge commit) over commits that touch any path of the closed
+#                 list below (deleted ones included), the oldest commit
 #                 of the run in which every source already equals the current
 #                 version (plugin-update, plugin-deploy). Without it the tag goes
 #                 on --commit. When that commit cannot be determined — the newest
@@ -41,8 +43,10 @@
 #   2. pyproject.toml                                    [project].version (static)
 #   3. pyproject.toml dynamic version                    the file at [tool.hatch.version].path, read
 #                                                        exactly as hatchling's regex source reads it
-#                                                        (its default pattern or the configured one,
-#                                                        first match); another hatch source → unreadable
+#                                                        (path normalised, strict UTF-8 with any BOM
+#                                                        kept, its default pattern or the configured
+#                                                        one, first match); another hatch source →
+#                                                        unreadable
 #      (2 and 3 need python3 >= 3.11 for tomllib: with an older python3 first on
 #      PATH — /usr/bin/python3 on macOS is 3.9 — any pyproject.toml makes the run
 #      unreadable; #48)
@@ -55,7 +59,13 @@
 #   7. Sources/*/Server.swift                            version: "x.y.z" as a whole argument (none →
 #                                                        not a source; a version string that is not
 #                                                        the whole argument, or two different values
-#                                                        → unreadable)
+#                                                        → unreadable). Only a string that starts
+#                                                        with digits.digits counts: "v1.2.3" or "dev"
+#                                                        is not a source. Every such `version:` in
+#                                                        the file counts, so one that is not the
+#                                                        package version (a response field, say)
+#                                                        stops the run with 20: give it a named
+#                                                        constant or move it out of Server.swift
 #   A JSON source (1, 4, 6) without a "version" field is not a source. The Swift
 #   sources are read with comments removed; block comments nest.
 #
@@ -139,7 +149,7 @@ case "$MAX_WALK" in ''|*[!0-9]*|0) MAX_WALK=500 ;; esac
 # Read into a variable from a TOP-LEVEL heredoc, then run with -c: bash 3.2 cannot
 # parse a heredoc inside $( … ) when its text contains quotes (#42 verify R2).
 IFS= read -r -d '' PYSRC <<'PY' || true
-import json, re, subprocess, sys
+import json, posixpath, re, subprocess, sys
 
 top, sha, prefix, at_bump = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 MAX_WALK = int(sys.argv[5])
@@ -195,9 +205,11 @@ def dig(d, *keys):
 
 # hatchling/version/core.py (read 2026-11-10): the regex version source searches the
 # file with this pattern, or [tool.hatch.version].pattern, under re.MULTILINE and takes
-# the FIRST match's `version` group. The tag has to say what the build publishes, so
-# the helper reads the file the same way: `__version__ = "1.0.0" + "-beta"` builds
-# 1.0.0 (#42 verify R6; rounds 4-5 had read it more strictly than hatch itself does).
+# the FIRST match's `version` group. The tag carries the version string hatch reads,
+# so the helper reads the file the same way: from `__version__ = "1.0.0" + "-beta"`
+# hatch reads 1.0.0 (#42 verify R6; rounds 4-5 had read it more strictly than hatch
+# itself does). packaging may still normalise a pre-release when the wheel is built
+# (1.0.0-beta → 1.0.0b0), as it does for a static [project].version.
 HATCH_DEFAULT_PATTERN = r'(?i)^(__version__|VERSION) *= *([\'"])v?(?P<version>.+?)\2'
 
 def hatch_config(doc):
@@ -205,9 +217,16 @@ def hatch_config(doc):
     return cfg if isinstance(cfg, dict) else None
 
 def hatch_path_of(cfg):
+    """The configured path, normalised as hatchling does (os.path.normpath of
+    root/path, so `./x.py`, `x//y.py` and `x/./y.py` name the same file — #42 verify
+    R7), or None: characters outside [A-Za-z0-9._/-], a `..` part, or an absolute path
+    (hatchling would read a file outside the repository)."""
     path = cfg.get("path") if cfg else None
-    if isinstance(path, str) and re.fullmatch(r"[A-Za-z0-9._/-]+", path) and ".." not in path.split("/"):
-        return path
+    if (isinstance(path, str) and re.fullmatch(r"[A-Za-z0-9._/-]+", path)
+            and ".." not in path.split("/") and not path.startswith("/")):
+        norm = posixpath.normpath(path)
+        if norm not in (".", ""):
+            return norm
     return None
 
 def hatch_read(text, cfg):
@@ -278,6 +297,19 @@ def read_sources(commit):
         r = git("cat-file", "blob", f"{commit}:{prefix}{rel}")
         return r.stdout if r.returncode == 0 else None
 
+    def hatch_text(rel):
+        """(text, problem) of the hatch version file, decoded the way hatchling opens
+        it — encoding="utf-8": strict, and a BOM stays as U+FEFF — not with git()'s
+        replacement characters (#42 verify R7)."""
+        r = subprocess.run(["git", "-C", top, "cat-file", "blob", f"{commit}:{prefix}{rel}"],
+                           capture_output=True)
+        if r.returncode != 0:
+            return None, "file not found at this commit"
+        try:
+            return r.stdout.decode("utf-8"), None
+        except UnicodeDecodeError:
+            return None, "not UTF-8, so hatchling cannot read it either"
+
     def listed(rel_dir):
         r = git("ls-tree", "-r", "-z", "--name-only", commit, "--", prefix + rel_dir)
         if r.returncode != 0:
@@ -331,17 +363,15 @@ def read_sources(commit):
                     if not isinstance(raw, str) or not raw:
                         problems.append("pyproject.toml: dynamic version is not a [tool.hatch.version] path")
                     elif path is None:
-                        problems.append(f"pyproject.toml: [tool.hatch.version].path {safe(raw)!r} has characters outside [A-Za-z0-9._/-]")
+                        problems.append(f"pyproject.toml: [tool.hatch.version].path {safe(raw)!r} is not a relative path inside the repository made of [A-Za-z0-9._/-]")
                     else:
-                        src = show(path)
-                        if src is None:
-                            problems.append(f"hatch:{path}: file not found at this commit")
-                        else:
+                        src, why = hatch_text(path)
+                        if why is None:
                             v, why = hatch_read(src, cfg)
-                            if why:
-                                problems.append(f"hatch:{path}: {why}")
-                            else:
-                                add(f"hatch:{path}", v, path)
+                        if why:
+                            problems.append(f"hatch:{path}: {why}")
+                        else:
+                            add(f"hatch:{path}", v, path)
 
     json_version("package.json", "package.json")
 
@@ -387,9 +417,10 @@ for p in problems:
 for n in notes:
     print(f"NOTE\t{oneline(n)}")
 
-# --at-bump: walk back over commits that touch any path of the closed list (deleted
-# sources included — a commit that drops a stale source can be the one where the
-# rest first agree); the release commit is the oldest commit of the newest run in
+# --at-bump: walk back along the first-parent history over commits that touch any
+# path of the closed list (deleted sources included — a commit that drops a stale
+# source can be the one where the rest first agree); the release commit is the
+# oldest commit of the newest run in
 # which every source equals the current version. When that cannot be determined
 # the run stops: a guessed commit would get a permanent tag (#42 verify R2).
 values = {v for _, v in found}
@@ -409,7 +440,11 @@ if at_bump and found and not problems and len(values) == 1:
     specs = list(dict.fromkeys(
         [(":(glob)" + glob_escape(prefix) + s) if "*" in s else literal(prefix + s) for s in SOURCE_SPECS]
         + [literal(x) for x in paths + old_hatch]))
-    r = git("rev-list", f"--max-count={MAX_WALK + 1}", sha, "--", *specs)
+    # --first-parent: the branch's own history. Across a merge, rev-list would
+    # interleave both sides by date and the run could end on the other branch's bump
+    # commit (#42 verify R7); with merge-commit PRs the tag lands on the merge commit,
+    # the first commit on this branch whose sources agree.
+    r = git("rev-list", "--first-parent", f"--max-count={MAX_WALK + 1}", sha, "--", *specs)
     candidates = r.stdout.split() if r.returncode == 0 else []
     release, stopped, unclear = None, False, None
     for c in candidates:
