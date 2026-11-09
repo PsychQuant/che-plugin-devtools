@@ -155,16 +155,23 @@ list_marketplaces                          # 所有已發現的名稱
 
 ### 發版 tag：`scripts/release-tag.sh`（#42）
 
-四個發版 skill（`plugin-update` Phase 2.7、`plugin-deploy` Step 7.5、`mcp-deploy` Phase 3 Step 3.5、`cli-deploy` Phase 3 Step 1.5）共用的 tag 實作。推送完成後，在 release commit 依**套件自己的版本**打 annotated tag 並推上去：
+四個發版 skill（`plugin-update` Phase 2.7、`plugin-deploy` Step 7.5、`mcp-deploy` Phase 3 Step 3.5、`cli-deploy` Phase 3 Step 1.5）共用的 tag 實作。推送完成後，依**套件自己的版本**打 annotated tag 並推上去：
 
 ```bash
-bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v|plugin [--plugin <name>] [--remote <remote>] [--dry-run]
+bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v|plugin [--plugin <name>] \
+     [--remote <remote>] [--expect <x.y.z>] [--at-bump] [--dry-run]
 # → RELEASE_TAG: <tagged|exists|not-bumped|mismatch|unreadable|push-failed|dry-run> name=… commit=… version=… sources=…
 ```
 
-- **版本從 commit 讀，不讀工作樹**；七種來源（封閉列舉）全部一致才打：plugin.json、pyproject 靜態版本、hatch `path` 的 `__version__`、package.json、`Sources/*/Version.swift`、`mcpb/manifest.json`、`Sources/*/Server.swift`。
-- **tag 名稱**：binary repo 與單一 plugin 的 marketplace 用 `v<version>`；一個 repo 放多個 plugin 時用 `<plugin>-v<version>`（本 repo 的 harness-devtools 是 `harness-devtools-v<version>`）。
-- **結束碼**：0 已打或已存在 / 10 沒升版號（同名 tag 在別的 commit，不移動）/ 20 來源不一致 / 21 讀不出 / 30 推送失敗（印重跑指令）/ 2 引數錯誤。
+- **版本從 commit 讀，不讀工作樹**；七種來源（封閉列舉）全部一致才打：plugin.json、pyproject 靜態版本、hatch `path` 的 `__version__`、package.json、`Sources/*/Version.swift`、`mcpb/manifest.json`、`Sources/*/Server.swift`。`Version.swift` 裡沒有版本宣告時不算來源。
+- **打在哪個 commit**：
+  - `plugin-update`、`plugin-deploy` 帶 `--at-bump`：從 HEAD 往回找，打在版本來源最後一次一起變成目前版本的那個 commit。沒升版號的發版因此得到 `exists`，tag 不會跟著每次推送往前移。
+  - `mcp-deploy`、`cli-deploy` 打在 HEAD，並帶 `--expect <release 的版本>`：檔案裡的版本與要發的版本不同 → 20，不打也不建 release；repo 沒有任何版本來源時用 `--expect` 的值。
+- **什麼時候打**：HEAD 已推到 upstream（`@{u} == HEAD`）。`plugin-update`、`plugin-deploy` 另外只在 remote 的預設 branch 上打，feature branch 上跳過。
+- **tag 名稱**：
+  - `mcp-deploy`、`cli-deploy`：固定 `v<version>`（wrapper 從 `releases/download/v<version>/…` 下載）。
+  - `plugin-update`、`plugin-deploy`：只看佈局。plugin 目錄就是 repo 根目錄（repo 本身就是 plugin）→ `v<version>`；其他一律 `<plugin>-v<version>`，例如本 repo 的 `harness-devtools-v<version>`，binary repo 裡的 `./plugin` 是 `<plugin>-v<version>`（`v<version>` 留給 binary 的 release）。不看 marketplace 列了幾個 plugin，所以多加一個 plugin 不會改變既有 plugin 的 tag 名稱。
+- **結束碼**：0 已打或已存在 / 10 同名 tag 已在另一個 commit 上（這個版本以前發過，或上次發版推完 tag 就停了；不移動）/ 20 來源不一致 / 21 讀不出 / 30 推送失敗（印重跑指令）/ 2 引數錯誤。
 - 不移動、不刪除 tag，不用 `--force`。
 
 `plugin-update`、`plugin-deploy` 沒打成 tag 不中止（branch 已推送）；`mcp-deploy`、`cli-deploy` 沒打成就不建 release——沒有 tag 時 GitHub 會在 main 上自動建一個，那正是 #42 要避免的情況。
