@@ -671,6 +671,64 @@ assert_contains "vn: …and re-reads 2.0.0" "1.2.3 → 2.0.0" "$OUT"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/vn )
 
 echo
+echo "Phase 2.7 (#42): version tag on the pushed HEAD — runs whether or not Phase 2 pushed"
+# annotated tags need a committer; a user's tag.gpgSign must not reach the fixtures
+export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+TAG_MARK='HELPER="${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh"'
+mk_tag_fx() {   # name version source → root-sourced (./) or ./plugins/<name> plugin, pushed
+  local d="$T/dev/fx-$1"
+  mkdir -p "$d/.claude-plugin"
+  printf '{ "name": "fx-%s", "plugins": [ { "name": "%s", "version": "%s", "source": "./" } ] }\n' "$1" "$1" "$2" > "$d/.claude-plugin/marketplace.json"
+  printf '{ "name": "%s", "version": "%s" }\n' "$1" "$2" > "$d/.claude-plugin/plugin.json"
+  git init -q --bare "$T/remote-$1.git"
+  ( cd "$d" && git init -q && git add -A && git -c user.name=t -c user.email=t@t -c tag.gpgSign=false commit -qm init \
+      && git remote add origin "$T/remote-$1.git" && git push -q -u origin HEAD 2>/dev/null )
+}
+remote_tags() { git -C "$T/dev/fx-$1" ls-remote --tags origin | awk '{print $2}' | grep -v '\^{}$' | sed 's#refs/tags/##' | tr '\n' ' '; }
+
+mk_tag_fx tagfx 1.4.0
+prep01 tagfx
+run_both "tagfx: HEAD already pushed (Phase 2 had nothing to push) → tagged, then exists on the second shell" "$TAG_MARK" tagfx "→ Phase 2.7: done"
+assert_contains "tagfx: the remote now has v1.4.0" "v1.4.0" "$(remote_tags tagfx)"
+( cd "$T/dev/fx-tagfx" && printf 'x\n' > NOTES && git add -A && git -c user.name=t -c user.email=t@t commit -qm notes )
+prep01 tagfx
+run_both "tagfx: unpushed HEAD → skipped, nothing tagged" "$TAG_MARK" tagfx "→ Phase 2.7: skipped — HEAD 不等於"
+( cd "$T/dev/fx-tagfx" && git push -q origin HEAD 2>/dev/null )
+prep01 tagfx
+run_both "tagfx: pushed but version not bumped → no tag, tag not moved" "$TAG_MARK" tagfx "沒有升版號，不打 tag"
+assert_contains "tagfx: v1.4.0 still points at the first commit" "$(git -C "$T/dev/fx-tagfx" rev-parse HEAD~1)" "$(git -C "$T/dev/fx-tagfx" ls-remote --tags origin 'refs/tags/v1.4.0^{}')"
+
+mk_tag_fx tagmm 2.0.0
+( cd "$T/dev/fx-tagmm" && printf '[project]\nname = "m"\nversion = "2.0.1"\n' > pyproject.toml && git add -A && git -c user.name=t -c user.email=t@t commit -qm py && git push -q origin HEAD 2>/dev/null )
+prep01 tagmm
+export IDD_ALL_UNATTENDED=1
+run_both "tagmm: sources disagree under unattended → AUDIT, no tag" "$TAG_MARK" tagmm "AUDIT: Phase 2.7 version sources disagree"
+unset IDD_ALL_UNATTENDED
+if [ -z "$(remote_tags tagmm)" ]; then PASS=$((PASS+1)); echo "  ✓ tagmm: remote tag list is empty"; else FAIL=$((FAIL+1)); echo "  ✗ tagmm: a tag was pushed despite the mismatch: $(remote_tags tagmm)"; fi
+
+d="$T/dev/fx-tagagg"; mkdir -p "$d/.claude-plugin" "$d/plugins/a/.claude-plugin" "$d/plugins/b/.claude-plugin"
+printf '{ "name": "fx-tagagg", "plugins": [ { "name": "a", "version": "1.0.0", "source": "./plugins/a" }, { "name": "b", "version": "3.0.0", "source": "./plugins/b" } ] }\n' > "$d/.claude-plugin/marketplace.json"
+printf '{ "name": "a", "version": "1.0.0" }\n' > "$d/plugins/a/.claude-plugin/plugin.json"
+printf '{ "name": "b", "version": "3.0.0" }\n' > "$d/plugins/b/.claude-plugin/plugin.json"
+git init -q --bare "$T/remote-tagagg.git"
+( cd "$d" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm init && git remote add origin "$T/remote-tagagg.git" && git push -q -u origin HEAD 2>/dev/null )
+prep01 a
+run_both "tagagg: several plugins in one repo → <plugin>-v<version>" "$TAG_MARK" a "name=a-v1.0.0"
+assert_contains "tagagg: the remote has a-v1.0.0" "a-v1.0.0" "$(remote_tags tagagg)"
+unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+
+SKILL_TEXT=$(cat "$SKILL")
+assert_contains "Phase 0.5 lists the tag push as unattended action (4)" "(4) Phase 2.7 推送版號 tag" "$SKILL_TEXT"
+ORDER=$(python3 - "$SKILL" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+a, b, c = s.find("## Phase 2.5: README Freshness Check"), s.find("## Phase 2.7: 版號 tag"), s.find("## Phase 3: 同步 Marketplace Cache")
+print("ordered" if -1 not in (a, b, c) and a < b < c else f"misplaced {a} {b} {c}")
+PY
+)
+assert_contains "Phase 2.7 sits after Phase 2.5 (which may push a README commit) and before Phase 3" "ordered" "$ORDER"
+
+echo
 echo "plugin-debug version query (root-level manifest lookup):"
 SKILL="$PLUGIN_ROOT/skills/plugin-debug/SKILL.md"
 run_both "plugin-debug reads the version through plugin_manifest_path" 'plugin_manifest_path "$SRC"' nobin "1.0.0"
