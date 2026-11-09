@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-11-09
+
+**發版摘要**：四個發版 skill 現在都會在 release commit 打版號 tag（#42）。之前 `plugin-update`、`plugin-deploy` 不打 tag；`mcp-deploy`、`cli-deploy` 讓 GitHub 在建 release 時，於當下的 remote main 上自動建 tag，不保證落在 release commit 上，也沒有比對版號。
+
+### Added
+- `scripts/release-tag.sh`：四個 skill 共用的 tag 實作（#42）。
+  - 版本從指定 commit 讀（`git show`），不讀工作樹。
+  - 七種版本來源封閉列舉，全部一致才打：plugin.json、pyproject 靜態版本、hatch `path` 的 `__version__`、package.json、`Sources/*/Version.swift`、`mcpb/manifest.json`、`Sources/*/Server.swift`。
+  - 打 annotated tag，推送後用 `ls-remote` 讀回確認。
+  - 結束碼：0 已打或已存在、10 沒升版號、20 來源不一致、21 讀不出、30 推送失敗（附重跑指令）、2 引數錯誤。
+- `scripts/test-release-tag.sh`：49 項。
+- `plugin-update` **Phase 2.7**：Phase 2 有沒有推送都會跑，`@{u} == HEAD` 時呼叫 helper。release commit 在 Phase 0.5 就推出去、Phase 2 不必推送的情況，也會打到 tag。tag 名稱：plugin 目錄就是 marketplace root、或 marketplace 只列一個 plugin → `v<version>`；否則 `<plugin>-v<version>`。
+- `plugin-deploy` **Step 7.5**：push 後呼叫 helper。
+
+### Changed
+- **行為變動**：`plugin-update` 的 Phase 0.5 封閉列舉多了第 (4) 項——clean start 與 unattended 下會推送版號 tag，條件是 `@{u} == HEAD` 且版本來源全部一致。不一致或讀不出時不打，unattended 印 `AUDIT:`。Case B–E 的 push 選項同一次確認涵蓋 tag。Phase 5 report 多一列 Phase 2.7。
+- `plugin-deploy` Step 5：bump 清單加上 plugin 目錄下套件自己的版本檔（同一份封閉列舉），否則 Step 7.5 會因版本不一致而不打 tag。
+- `mcp-deploy` Phase 3 新增 Step 3.5、`cli-deploy` Phase 3 新增 Step 1.5：建 release **之前**用 helper 打 `v<version>`，rc 不是 0 就不建 release。release API 不再帶 `target_commitish="main"`；`gh release create` 加 `--verify-tag`。
+
 ## [2.5.0] - 2026-10-14
 
 **發版摘要**：`plugin-update` 對 binary-backed plugin 的五個 phase 原本建立在固定假設上（plugin 在 `plugins/<name>`、wrapper 叫 `*-wrapper.sh`、變數叫 `GITHUB_REPO`、版本欄位叫 `binary_version`、entry 一定有 `version`），2026-09-12 che-keychain 0.3.0 上架時五處全部靜默失效。2.5.0 修掉這三件事：#18 marketplace 解析回傳 plugin 目錄；#19 Phase 0.3 與 0.5 不再互斥；#22 新增 `scripts/plugin-binary-meta.sh`，從每支 wrapper 讀出 binary 版本與 repo，加上 release 比 pin 新時的 Case E、entry 缺 version 的處理、Phase 5 的 sidecar 驗證。#22 經 12 輪交叉驗證；讀取器最後定為只辨識語料中實際存在的寫法，其餘回「判不出」。**行為變動**：(1) unattended 下不會自動 bump pin，只印 AUDIT（原 Case E-auto 已移除）；(2) Phase 0.3 對讀不動的 marketplace.json 與非法 manifest version 改為 abort；(3) Phase 1.5 Step 3 比對完整版本字串，`1.2.3-arm64` 這類尾碼會判為不同；(4) 網址寫死版本、repo 動態決定的 wrapper 報「判不出」而非「沒有 pin / 沒有 repo」。已知未修：#33（akashic 的 repo 判定回歸、idd-route 漏判、讀取器邊界）。
