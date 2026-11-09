@@ -373,17 +373,29 @@ git push origin main
 
 ### Step 7.5: 版號 tag（#42）
 
-push 成功後，在推送出去的 HEAD 打版號 tag 並推上去。規則與 `plugin-update` Phase 2.7 相同，實作只有一份 `scripts/release-tag.sh`：版本從 commit 的內容讀，Step 5 列的來源全部一致才打；同名 tag 已在別的 commit（沒升版號）時不打、不移動；推送失敗印出重跑指令。tag 名稱：marketplace.json 只列一個 plugin → `v{version}`，否則 `{plugin-name}-v{version}`。
+push 成功後打版號 tag 並推上去。規則與 `plugin-update` Phase 2.7 相同，實作只有一份 `scripts/release-tag.sh`：
+
+- 只在預設 branch 上、而且 HEAD 已經推上去時才打。
+- tag 打在**升版號的那個 commit**（`--at-bump`），版本從 commit 的內容讀，Step 5 列的來源全部一致才打。
+- 同名 tag 已在別的 commit 時不打、不移動；推送失敗時印出重跑指令。
+- tag 名稱：這個 skill 發的 plugin 都在 `plugins/<name>`，不是 repo 根目錄，所以一律是 `{plugin-name}-v{version}`（#42 decision：只有 repo 本身就是 plugin 才用 `v{version}`）。
+
+Step 7 推送前若要向使用者確認，同一個確認要列出這個 tag。
 
 ```bash
 cd "$MARKETPLACE_ROOT" || exit 1
 PLUGIN_NAME='{plugin-name}'
-UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || { echo "⚠ Step 7.5: 沒有 upstream — 沒有打 tag"; exit 0; }
-[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: HEAD 不等於 ${UPSTREAM}（Step 7 沒推成功？）— 沒有打 tag"; exit 0; }
-N_PLUGINS=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len([p for p in (d.get("plugins") or []) if isinstance(p, dict)]))' .claude-plugin/marketplace.json 2>/dev/null) || N_PLUGINS=""
-if [ "$N_PLUGINS" = 1 ]; then STYLE_ARGS=(--name-style v); else STYLE_ARGS=(--name-style plugin --plugin "$PLUGIN_NAME"); fi
-bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh" --dir "plugins/$PLUGIN_NAME" --commit HEAD --remote "${UPSTREAM%%/*}" "${STYLE_ARGS[@]}"
-echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 沒升版號；20/21 版本不一致或讀不出；30 推送失敗，見上方重跑指令）"
+case "$PLUGIN_NAME" in ''|'{plugin-name}'|.*|-*|*[!A-Za-z0-9._-]*) echo "⚠ Step 7.5: PLUGIN_NAME 未代入或不合法 — 沒有打 tag"; exit 0 ;; esac
+HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法：skill 載入時會被代換成 plugin 路徑（#39）
+[ -f "$HELPER" ] || { echo "⚠ Step 7.5: 找不到 $HELPER — 沒有打 tag"; exit 0; }
+BRANCH=$(git branch --show-current)
+REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
+case "$REMOTE" in ''|.) echo "⚠ Step 7.5: $BRANCH 沒有指向 remote 的 upstream — 沒有打 tag"; exit 0 ;; esac
+DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')
+[ -n "$DEFAULT" ] && [ "$BRANCH" = "$DEFAULT" ] || { echo "⚠ Step 7.5: 目前在 ${BRANCH}，不是 $REMOTE 的預設 branch（${DEFAULT:-?}）— 沒有打 tag"; exit 0; }
+[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: HEAD 還沒推上去（Step 7 沒推成功？）— 沒有打 tag"; exit 0; }
+bash "$HELPER" --dir "plugins/$PLUGIN_NAME" --commit HEAD --at-bump --remote "$REMOTE" --name-style plugin --plugin "$PLUGIN_NAME"
+echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 同名 tag 在別的 commit；20/21 版本不一致或讀不出；30 推送失敗，見上方重跑指令）"
 ```
 
 tag 沒打成（10／20／21／30）不中止，繼續 Step 8，並把結果寫進 Step 9 的回報。

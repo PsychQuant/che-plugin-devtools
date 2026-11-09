@@ -73,6 +73,8 @@ echo "Binary: $BINARY_NAME"
 - `Sources/*/Version.swift` — 更新版本字串
 - 其他可能的位置由 Step 0.3 決定
 
+Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let version` / `static let current`、`Sources/*/Server.swift` 的 `version: "…"`、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（或 hatch `path` 的 `__version__`）、根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。
+
 ### Step 2: 更新 CHANGELOG.md
 
 **先檢查是否已有 `[Unreleased]` 區塊**：
@@ -252,22 +254,52 @@ git push origin main
 
 ### Step 1.5: 在 release commit 打版號 tag（#42）
 
-**先打 tag，再建 release。** 以前是讓 release API 帶 `target_commitish="main"`，由 GitHub 在建 release 那一刻的 remote main 上自動建 tag——那不保證是剛推的 commit，也沒有比對版號。現在由 `scripts/release-tag.sh`（四個發版 skill 共用）在推送後的 HEAD 打 `v{version}`，版本從 commit 的內容讀（`Sources/*/Version.swift` 等，repo 根目錄找得到的來源必須全部一致）。tag 名稱固定是 `v{version}`：安裝指令從 `releases/latest/download` 與 `releases/download/v{version}` 下載。
+**先打 tag，再建 release。** 以前是讓 release API 帶 `target_commitish="main"`，由 GitHub 在建 release 那一刻的 remote main 上自動建 tag——那不保證是剛推的 commit，也沒有比對版號。現在由 `scripts/release-tag.sh`（四個發版 skill 共用）在推送後的 HEAD 打 `v{version}`：
+
+- 版本從 commit 的內容讀，找得到的版本來源都要等於這次要發的 `{version}`（`--expect`）。
+- 樹裡沒有版本、版本是 build 時才算出來的 repo（例如 safari-browser 由 `git describe` 算），就直接用 `{version}`。
+- `Version.swift` 裡沒有 `static let version` / `static let current` 宣告時（例如只在 `run()` 裡 print 版本），不算版本來源。
+- 打完確認 tag 在 release 要建的那個 GitHub repo 上，並且名稱就是 `v{version}`。
+
+tag 名稱固定是 `v{version}`：安裝指令從 `releases/latest/download` 與 `releases/download/v{version}` 下載。Step 1 推送前若要向使用者確認，同一個確認要列出這個 tag。
 
 ```bash
-UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || { echo "✗ Step 1.5: 沒有 upstream — 停止，不建 release"; exit 1; }
-[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 1.5: HEAD 不等於 ${UPSTREAM}（Step 1 沒推成功？）— 停止，不建 release"; exit 1; }
-bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh" --dir . --commit HEAD --name-style v --remote "${UPSTREAM%%/*}"
-RC=$?
-[ "$RC" = 0 ] || { echo "✗ Step 1.5: release-tag rc=${RC}（10 版號沒升、tag 已在別的 commit；20/21 版本來源不一致或讀不出；30 推送失敗）— 停止，不建 release"; exit 1; }
+VERSION='{version}'   # Phase 0 Step 4 決定的版本
+case "$VERSION" in ''|'{version}'|*[!0-9A-Za-z.+-]*) echo "✗ Step 1.5: VERSION 未代入或不合法"; exit 1 ;; esac
+HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法：skill 載入時會被代換成 plugin 路徑（#39）
+[ -f "$HELPER" ] || { echo "✗ Step 1.5: 找不到 ${HELPER}（plugin 路徑沒有代換，或 cache 不完整）— 停止，不建 release"; exit 1; }
+BRANCH=$(git branch --show-current)
+REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
+case "$REMOTE" in ''|.) echo "✗ Step 1.5: $BRANCH 沒有指向 remote 的 upstream — 先 git push -u <remote> $BRANCH 再重跑這一步"; exit 1 ;; esac
+[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 1.5: HEAD 還沒推到 upstream（Step 1 沒推成功？）— 停止，不建 release"; exit 1; }
+OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
+case "$OWNER_REPO" in */*) ;; *) echo "✗ Step 1.5: remote $REMOTE 不是 GitHub repo"; exit 1 ;; esac
+LINE=$(bash "$HELPER" --dir . --commit HEAD --name-style v --remote "$REMOTE" --expect "$VERSION"); RC=$?
+echo "$LINE"
+TAG=$(printf '%s\n' "$LINE" | sed -n 's/^RELEASE_TAG: [a-z-]* name=\([^ ]*\) .*/\1/p')
+if [ "$RC" != 0 ] || [ "$TAG" != "v$VERSION" ]; then
+    case "$RC" in
+      10) echo "✗ Step 1.5: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止。前者要先升版號；後者確認那個 tag 該不該留（刪 remote 上的 tag 由你決定）" ;;
+      20) echo "✗ Step 1.5: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 1 Step 1 改成同一個版本" ;;
+      21) echo "✗ Step 1.5: 有版本檔讀不出值（見上方）— 修好那個檔案再重來" ;;
+      30) echo "✗ Step 1.5: tag 推送失敗（重跑指令見上方）" ;;
+      *)  echo "✗ Step 1.5: release-tag rc=${RC}、tag=${TAG:-?}（預期 v${VERSION}）" ;;
+    esac
+    echo "  停止，不建 release：沒有 tag 就建 release，GitHub 會在預設 branch 上自動建一個。"; exit 1
+fi
+gh api "repos/$OWNER_REPO/git/ref/tags/$TAG" --jq .object.sha >/dev/null 2>&1 \
+  || { echo "✗ Step 1.5: $OWNER_REPO 上找不到 ${TAG}（tag 推到的 remote 與 release 的 repo 不是同一個？）— 停止，不建 release"; exit 1; }
+echo "→ Step 1.5: $TAG 已在 ${OWNER_REPO}；Step 2 在同一個 repo 用這個 tag 建 release"
 ```
 
-**rc 不是 0 就不進 Step 2**：沒有 tag 就建 release，GitHub 會退回在 main 上自動建 tag。
+**沒有走到最後那行就不進 Step 2。**
 
 ### Step 2: 建立 GitHub Release
 
 ```bash
-OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+# 與 Step 1.5 同一個 repo：從推送的 remote 推導，不讓 gh 自己選（#42 verify：fork 工作流兩者可能不同）
+OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
+gh api "repos/$OWNER_REPO/git/ref/tags/v{version}" --jq .object.sha >/dev/null || { echo "✗ $OWNER_REPO 上沒有 v{version} — 先跑完 Step 1.5"; exit 1; }
 
 # 建立 Release：tag_name 用 Step 1.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不再帶 target_commitish（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
