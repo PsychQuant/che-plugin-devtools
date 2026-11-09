@@ -46,7 +46,7 @@ TaskCreate(name="detect_changes", description="Phase 1: 確認 plugin + 最近 c
 TaskCreate(name="check_external_deps", description="Phase 1.5: 偵測 MCP/CLI 依賴，不同步時 AskUserQuestion")
 TaskCreate(name="sync_marketplace_json", description="Phase 2: 比對 plugin.json 和 marketplace.json 版本，commit+push")
 TaskCreate(name="check_readme_freshness", description="Phase 2.5: 檢查 README 是否跟上版本 / 新工具，過時時 AskUserQuestion")
-TaskCreate(name="tag_release", description="Phase 2.7 (#42): Phase 2 有沒有推送都跑；預設 branch 上且 @{u} == HEAD 時呼叫 scripts/release-tag.sh --at-bump，在升版號的 commit 打 annotated tag 並推送（repo 本身是 plugin → v<ver>，否則 <plugin>-v<ver>）；版本來源不一致 / 讀不出 → 不打（unattended 印 AUDIT）；推送失敗印重跑指令；不移動既有 tag")
+TaskCreate(name="tag_release", description="Phase 2.7 (#42): Phase 2 有沒有推送都跑；預設 branch 上、remote 上那個 branch 實際指向 HEAD 時呼叫 scripts/release-tag.sh --at-bump，在升版號的 commit 打 annotated tag 並推送（repo 本身是 plugin → v<ver>，否則 <plugin>-v<ver>）；版本來源不一致 / 讀不出 → 不打（unattended 印 AUDIT）；推送失敗印重跑指令；不移動既有 tag")
 TaskCreate(name="marketplace_update", description="Phase 3: claude plugin marketplace update")
 TaskCreate(name="plugin_install_or_update", description="Phase 4: claude plugin install/update @marketplace")
 TaskCreate(name="verify_and_report", description="Phase 5: claude plugin list 驗證 + Step 1.5 binary-backed 驗證（installed sidecar == pin；無 sidecar → UNVERIFIED，不當完成，#22）+ 提醒重啟 + 最終 report")
@@ -864,7 +864,7 @@ echo "→ 回 Phase 0.3 Step 2 重跑（會落到 Case C；Phase 0.5 會問怎�
 
 ## Phase 0.5: Git State Preview & Confirmation Gate（v1.16.0+ #60）
 
-> **為什麼這 phase 在 Phase 1 之前**:Phase 1+ 會 `git add` / `git commit` / `git push` / `claude plugin marketplace update`,在那之前,user 必須對樹上**既有**的變更（未提交 / 未推送 / 分歧，Case B–E）明確表態要不要一起推。clean start（Case A）沒有裁決點，直接通過（#19）——這代表在 clean start 下（含 unattended）**以下動作不經人工確認就會發生（封閉列舉，不得類推）**：(1) Phase 2 對 `.claude-plugin/marketplace.json` 的鏡像 commit + push——只在該檔的 entry 版本已等於 plugin.json 且相對 HEAD 有變更時，push 前列出視窗內混進的 commit 與其 plugin 歸屬；(2) Phase 3 `claude plugin marketplace update`（重拉 plugin index）；(3) Phase 4 `claude plugin update` / `install`（把 plugin 程式碼裝進本機；binary-backed plugin 的 wrapper 下次啟動會自動下載 release binary）；(4) Phase 2.7 推送版號 tag（#42）——只在 upstream 追蹤的是預設 branch、`@{u} == HEAD`、plugin 目錄與 marketplace 是同一個 git repo、且七種版本來源全部一致時打，tag 打在升版號的那個 commit（不一致或讀不出 → 不打、unattended 印 `AUDIT:`），不移動、不覆寫既有 tag。還沒有版號 tag 的 plugin，第一次跑時會替**目前版本**補打在它當初升版號的 commit；更早的版本不補。attended 的 Case A 也不另外問，依據是使用者對 #42 的指示：「自動打，所以我才希望更新plugin，發版時應該要tag」（2026-11-09），以及 issue 的 Expected「不另外問要不要打」。Expected 還要求 tag 與推 branch 列在同一次確認裡，但 Case A 沒有推送確認可以併入；Case A 不問、以及第一次跑會補打目前版本，使用者在 2026-11-10 看過這兩項寫法後明確同意，原話記在 https://github.com/PsychQuant/che-plugin-devtools/issues/42#issuecomment-6749112784 ；Case B–E 的 push 選項則把 tag 寫進同一次確認。#19 之前 unattended 在 Phase 0.5 一律 abort，(1)–(3) 從未在無人看管下執行過；現在它們是 common-release-flow 自動鏈刻意要的行為。(4) 由 #42 加入：使用者要求發版自動打 tag（上面那句指示），且同意 unattended 下來源一致就打（#42 Implementation Plan 核准時）。binary pin 的 bump **不在**這個列舉裡：unattended 下從不自動 bump（#22）。其餘兩道互動閘在 unattended 下：**仍會 abort** 的只有 Phase 1.5 Step 4（binary 不同步）；Phase 2.5 Step 2（README stale）**不 abort**，自動「先略過」繼續 Phase 3，並印一行 `AUDIT:` 供 Phase 5 的最終 report 收錄。Phase 2.7 不是互動閘：它不問、不 abort，不打 tag 的情況在 unattended 下同樣印 `AUDIT:`。
+> **為什麼這 phase 在 Phase 1 之前**:Phase 1+ 會 `git add` / `git commit` / `git push` / `claude plugin marketplace update`,在那之前,user 必須對樹上**既有**的變更（未提交 / 未推送 / 分歧，Case B–E）明確表態要不要一起推。clean start（Case A）沒有裁決點，直接通過（#19）——這代表在 clean start 下（含 unattended）**以下動作不經人工確認就會發生（封閉列舉，不得類推）**：(1) Phase 2 對 `.claude-plugin/marketplace.json` 的鏡像 commit + push——只在該檔的 entry 版本已等於 plugin.json 且相對 HEAD 有變更時，push 前列出視窗內混進的 commit 與其 plugin 歸屬；(2) Phase 3 `claude plugin marketplace update`（重拉 plugin index）；(3) Phase 4 `claude plugin update` / `install`（把 plugin 程式碼裝進本機；binary-backed plugin 的 wrapper 下次啟動會自動下載 release binary）；(4) Phase 2.7 推送版號 tag（#42）——只在 upstream 追蹤的是預設 branch、remote 上那個 branch 實際指向 HEAD（以 `ls-remote` 查）、plugin 目錄與 marketplace 是同一個 git repo、且七種版本來源全部一致時打，tag 打在升版號的那個 commit（不一致或讀不出 → 不打、unattended 印 `AUDIT:`），不移動、不覆寫既有 tag。還沒有版號 tag 的 plugin，第一次跑時會替**目前版本**補打在它當初升版號的 commit；更早的版本不補。attended 的 Case A 也不另外問，依據是使用者對 #42 的指示：「自動打，所以我才希望更新plugin，發版時應該要tag」（2026-11-09），以及 issue 的 Expected「不另外問要不要打」。Expected 還要求 tag 與推 branch 列在同一次確認裡，但 Case A 沒有推送確認可以併入；Case A 不問、以及第一次跑會補打目前版本，使用者在 2026-11-10 看過這兩項寫法後明確同意，原話記在 https://github.com/PsychQuant/che-plugin-devtools/issues/42#issuecomment-6749112784 ；Case B–E 的 push 選項則把 tag 寫進同一次確認。#19 之前 unattended 在 Phase 0.5 一律 abort，(1)–(3) 從未在無人看管下執行過；現在它們是 common-release-flow 自動鏈刻意要的行為。(4) 由 #42 加入：使用者要求發版自動打 tag（上面那句指示），且同意 unattended 下來源一致就打（#42 Implementation Plan 核准時）。binary pin 的 bump **不在**這個列舉裡：unattended 下從不自動 bump（#22）。其餘兩道互動閘在 unattended 下：**仍會 abort** 的只有 Phase 1.5 Step 4（binary 不同步）；Phase 2.5 Step 2（README stale）**不 abort**，自動「先略過」繼續 Phase 3，並印一行 `AUDIT:` 供 Phase 5 的最終 report 收錄。Phase 2.7 不是互動閘：它不問、不 abort，不打 tag 的情況在 unattended 下同樣印 `AUDIT:`。
 >
 > 既有 (pre-v1.16.0) 行為:Phase 1 Step 2 印出 `git status` 後接 narrative reminder text 「請先 commit + push」,但**沒實際 gate**,AI executor 可以印 reminder 後繼續。新 phase 把這個決定升格成 **AskUserQuestion** explicit dispatch,跟 skill 內既有 [Phase 1.5: External Binary Dependency Check](#phase-15-external-binary-dependency-check若有) + [Phase 2.5: README Freshness Check](#phase-25-readme-freshness-check) 同 pattern(用 section refs 而非 line numbers,避免後續 insert 後 stale)。
 >
@@ -1084,7 +1084,7 @@ options:
 
 #### Case E': Pure behind → ff-only 後重測
 
-沒有裁決點：`git pull --ff-only` 不會改寫任何本地 commit——但它會把 upstream 上任何人推的內容拉進本機工作樹，而重測落到 Case A 時同一次 unattended run 會接著跑 Phase 3 / 4 把它裝進本機；這是 E' 在 unattended 下的實際範圍。成功後 fence 自己印出新的 divergence / status 當作新 preview，**回 Step 1 重跑 preview block、再依 Step 2 優先序表重新分類**——結果可能是 Case A（繼續）也可能是 C / D（髒樹，要問；unattended 則 abort）。**每次 invocation E' 最多走一次**：重測仍是 E'（代表 pull 與重測之間 upstream 又前進了）即 abort。ff-only 失敗（髒樹擋住、或其實有分歧）就 abort，**不重試**（attended / unattended 相同；unattended 沒有人喊停）：
+沒有裁決點：`git pull --ff-only` 不會改寫任何本地 commit——但它會把 upstream 上任何人推的內容拉進本機工作樹，而重測落到 Case A 時同一次 unattended run 會接著跑 Phase 2.7、3、4：Phase 2.7 可能替拉進來的 commit 推版號 tag（升版號的那個 commit 可能是別人推的、使用者沒看過），Phase 3 / 4 把它裝進本機；這是 E' 在 unattended 下的實際範圍。成功後 fence 自己印出新的 divergence / status 當作新 preview，**回 Step 1 重跑 preview block、再依 Step 2 優先序表重新分類**——結果可能是 Case A（繼續）也可能是 C / D（髒樹，要問；unattended 則 abort）。**每次 invocation E' 最多走一次**：重測仍是 E'（代表 pull 與重測之間 upstream 又前進了）即 abort。ff-only 失敗（髒樹擋住、或其實有分歧）就 abort，**不重試**（attended / unattended 相同；unattended 沒有人喊停）：
 
 ```bash
 PLUGIN_NAME='<plugin-name>'
@@ -1967,7 +1967,7 @@ tag 的實作只有一份：`scripts/release-tag.sh`（四個發版 skill 共用
 | `push-failed`（30） | 印出 helper 給的原因與重跑指令（push URL 指向別的 repo 時沒有重跑指令，要先改 remote 設定），unattended 另印 `AUDIT:`；繼續 Phase 3 |
 | 其他（usage error、helper 不存在） | 印 ✗ 與原因，unattended 另印 `AUDIT:`；繼續 Phase 3 |
 
-**能不能打**（封閉列舉，四項都要成立）：(1) 目前 branch 有指向 remote 的 upstream（必須是 `git remote` 列得出的 remote 名稱），且 `@{u} == HEAD`；(2) 目前 branch 追蹤的 upstream branch 是那個 remote 的預設 branch——看 upstream，不看本機 branch 名，feature branch 上不打；(3) plugin 目錄與 marketplace 是同一個 git repo——plugin 目錄若自己是另一個 repo（巢狀 clone、submodule），前兩項檢查的是 marketplace repo，helper 卻會在 plugin 目錄的 repo 打 tag 並推送（#42 verify 第 2 輪）；(4) helper 找得到 `scripts/release-tag.sh`。
+**能不能打**（封閉列舉，四項都要成立）：(1) 目前 branch 有指向 remote 的 upstream（必須是 `git remote` 列得出的 remote 名稱），且 remote 上那個 branch 實際指向 HEAD——先比本機的 `@{u}`，再以 `git ls-remote` 問 remote（`@{u}` 是本機的記錄，remote 被改寫、或有人推了新 commit 時會過期，#42 verify 第 7 輪）；(2) 目前 branch 追蹤的 upstream branch 是那個 remote 的預設 branch——看 upstream，不看本機 branch 名，feature branch 上不打；(3) plugin 目錄與 marketplace 是同一個 git repo——plugin 目錄若自己是另一個 repo（巢狀 clone、submodule），前兩項檢查的是 marketplace repo，helper 卻會在 plugin 目錄的 repo 打 tag 並推送（#42 verify 第 2 輪）；(4) helper 找得到 `scripts/release-tag.sh`。
 
 **第一次跑會補打目前版本**：還沒有版號 tag 的 plugin，下一次 plugin-update 會在目前版本當初升版號的 commit 補一個 tag；更早的版本不補。升版號之後若還有改動 plugin 目錄的 commit，helper 會在 stderr 印出筆數——tag 標的是版本從哪個 commit 開始，不包含那些後來的改動（squash merge 時兩者是同一個 commit）。
 
@@ -2000,6 +2000,11 @@ UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANC
 DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
     echo "→ Phase 2.7: skipped — ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是 $REMOTE 的預設 branch（${DEFAULT:-讀不到}）"; audit "skipped (not the default branch)"; exit 0   # ${…}：bash 會把緊接的全形括號吃進變數名
+fi
+# (2b) @{u} 是本機記錄的位置；remote 上那個 branch 實際指向哪裡要問 remote（#42 verify 第 7 輪）
+LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
+if [ -z "$LIVE" ] || [ "$LIVE" != "$(git rev-parse HEAD)" ]; then
+    echo "→ Phase 2.7: skipped — $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）"; audit "skipped (the remote branch is not at HEAD)"; exit 0
 fi
 # (3) plugin 目錄與 marketplace 是同一個 git repo
 if [ "$(git -C "$PLUGIN_DIR" rev-parse --show-toplevel 2>/dev/null)" != "$(git rev-parse --show-toplevel)" ]; then

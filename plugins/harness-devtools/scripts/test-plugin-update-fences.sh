@@ -722,6 +722,15 @@ mk_tag_fx tagwork 1.2.0
 prep01 tagwork
 run_both "tagwork: local 'work' tracking the remote's default branch → tagged" "$TAG_MARK" tagwork "→ Phase 2.7: done"
 
+# verify R7: @{u} is a local cache — the remote's branch itself must be at HEAD
+mk_tag_fx tagstale 1.0.0
+( cd "$T/dev/fx-tagstale" && B=$(git branch --show-current) && git checkout -q -b side && printf 's\n' > S && git add -A \
+    && git -c user.name=t -c user.email=t@t commit -qm side && git push -q origin side 2>/dev/null && git checkout -q "$B" \
+    && git --git-dir="$T/remote-tagstale.git" update-ref "refs/heads/$B" "$(git rev-parse side)" )
+prep01 tagstale
+run_both "tagstale: the remote's default branch was rewritten, the local @{u} still says HEAD → skipped" "$TAG_MARK" tagstale "不是 HEAD"
+if [ -z "$(remote_tags tagstale | tr -d ' ')" ]; then PASS=$((PASS+1)); echo "  ✓ tagstale: nothing tagged"; else FAIL=$((FAIL+1)); echo "  ✗ tagstale: tags reached the remote: $(remote_tags tagstale)"; fi
+
 # verify R2: rc 10 is a no-tag case too, so unattended prints AUDIT for it
 mk_tag_fx tagten 3.0.0
 printf 'w\n' > "$T/dev/fx-tagten/W"; commit_fx tagten wip

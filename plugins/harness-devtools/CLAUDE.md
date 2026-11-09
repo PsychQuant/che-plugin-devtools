@@ -153,6 +153,23 @@ list_mcp_projects                             # 所有已知專案
 
 新增 umbrella 時只改 `MCP_ROOTS_SPEC` 一處。
 
+## 發版 tag（#42）
+
+**永遠不要在 skill 裡自己寫打 tag 的邏輯。** 四個發版 skill（`plugin-update` Phase 2.7、`plugin-deploy` Step 7.5、`mcp-deploy` Phase 3 Step 3a、`cli-deploy` Phase 3 Step 1.5）共用 `scripts/release-tag.sh`；新的發版 skill 也呼叫它：
+
+```bash
+bash "$HELPER" --dir <版本根目錄> --commit HEAD --name-style v|plugin [--plugin <name>] \
+     [--remote <remote>] [--expect <x.y.z>] [--at-bump] [--dry-run]
+# → RELEASE_TAG: <status> name=… commit=… version=… sources=…
+# 0 已打或已存在 / 10 同名 tag 在別的 commit / 20 來源不一致 / 21 讀不出 / 30 推送失敗或 push URL 不同 / 2 引數錯誤
+```
+
+- 版本來源是七種的封閉列舉，定義在 helper 檔頭；skill 的 bump 清單照抄那一份，改來源時兩邊一起改。
+- helper 只決定**打什麼**；**什麼時候打**由呼叫的 fence 決定：upstream 是設定過的 remote、追蹤的是預設 branch、`git ls-remote` 查到 remote 上那個 branch 就是 HEAD。四個 fence 各有一份這些檢查，由 `scripts/test-deploy-tag-fences.sh` 與 `scripts/test-plugin-update-fences.sh` 從 SKILL.md 抽出來跑。
+- fence 的寫法限制：不用 `${CLAUDE_PLUGIN_ROOT:?}`（Bash 工具裡沒有值，#39）、不寫裸的錢號加數字（skill 載入時會被代換成呼叫引數，awk 欄位寫 `$(2)`）、placeholder 守衛不重複寫 placeholder 本身。
+
+**為什麼**：2026-11-09 用 plugin-update 發 iss-compute-mcp 0.7.0，整條流程沒有一步建立版號 tag；mcp-deploy／cli-deploy 則讓 GitHub 在當下的 remote main 上建 tag，不保證落在 release commit、也不比對版號。#42 的交叉驗證抓到的缺陷多半在「怎麼讀版本」（hatch 的讀法、Swift 字串常值、merge 歷史）與「HEAD 是否真的在 remote 上」，這些只寫在 helper 與 fence 裡，各 skill 自己重寫會再犯一次。
+
 ## 三個領域的 skill 命名
 
 | 前綴 | 產物 | 典型鏈路 |

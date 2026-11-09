@@ -73,7 +73,7 @@ echo "Binary: $BINARY_NAME"
 - `Sources/*/Version.swift` — 更新版本字串
 - 其他可能的位置由 Step 0.3 決定
 
-Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`）、`Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數）、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（或 hatch `path` 指到的檔案，照 hatch 自己的讀法）、`.claude-plugin/plugin.json` 或根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。Phase 3 Step 1 會把清單裡改過的檔案都 stage 進 release commit；改了 hatch `path` 指到的檔案時，那個檔案要自己 `git add`。
+Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`）、`Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓版本判成不一致而停下：改成具名常數，或移出 Server.swift）、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（或 hatch `path` 指到的檔案，照 hatch 自己的讀法）、`.claude-plugin/plugin.json` 或根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。Phase 3 Step 1 會把清單裡改過的檔案都 stage 進 release commit；改了 hatch `path` 指到的檔案時，那個檔案要自己 `git add`。
 
 ### Step 2: 更新 CHANGELOG.md
 
@@ -286,6 +286,11 @@ UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANC
 DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
     echo "✗ Step 1.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT:-讀不到}）— 合併到預設 branch 後再發版；停止，不建 release"; exit 1
+fi
+# @{u} 是本機記錄的位置；remote 上那個 branch 實際指向哪裡要問 remote（#42 verify 第 7 輪）
+LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
+if [ -z "$LIVE" ] || [ "$LIVE" != "$(git rev-parse HEAD)" ]; then
+    echo "✗ Step 1.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）— git fetch 確認後重跑這一步；停止，不建 release"; exit 1
 fi
 OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \

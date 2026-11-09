@@ -1,5 +1,5 @@
 #!/bin/bash
-# Smoke tests for the tag fences of mcp-deploy (Phase 3 Step 3.5), cli-deploy
+# Smoke tests for the tag fences of mcp-deploy (Phase 3 Step 3a), cli-deploy
 # (Phase 3 Step 1 staging + Step 1.5) and plugin-deploy (Step 7.5) (#42).
 #
 # Run: bash scripts/test-deploy-tag-fences.sh
@@ -85,7 +85,7 @@ rtag() { git --git-dir="$1" rev-parse -q --verify "refs/tags/$2^{commit}" 2>/dev
 
 echo "SKILL text (#42)"
 for s in mcp-deploy cli-deploy plugin-deploy; do
-  for m in "Step 3.5: VERSION" "Step 1.5: VERSION" "Step 7.5: PLUGIN_NAME"; do
+  for m in "Step 3a: VERSION" "Step 1.5: VERSION" "Step 7.5: PLUGIN_NAME"; do
     python3 -I -c 'import re,sys; s=open(sys.argv[1]).read(); sys.exit(0 if any(sys.argv[2] in b for b in re.findall(r"```bash\n(.*?)```", s, re.S)) else 1)' \
       "$PLUGIN_ROOT/skills/$s/SKILL.md" "$m" || continue
     fence "$s" "$m" "$T/text.sh"
@@ -116,12 +116,12 @@ done
 hasnt "plugin-deploy: no case pattern repeats '{plugin-name}'" "$(bash_blocks plugin-deploy)" "'{plugin-name}'|"
 hasnt "plugin-deploy: no case pattern repeats '{marketplace-root}'" "$(bash_blocks plugin-deploy)" "|'{marketplace-root}')"
 # verify R3 / #39: skill loading may replace $0, $1, … with the invocation's arguments
-for SM in "mcp-deploy:Step 3.5: VERSION" "cli-deploy:Step 1.5: VERSION" "plugin-deploy:Step 7.5: PLUGIN_NAME"; do
+for SM in "mcp-deploy:Step 3a: VERSION" "cli-deploy:Step 1.5: VERSION" "plugin-deploy:Step 7.5: PLUGIN_NAME"; do
   fence "${SM%%:*}" "${SM#*:}" "$T/pos.sh"
   hasnt "${SM%%:*}: the tag fence has no bare \$<digit> (#39)" "$(grep -oE '\$[0-9]' "$T/pos.sh" | head -1)" '$'
 done
 
-for SK in mcp-deploy:3.5 cli-deploy:1.5; do
+for SK in mcp-deploy:3a cli-deploy:1.5; do
   S=${SK%%:*}; STEP=${SK#*:}
   echo "$S Step $STEP"
 
@@ -155,6 +155,18 @@ for SK in mcp-deploy:3.5 cli-deploy:1.5; do
   fence "$S" "Step $STEP: VERSION" "$T/f2.sh" "VERSION='{version}' ==> VERSION='2.0.0'"
   run bash "$W" "$T/f2.sh"
   has "local 'work' tracking origin/main → tagged (the upstream branch is what counts)" "$OUT" "→ Step $STEP: v2.0.0 已在 o/r"
+
+  # verify R7: @{u} is a local cache; the remote's branch itself must be at HEAD
+  mk "$S-stale"; W="$T/$S-stale"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
+  git -C "$W" checkout -q -b side; put "$W" side.txt s; ci "$W"; git -C "$W" push -q origin side 2>/dev/null; git -C "$W" checkout -q main
+  git --git-dir="$T/$S-stale.git" update-ref refs/heads/main "$(git -C "$W" rev-parse side)"
+  fence "$S" "Step $STEP: VERSION" "$T/f7.sh" "VERSION='{version}' ==> VERSION='1.0.0'"
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/f7.sh"
+    has "the remote's main was rewritten, the local @{u} still says HEAD → stops ($sh)" "$OUT" "不是 HEAD"
+  done
+  same "…and no tag pushed" "$(rtag "$T/$S-stale.git" v1.0.0)" ""
 
   mk "$S-swift"; W="$T/$S-swift"
   put "$W" Sources/S/Version.swift 'public enum V { public static let version: String = "1.0.0" }'; ci "$W"; push "$W"
@@ -264,6 +276,19 @@ git -C "$W" checkout -q -b feat; put "$W" plugins/foo/x.txt y; ci "$W"; push "$W
 run bash "$T" "$T/p.sh"
 has "feature branch → no tag" "$OUT" "不是 origin 的預設 branch"
 git -C "$W" checkout -q main
+
+# verify R7: the remote's branch itself must be at HEAD, not only the local @{u}
+mk pds; W="$T/pds"
+put "$W" .claude-plugin/marketplace.json '{ "plugins": [ { "name": "foo", "source": "./plugins/foo" } ] }'
+put "$W" plugins/foo/.claude-plugin/plugin.json '{ "name": "foo", "version": "1.0.0" }'; ci "$W" a; push "$W"
+git -C "$W" checkout -q -b side; put "$W" side.txt s; ci "$W"; git -C "$W" push -q origin side 2>/dev/null; git -C "$W" checkout -q main
+git --git-dir="$T/pds.git" update-ref refs/heads/main "$(git -C "$W" rev-parse side)"
+fence plugin-deploy "Step 7.5: PLUGIN_NAME" "$T/ps.sh" "PLUGIN_NAME='{plugin-name}' ==> PLUGIN_NAME='foo'" "MARKETPLACE_ROOT='{marketplace-root}' ==> MARKETPLACE_ROOT='$W'"
+for sh in $SHELLS; do
+  run "$sh" "$T" "$T/ps.sh"
+  has "the remote's main was rewritten, the local @{u} still says HEAD → no tag ($sh)" "$OUT" "不是 HEAD"
+done
+same "…and nothing tagged" "$(rtag "$T/pds.git" foo-v1.0.0)" ""
 
 mk pdn; W="$T/pdn"
 put "$W" .claude-plugin/marketplace.json '{ "plugins": [ { "name": "bar", "source": "./plugins/bar" } ] }'

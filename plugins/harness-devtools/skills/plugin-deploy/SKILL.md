@@ -347,11 +347,11 @@ binary 對應的獨立 repo（如 `PsychQuant/che-word-mcp`）才是使用者主
 1. `plugins/{name}/.claude-plugin/plugin.json` 的 `version`
 2. `.claude-plugin/marketplace.json` 中對應 plugin 的 `version`
 3. plugin 目錄下**套件自己的版本**——plugin 目錄裡有下列任何一個檔案，就要一起改成同一個版本（封閉列舉，與 `scripts/release-tag.sh` 認得的來源同一份，#42）：
-   - `pyproject.toml` 的 `[project].version`；版本是 `dynamic` 時，改 `[tool.hatch.version].path` 指到的檔案裡的 `__version__`（helper 照 hatch 自己的讀法讀：預設或設定的 pattern、第一個符合的值）
+   - `pyproject.toml` 的 `[project].version`；版本是 `dynamic` 時，改 `[tool.hatch.version].path` 指到的檔案裡的 `__version__`（helper 照 hatch 自己的讀法讀：路徑先正規化、嚴格 UTF-8、預設或設定的 pattern、第一個符合的值）
    - `package.json` 的 `version`
    - `Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
    - `mcpb/manifest.json` 的 `version`
-   - `Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數，不能串接或插值）
+   - `Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓版本判成不一致而停下：改成具名常數，或移出 Server.swift）
 
    漏改任何一個，Step 7.5 會因版本不一致而不打 tag。
 
@@ -407,6 +407,9 @@ git remote | grep -qxF -- "$REMOTE" || { echo "⚠ Step 7.5: $BRANCH 的 upstrea
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
 DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 [ -n "$DEFAULT" ] && [ "$UPSTREAM_BRANCH" = "$DEFAULT" ] || { echo "⚠ Step 7.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是 $REMOTE 的預設 branch（${DEFAULT:-?}）— 沒有打 tag"; exit 0; }
+# @{u} 是本機記錄的位置；remote 上那個 branch 實際指向哪裡要問 remote（#42 verify 第 7 輪）
+LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
+[ -n "$LIVE" ] && [ "$LIVE" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期）— git fetch 確認後重跑；沒有打 tag"; exit 0; }
 bash "$HELPER" --dir "plugins/$PLUGIN_NAME" --commit HEAD --at-bump --remote "$REMOTE" --name-style plugin --plugin "$PLUGIN_NAME"
 echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 同名 tag 在別的 commit；20/21 版本不一致或讀不出；30 推送失敗或 push URL 指向別的 repo，見上方的原因）"
 ```
