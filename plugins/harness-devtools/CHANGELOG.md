@@ -9,25 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.6.0] - 2026-11-09
 
-**發版摘要**：四個發版 skill 現在都會打版號 tag（#42）。之前 `plugin-update`、`plugin-deploy` 不打 tag；`mcp-deploy`、`cli-deploy` 讓 GitHub 在建 release 時，於當下的 remote main 上自動建 tag，不保證落在 release commit 上，也沒有比對版號。`plugin-update`、`plugin-deploy` 的 tag 打在升版號的那個 commit，只在預設 branch 上打；`mcp-deploy`、`cli-deploy` 的 tag 打在 release commit，版本必須等於要發的版本。
+**發版摘要**：四個發版 skill 現在都會打版號 tag（#42）。之前 `plugin-update`、`plugin-deploy` 不打 tag；`mcp-deploy`、`cli-deploy` 讓 GitHub 在建 release 時，於當下的 remote main 上自動建 tag，不保證落在 release commit 上，也沒有比對版號。四個 skill 都只在預設 branch 上打。`plugin-update`、`plugin-deploy` 的 tag 打在升版號的那個 commit；`mcp-deploy`、`cli-deploy` 的 tag 打在 release commit，版本必須等於要發的版本。helper 在 macOS 內建的 bash 3.2 下也能跑。
 
 ### Added
 - `scripts/release-tag.sh`：四個 skill 共用的 tag 實作（#42）。
   - 版本從指定 commit 讀（`git show`），不讀工作樹。
-  - 七種版本來源封閉列舉，全部一致才打：plugin.json、pyproject 靜態版本、hatch `path` 的 `__version__`、package.json、`Sources/*/Version.swift`、`mcpb/manifest.json`、`Sources/*/Server.swift`。`Version.swift` 沒有版本宣告時不算來源（GiftHub 這類從別處讀版本的寫法）；同一個檔案出現兩個不同的值 → 21。
-  - `--at-bump`：從指定 commit 往回找，打在版本來源最後一次一起變成目前版本的 commit。
+  - 七種版本來源封閉列舉，全部一致才打：plugin.json、pyproject 靜態版本、hatch `path` 的 `__version__`、package.json、`Sources/*/Version.swift`（`static let|var version|current`，可帶 `: String`）、`mcpb/manifest.json`、`Sources/*/Server.swift`。`Version.swift` 沒有這種宣告時不算來源（GiftHub 這類從別處讀版本的寫法）；有宣告但值不是字串常值、或同一個檔案出現兩個不同的值 → 21。pyproject 需要 python3 3.11 以上（`tomllib`，#48）。
+  - `--at-bump`：從指定 commit 往回找（封閉列舉的路徑全部算，已刪除的來源也算），打在版本來源最後一次一起變成目前版本的 commit。找不到確定的 commit、或走到 500 個 commit 的上限時 → 21，不打在推測的 commit 上；之後還有改動該目錄的 commit 時，在 stderr 印出筆數。
   - `--expect <x.y.z>`：檔案裡的版本必須等於它，否則 20；沒有任何來源時用它。
-  - 打 annotated tag，推送後用 `ls-remote` 讀回確認。
+  - 打 annotated tag，推送後用 `ls-remote` 讀回確認。建 tag 前先跑 `git check-ref-format`，dry-run 與實跑結果一致。
+  - 可在 bash 3.2（macOS 的 `/bin/bash`）下執行：Python 從頂層 heredoc 讀進變數再 `python3 -c`，不放在 `$( … )` 裡。
   - 輸出的每個欄位只保留 `[A-Za-z0-9._/:@+-]`，其他字元換成 `?`；hatch 的 `path` 含 `..` 或其他字元時拒絕（21）。重跑指令以 `printf '%q'` 組出。
   - 結束碼：0 已打或已存在、10 同名 tag 已在另一個 commit 上（不移動）、20 來源不一致、21 讀不出、30 推送失敗（附重跑指令）、2 引數錯誤。
-- `scripts/test-release-tag.sh`：77 項，含 hatch `path` 帶 TAB 的注入案例、`--at-bump` 的三種歷史、非 ASCII 目錄名。
-- `plugin-update` **Phase 2.7**：Phase 2 有沒有推送都會跑。三項都成立才打：`@{u} == HEAD`、目前 branch 是 remote 的預設 branch、找得到 helper。tag 打在升版號的 commit（`--at-bump`）。tag 名稱只看佈局：plugin 目錄就是 repo 根目錄 → `v<version>`；其他一律 `<plugin>-v<version>`。
-- `plugin-deploy` **Step 7.5**：push 後呼叫 helper，條件同 Phase 2.7（預設 branch、`@{u} == HEAD`、`--at-bump`）。plugin-deploy 只處理 `plugins/<name>` 佈局，所以名稱一律是 `<plugin>-v<version>`。
+- `scripts/test-release-tag.sh`：100 項，含 hatch `path` 帶 TAB 的注入案例、`--at-bump` 的各種歷史（含刪除來源、走訪上限）、Swift 宣告的寫法、git 不收的版本字串、非 ASCII 目錄名；最後讓 helper 在 `/bin/bash` 下把整套重跑一次。
+- `scripts/test-deploy-tag-fences.sh`：77 項。把 `mcp-deploy` Step 3.5、`cli-deploy` Phase 3 Step 1 與 Step 1.5、`plugin-deploy` Step 7.5 的 fence 從 SKILL.md 抽出來，在暫存 repo（bare remote、`gh` stub）上用 bash、zsh、`/bin/bash` 執行，斷言 fence 的結論行與 remote 上實際的 tag。
+- `plugin-update` **Phase 2.7**：Phase 2 有沒有推送都會跑。四項都成立才打：`@{u} == HEAD`（upstream 必須是設定過的 remote）、upstream 追蹤的是 remote 的預設 branch（看 upstream，不看本機 branch 名）、plugin 目錄與 marketplace 是同一個 git repo、找得到 helper。tag 打在升版號的 commit（`--at-bump`）。tag 名稱只看佈局：plugin 目錄就是 repo 根目錄 → `v<version>`；其他一律 `<plugin>-v<version>`。
+- `plugin-deploy` **Step 7.5**：push 後呼叫 helper，條件同 Phase 2.7（預設 branch、`@{u} == HEAD`、同一個 repo、`--at-bump`）。marketplace 根目錄在 fence 裡明寫並驗證（每個 Bash 呼叫是新的 shell，zsh 的 `cd ""` 不會失敗）。plugin-deploy 只處理 `plugins/<name>` 佈局，所以名稱一律是 `<plugin>-v<version>`。
 
 ### Changed
-- **行為變動**：`plugin-update` 的 Phase 0.5 封閉列舉多了第 (4) 項——clean start 與 unattended 下會推送版號 tag，條件是預設 branch、`@{u} == HEAD` 且版本來源全部一致，tag 打在升版號的 commit。不一致或讀不出時不打，unattended 印 `AUDIT:`。Case B–E 的七個 push 選項都寫明推送後會打 tag，同一次確認涵蓋 tag；attended 的 Case A 本來就不問推送，tag 比照辦理。Phase 5 report 多一列 Phase 2.7。
+- **行為變動**：`plugin-update` 的 Phase 0.5 封閉列舉多了第 (4) 項——clean start 與 unattended 下會推送版號 tag，條件是預設 branch、`@{u} == HEAD`、同一個 repo 且版本來源全部一致，tag 打在升版號的 commit；還沒有版號 tag 的 plugin，第一次跑會替目前版本補打。不打的情況（含同名 tag 在別的 commit）unattended 都印 `AUDIT:`。Case B–E 的七個 push 選項都寫明推送後會打 tag，同一次確認涵蓋 tag；attended 的 Case A 不另外問，依據是使用者對 #42 的指示「自動打」。Phase 5 report 多一列 Phase 2.7。
 - `plugin-deploy` Step 5：bump 清單加上 plugin 目錄下套件自己的版本檔（同一份封閉列舉），否則 Step 7.5 會因版本不一致而不打 tag。
-- `mcp-deploy` Phase 3 新增 Step 3.5、`cli-deploy` Phase 3 新增 Step 1.5：建 release **之前**用 helper 打 `v<version>`（`--expect` 帶要發的版本），rc 不是 0、或打出的 tag 名稱不是 `v<version>`，就不建 release。remote 取自目前 branch 的 upstream 設定，`gh` 的 repo 由同一個 remote 的網址推出，兩者指向同一個 repo。release API 不再帶 `target_commitish="main"`；`gh release create` 加 `--verify-tag --repo`。bump 清單與 helper 的七種來源一致。
+- `mcp-deploy` Phase 3 新增 Step 3.5、`cli-deploy` Phase 3 新增 Step 1.5：建 release **之前**用 helper 打 `v<version>`（`--expect` 帶要發的版本），rc 不是 0、或打出的 tag 名稱不是 `v<version>`，就不建 release；只在 upstream 追蹤的是預設 branch 時發版。remote 取自目前 branch 的 upstream 設定，`gh` 的 repo 由同一個 remote 的網址推出（只認 `github.com` 的網址，推不出就停、不印網址），兩者指向同一個 repo。release API 不再帶 `target_commitish="main"`；`gh release create` 加 `--verify-tag --repo`，`gh release view` 加 `--repo`。bump 清單與 helper 的七種來源一致；`cli-deploy` Phase 3 Step 1 改為 stage 清單裡所有改過的檔案（原本只 stage `Version.swift`）。完成報告多一列 Tag。
 
 ## [2.5.0] - 2026-10-14
 
