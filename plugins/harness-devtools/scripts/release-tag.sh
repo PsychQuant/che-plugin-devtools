@@ -69,11 +69,13 @@
 #       not-bumped): this version was released before, or an earlier release
 #       stopped after its tag was pushed. Nothing is created or moved.
 #   20  version sources disagree, or disagree with --expect (status mismatch)
-#   21  no version source (and no --expect), or a source that cannot be read
-#       (status unreadable)
+#   21  no version source (and no --expect), a source that cannot be read — a
+#       pyproject.toml with python3 < 3.11 included — or --at-bump cannot
+#       determine the commit that set the version (status unreadable)
 #   30  the remote could not be queried, the push failed, or the pushed tag is
 #       not on the remote afterwards (status push-failed). A local tag is kept so
-#       the printed retry command works.
+#       the printed retry command works. Also when the remote's push URL differs
+#       from its fetch URL — checked before anything is created or pushed.
 #   2   usage error
 #
 # Never moves or deletes a tag and never uses --force: a wrong tag on the remote
@@ -135,9 +137,22 @@ import json, re, subprocess, sys
 top, sha, prefix, at_bump = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 MAX_WALK = int(sys.argv[5])
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?")   # used with fullmatch: no trailing newline
-# Version.swift: the declaration, and the declaration with a string-literal value
+# Version.swift: the declaration, and the declaration whose WHOLE initializer is one
+# string literal — no interpolation or escapes inside, nothing after it but the end of
+# the line, `;` or `}`, and no continuation (`+`, `.method`, `?`, …) on the next line
+# (#42 verify R3: `"1.0.0" + "-beta"` once read as 1.0.0). Comments are removed first.
 SWIFT_DECL = re.compile(r'\bstatic\s+(?:let|var)\s+(?:version|current)\b')
-SWIFT_VALUE = re.compile(r'\bstatic\s+(?:let|var)\s+(?:version|current)\s*(?::\s*String\s*)?=\s*"([^"]+)"')
+SWIFT_VALUE = re.compile(r'\bstatic\s+(?:let|var)\s+(?:version|current)\s*(?::\s*String\s*)?=\s*"([^"\\\n]*)"'
+                         r'(?=[ \t]*(?:;|\}|\n|$))(?![ \t]*\n\s*[-+.?\[(&|*%<>=!/])')
+
+def swift_code(text):
+    """Swift source with /* */ and // comments removed (a version string has no //)."""
+    return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", " ", text, flags=re.S))
+
+def oneline(s):
+    """A message line: control characters out. Values from the repository are already
+    passed through safe() where the message is built, so their ? marks stay (#42 verify R3)."""
+    return re.sub(r"[\x00-\x1f\x7f]", " ", str(s))
 # every path of the closed list, for the --at-bump walk (a deleted source counts too)
 SOURCE_SPECS = [".claude-plugin/plugin.json", "plugin.json", "pyproject.toml", "package.json",
                 "mcpb/manifest.json", "Sources/*/Version.swift", "Sources/*/Server.swift"]
@@ -154,7 +169,9 @@ def read_sources(commit):
     found, problems, notes, paths = [], [], [], []
 
     def show(rel):
-        r = git("show", f"{commit}:{prefix}{rel}")
+        # cat-file blob, not show: `git show <sha>:<path>` prints the commit and exits 0
+        # for a missing path containing `[` (#42 verify R3)
+        r = git("cat-file", "blob", f"{commit}:{prefix}{rel}")
         return r.stdout if r.returncode == 0 else None
 
     def listed(rel_dir):
@@ -226,7 +243,7 @@ def read_sources(commit):
         if len(parts) != 3:
             continue
         if parts[2] == "Version.swift":
-            text = show(path) or ""
+            text = swift_code(show(path) or "")
             literals = SWIFT_VALUE.findall(text)
             vals = sorted(set(literals))
             if len(vals) > 1:
@@ -255,9 +272,9 @@ found, problems, notes, paths = read_sources(sha)
 for name, value in found:
     print(f"SOURCE\t{safe(name)}\t{safe(value)}")
 for p in problems:
-    print(f"PROBLEM\t{safe(p).replace('?', ' ')}")
+    print(f"PROBLEM\t{oneline(p)}")
 for n in notes:
-    print(f"NOTE\t{safe(n).replace('?', ' ')}")
+    print(f"NOTE\t{oneline(n)}")
 
 # --at-bump: walk back over commits that touch any path of the closed list (deleted
 # sources included — a commit that drops a stale source can be the one where the
@@ -270,16 +287,28 @@ if at_bump and found and not problems and len(values) == 1:
     specs = list(dict.fromkeys([prefix + s for s in SOURCE_SPECS] + paths))
     r = git("rev-list", f"--max-count={MAX_WALK + 1}", sha, "--", *specs)
     candidates = r.stdout.split() if r.returncode == 0 else []
-    release, stopped = None, False
+    release, stopped, unclear = None, False, None
     for c in candidates:
         f2, p2, _, _ = read_sources(c)
-        if f2 and not p2 and {v for _, v in f2} == {current}:
+        vals2 = {v for _, v in f2}
+        if f2 and not p2 and vals2 == {current}:
             release = c
-        else:
-            stopped = True
-            break
+            continue
+        stopped = True
+        if p2 and not (vals2 - {current}):
+            # a source here cannot be read and every readable one already equals the
+            # current version: it cannot be told whether the version was set here or
+            # earlier (#42 verify R3)
+            unclear = c
+        break
+    shallow = git("rev-parse", "--is-shallow-repository").stdout.strip() == "true"
     if r.returncode != 0:
         print(f"PROBLEM\tcannot walk the history of the version sources")
+    elif unclear:
+        print(f"PROBLEM\t--at-bump: the version sources at {unclear[:7]} cannot all be read, so it cannot tell whether {safe(current)} was already set there; not tagging a guess")
+    elif not stopped and shallow:
+        # the walk ran into the shallow boundary, which looks like the start of history
+        print(f"PROBLEM\t--at-bump: this is a shallow clone and its history ends before the commit that set {safe(current)} can be confirmed; run git fetch --unshallow and retry")
     elif not stopped and len(candidates) > MAX_WALK:
         print(f"PROBLEM\t--at-bump reached its walk limit of {MAX_WALK} commits without finding where {safe(current)} was set; not tagging a guess")
     elif release is None:
@@ -357,6 +386,20 @@ else
   case "$LABEL" in ''|*[!A-Za-z0-9._-]*) LABEL=$(basename "$TOP") ;; esac
 fi
 LINE_TAIL="name=$NAME commit=$SHORT version=$VERSION sources=$SOURCES"
+
+# The tag is looked up with ls-remote (the fetch URL) but pushed with `git push`
+# (the push URL). If a remote pushes somewhere else, the lookup and the push talk to
+# different repositories and the tag is published before anything notices (#42
+# verify R3). Refuse before any push; the URLs are not printed (they may carry
+# credentials). A --remote that is a URL or path, not a remote name, has one URL.
+if FETCH_URL=$(git -C "$TOP" remote get-url "$REMOTE" 2>/dev/null); then
+  PUSH_URLS=$(git -C "$TOP" remote get-url --push --all "$REMOTE" 2>/dev/null) || PUSH_URLS="?"
+  if [ "$(printf '%s\n' "$PUSH_URLS" | sort -u)" != "$FETCH_URL" ]; then
+    echo "RELEASE_TAG: push-failed $LINE_TAIL"
+    echo "$PROG: remote '$REMOTE' has a push URL that differs from its fetch URL (remote.$REMOTE.pushurl) — the tag would go to a repository the checks never looked at; nothing tagged or pushed" >&2
+    exit 30
+  fi
+fi
 
 if [ "$DRY" = 1 ]; then
   echo "RELEASE_TAG: dry-run $LINE_TAIL"

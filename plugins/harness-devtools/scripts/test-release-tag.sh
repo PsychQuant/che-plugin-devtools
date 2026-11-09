@@ -342,6 +342,76 @@ new_repo; put "$W" .claude-plugin/plugin.json '{ "name": "p", "version": "1.0.0\
 run "$W" --dir . --commit HEAD --name-style v --dry-run
 check "a version with a trailing newline → exit 21" "$RC" 21
 
+echo "== a push URL that differs from the fetch URL → nothing is pushed anywhere (verify R3, Codex)"
+new_repo; plugin_json "$W" "" 1.0.0; commit "$W"
+git init -q --bare "$T/r$N/other.git"
+git -C "$W" remote set-url --push origin "$T/r$N/other.git"
+run "$W" --dir . --commit HEAD --name-style v
+check "exit 30" "$RC" 30
+has "says why" "push URL"
+check "no tag on the fetch remote" "$(git -C "$W" ls-remote --tags origin)" ""
+check "no tag on the push remote" "$(git --git-dir="$T/r$N/other.git" for-each-ref refs/tags)" ""
+check "no local tag left behind" "$(git -C "$W" tag -l)" ""
+
+echo "== --at-bump in a shallow clone refuses unless the history shows where the version was set (verify R3)"
+new_repo; plugin_json "$W" "" 1.0.0; commit "$W" c1
+plugin_json "$W" "" 2.0.0; commit "$W" c2
+put "$W" a.txt 1; commit "$W" c3; put "$W" b.txt 2; commit "$W" c4
+REMOTE_GIT="$T/r$N/remote.git"; C2=$(git -C "$W" rev-parse HEAD~2)
+git clone -q --branch main --depth 2 "file://$REMOTE_GIT" "$T/r$N/shallow2"
+run "$T/r$N/shallow2" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "depth 2 (the bump is not visible) → exit 21" "$RC" 21
+has "says shallow" "shallow"
+git clone -q --branch main --depth 3 "file://$REMOTE_GIT" "$T/r$N/shallow3"
+run "$T/r$N/shallow3" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "depth 3 (the bump is the boundary, its parent hidden) → exit 21" "$RC" 21
+git clone -q --branch main --depth 4 "file://$REMOTE_GIT" "$T/r$N/shallow4"
+run "$T/r$N/shallow4" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "depth 4 (the commit before the bump is visible) → exit 0" "$RC" 0
+has "…on the bump commit" "commit=$(git -C "$W" rev-parse --short "$C2")"
+
+echo "== Version.swift: only a whole string literal counts (verify R3, Codex)"
+for init in '"1.0.0" + "-beta"' '"1.0.0".lowercased()' '"1.0.0"
+        + "-beta"'; do
+  new_repo; put "$W" Sources/S/Version.swift "enum V { static let version = $init }"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --expect 1.0.0
+  check "initializer [$init] → exit 21, not 1.0.0" "$RC" 21
+  check "…no remote tag" "$(git -C "$W" ls-remote --tags origin)" ""
+done
+new_repo; put "$W" Sources/S/Version.swift 'enum V {
+    // static let version = "0.9.0"
+    /* static let current = "0.8.0" */
+    static let version = "1.0.0" // shipped
+}'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --expect 1.0.0
+check "commented-out declarations are ignored, a trailing comment is fine → exit 0" "$RC" 0
+
+echo "== --at-bump: a commit whose sources cannot all be read (verify R3)"
+new_repo; plugin_json "$W" "" 1.0.0; put "$W" Sources/S/Version.swift 'enum V { static let version = "1.0.0" }'; commit "$W" base
+plugin_json "$W" "" 1.1.0; put "$W" Sources/S/Version.swift 'enum V { static let version = "1.1.0" }'; commit "$W" bump
+put "$W" Sources/S/Version.swift 'enum V { static var version: String { "1.1.0" } }'; commit "$W" computed
+put "$W" Sources/S/Version.swift 'enum V { static let version = "1.1.0" }'; commit "$W" fixed
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "readable sources there all equal the current version → cannot tell → exit 21" "$RC" 21
+new_repo; plugin_json "$W" "" 1.0.0; put "$W" Sources/S/Version.swift 'enum V { static var version: String { "1.0.0" } }'; commit "$W" old-format
+plugin_json "$W" "" 1.1.0; put "$W" Sources/S/Version.swift 'enum V { static let version = "1.1.0" }'; commit "$W" bump
+BUMP=$(git -C "$W" rev-parse HEAD); put "$W" c.txt 1; commit "$W" wip
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "a readable source there differs → the walk stops normally → exit 0" "$RC" 0
+has "…on the bump commit" "commit=$(git -C "$W" rev-parse --short "$BUMP")"
+
+echo "== values from the repository stay masked in messages (verify R3)"
+new_repo; put "$W" "Sources/a b c/Version.swift" 'enum V { static let version = "1.0.0"; static let current = "2.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v
+check "exit 21" "$RC" 21
+has "the directory name keeps its ? marks" "Sources/a?b?c/Version.swift"
+if printf '%s' "$OUT" | grep -qF 'Sources/a b c'; then bad "the directory name came back with spaces" "$OUT"; else ok "the directory name does not come back with spaces"; fi
+
+echo "== a --dir whose name has [ ] is read normally (verify R3)"
+new_repo; plugin_json "$W" "p[1]/" 1.0.0; commit "$W"
+run "$W" --dir "p[1]" --commit HEAD --name-style plugin --plugin p --dry-run
+check "exit 0" "$RC" 0
+
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
 run "$W" --dir . --name-style v;                                   check "missing --commit" "$RC" 2
