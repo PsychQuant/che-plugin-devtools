@@ -190,6 +190,104 @@ git -C "$W" remote set-url origin "$T/does-not-exist.git"
 run "$W" --dir . --commit HEAD --name-style v
 check "exit 30" "$RC" 30
 
+echo "== round 2 (#42 verify R1)"
+
+echo "== --expect agrees → tagged"
+new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --expect 1.2.3
+check "exit 0" "$RC" 0
+has "tag v1.2.3" "name=v1.2.3"
+
+echo "== --expect disagrees with the version files → 20, nothing created"
+new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --expect 1.2.4
+check "exit 20" "$RC" 20
+has "names the expected version" "1.2.4"
+check "no local tag" "$(git -C "$W" tag -l)" ""
+check "no remote tag" "$(git -C "$W" ls-remote --tags origin)" ""
+
+echo "== no version in the tree (version computed at build time) + --expect → tagged from --expect"
+new_repo; put "$W" Sources/S/BuildVersion.swift 'enum BuildVersion { static let value = "unknown" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --expect 1.5.0
+check "exit 0" "$RC" 0
+has "tag v1.5.0" "name=v1.5.0"
+has "source is --expect" "sources=--expect"
+
+echo "== Version.swift with no recognisable declaration is not a source"
+new_repo; put "$W" Sources/gfs/Version.swift 'struct Version: ParsableCommand {
+    func run() { print("gfh 0.3.1") }
+}'
+put "$W" mcpb/manifest.json '{ "version": "0.3.1" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v
+check "exit 0" "$RC" 0
+has "only the manifest counted" "sources=mcpb/manifest.json"
+
+echo "== a TAB in the hatch path cannot hide the real __version__ (verify R1 PoC, variant 2)"
+new_repo; plugin_json "$W" "" 1.0.0
+mkdir -p "$W/x"; printf '__version__ = "2.0.0"\n' > "$W/x/a	1.0.0"
+printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "x/a\\t1.0.0"\n' > "$W/pyproject.toml"
+commit "$W"
+run "$W" --dir . --commit HEAD --name-style v
+check "exit 21 (a hatch path outside [A-Za-z0-9._/-] is refused, so 1.0.0 cannot pass as agreed)" "$RC" 21
+check "no remote tag" "$(git -C "$W" ls-remote --tags origin)" ""
+
+echo "== a TAB in the hatch path cannot smuggle text into the tag name (verify R1 PoC, variant 1)"
+new_repo
+mkdir -p "$W/x"; printf '__version__ = "2.0.0"\n' > "$W/x/a	1.0.0;touch\${IFS}PWNED"
+printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "x/a\\t1.0.0;touch${IFS}PWNED"\n' > "$W/pyproject.toml"
+commit "$W"
+run "$W" --dir . --commit HEAD --name-style v
+if git -C "$W" ls-remote --tags origin | grep -q ';'; then bad "a tag containing ';' reached the remote"; else ok "no tag containing ';' on the remote"; fi
+if printf '%s' "$OUT" | grep -q ';touch'; then bad "output carries the injected text" "$OUT"; else ok "output does not carry the injected text"; fi
+check "exit 21 (refused)" "$RC" 21
+
+echo "== --at-bump: tag the commit that set the version, not later commits"
+new_repo; plugin_json "$W" "" 0.9.0; commit "$W" old
+plugin_json "$W" "" 1.0.0; commit "$W" bump
+BUMP=$(git -C "$W" rev-parse HEAD)
+put "$W" a.txt 1; commit "$W" wip1; put "$W" b.txt 2; commit "$W" wip2
+run "$W" --dir . --commit HEAD --name-style v --at-bump
+check "exit 0" "$RC" 0
+check "remote v1.0.0 points at the bump commit" "$(remote_commit "$W" v1.0.0)" "$BUMP"
+run "$W" --dir . --commit HEAD --name-style v --at-bump
+check "second run: exit 0 (exists)" "$RC" 0
+has "second run says exists" "RELEASE_TAG: exists name=v1.0.0"
+
+echo "== --at-bump with two sources bumped in different commits → the commit where they first agree"
+new_repo; plugin_json "$W" "" 1.0.0
+put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+[tool.hatch.version]
+path = "x/__init__.py"'
+put "$W" x/__init__.py '__version__ = "1.0.0"'; commit "$W" base
+plugin_json "$W" "" 1.1.0; commit "$W" half
+put "$W" x/__init__.py '__version__ = "1.1.0"'; commit "$W" full
+FULL=$(git -C "$W" rev-parse HEAD)
+put "$W" c.txt 3; commit "$W" later
+run "$W" --dir . --commit HEAD --name-style v --at-bump
+check "exit 0" "$RC" 0
+check "remote v1.1.0 points at the commit where both sources agree" "$(remote_commit "$W" v1.1.0)" "$FULL"
+
+echo "== --at-bump when the version never changed → the commit that introduced it"
+new_repo; plugin_json "$W" "" 2.0.0; commit "$W" first
+FIRST=$(git -C "$W" rev-parse HEAD)
+put "$W" d.txt 4; commit "$W" more
+run "$W" --dir . --commit HEAD --name-style v --at-bump
+check "exit 0" "$RC" 0
+check "remote v2.0.0 points at the first commit" "$(remote_commit "$W" v2.0.0)" "$FIRST"
+
+echo "== non-ASCII directory under Sources/ is still read"
+new_repo; put "$W" "Sources/版本/Version.swift" 'enum V { static let version = "0.5.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v
+check "exit 0" "$RC" 0
+has "tag v0.5.0" "name=v0.5.0"
+
+echo "== the annotated tag message names the repository, not the checkout directory"
+new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v
+OUT=$(git -C "$W" cat-file -p v1.2.3); has "tag object message is 'remote 1.2.3'" "remote 1.2.3"
+
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
 run "$W" --dir . --name-style v;                                   check "missing --commit" "$RC" 2
@@ -197,6 +295,7 @@ run "$W" --dir . --commit HEAD --name-style x;                     check "bad --
 run "$W" --dir . --commit HEAD --name-style plugin;                check "plugin style without --plugin" "$RC" 2
 run "$W" --dir . --commit HEAD --name-style plugin --plugin 'a b'; check "bad plugin name" "$RC" 2
 run "$W" --dir . --commit nope --name-style v;                     check "unknown commit" "$RC" 2
+run "$W" --dir . --commit HEAD --name-style v --expect 1.2;        check "--expect not x.y.z" "$RC" 2
 
 echo
 echo "release-tag: $PASS passed, $FAIL failed"
