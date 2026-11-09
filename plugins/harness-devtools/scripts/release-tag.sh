@@ -64,8 +64,10 @@
 #                                                        is not a source. Every such `version:` in
 #                                                        the file counts, so one that is not the
 #                                                        package version (a response field, say)
-#                                                        stops the run with 20: give it a named
-#                                                        constant or move it out of Server.swift
+#                                                        stops the run: 20 when it is the only
+#                                                        one, 21 when it sits next to the real
+#                                                        one. Give it a named constant or move
+#                                                        it out of Server.swift
 #   A JSON source (1, 4, 6) without a "version" field is not a source. The Swift
 #   sources are read with comments removed; block comments nest.
 #
@@ -164,13 +166,18 @@ SWIFT_VALUE = re.compile(r'\bstatic\s+(?:let|var)\s+(?:version|current)\s*(?::\s
 
 def swift_code(text):
     """Swift source with // and /* */ comments removed. String literals are skipped
-    while scanning, so a URL inside a string is not taken for a comment (#42 verify R4)."""
+    while scanning, so a URL inside a string is not taken for a comment (#42 verify R4).
+    A multi-line (triple-quoted) string keeps its delimiters and line breaks but its text becomes
+    blanks: text that looks like a version declaration inside it is not code (#42
+    verify R8), and a version written as a multi-line string is still not a plain
+    literal."""
     out, i, n = [], 0, len(text)
     while i < n:
         if text.startswith('"""', i):
             j = text.find('"""', i + 3)
-            j = n if j < 0 else j + 3
-            out.append(text[i:j]); i = j
+            end = n if j < 0 else j
+            out.append('"""' + re.sub(r"[^\n]", " ", text[i + 3:end]) + ('"""' if j >= 0 else ""))
+            i = n if j < 0 else j + 3
         elif text[i] == '"':
             j = i + 1
             while j < n and text[j] not in '"\n':
@@ -306,9 +313,11 @@ def read_sources(commit):
         if r.returncode != 0:
             return None, "file not found at this commit"
         try:
-            return r.stdout.decode("utf-8"), None
+            text = r.stdout.decode("utf-8")
         except UnicodeDecodeError:
             return None, "not UTF-8, so hatchling cannot read it either"
+        # open() in text mode also turns \r\n and a lone \r into \n (#42 verify R8)
+        return text.replace("\r\n", "\n").replace("\r", "\n"), None
 
     def listed(rel_dir):
         r = git("ls-tree", "-r", "-z", "--name-only", commit, "--", prefix + rel_dir)
@@ -331,7 +340,7 @@ def read_sources(commit):
             return False
         try:
             data = json.loads(text.lstrip("\ufeff"))
-        except ValueError:
+        except (ValueError, RecursionError):
             problems.append(f"{name}: not valid JSON"); return True
         if isinstance(data, dict) and "version" in data:
             add(name, data["version"], rel)
@@ -349,7 +358,7 @@ def read_sources(commit):
         else:
             try:
                 doc = tomllib.loads(pp)
-            except tomllib.TOMLDecodeError:
+            except (tomllib.TOMLDecodeError, RecursionError):
                 problems.append("pyproject.toml: not valid TOML"); doc = None
             if doc is not None:
                 proj = doc.get("project", {}) if isinstance(doc.get("project"), dict) else {}
@@ -571,7 +580,7 @@ if [ "$DRY" = 1 ]; then
   exit 0
 fi
 
-RETRY="git -C $(printf '%q' "$TOP") push $REMOTE refs/tags/$NAME"
+RETRY="git -C $(printf '%q' "$TOP") push --no-follow-tags $REMOTE refs/tags/$NAME"
 push_failed() {
   echo "RELEASE_TAG: push-failed $LINE_TAIL"
   echo "$PROG: $1" >&2
@@ -610,7 +619,9 @@ if [ -z "$LOCAL_AT" ]; then
   git -C "$TOP" tag -a "$NAME" -m "$LABEL $VERSION" "$TARGET" \
     || { echo "RELEASE_TAG: push-failed $LINE_TAIL"; echo "$PROG: git tag failed" >&2; exit 30; }
 fi
-git -C "$TOP" push "$REMOTE" "refs/tags/$NAME" >&2 || push_failed "git push of $NAME to '$REMOTE' failed"
+# --no-follow-tags: an explicit refspec does not switch off push.followTags, which would
+# also send every other local annotated tag reachable from this one (#42 verify R8)
+git -C "$TOP" push --no-follow-tags "$REMOTE" "refs/tags/$NAME" >&2 || push_failed "git push of $NAME to '$REMOTE' failed"
 AFTER=$(remote_target) || push_failed "cannot read $NAME back from '$REMOTE'"
 [ "$AFTER" = "$TARGET" ] || push_failed "$NAME is not on '$REMOTE' at $SHORT after the push"
 echo "RELEASE_TAG: tagged $LINE_TAIL"

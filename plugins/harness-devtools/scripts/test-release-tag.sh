@@ -184,7 +184,7 @@ printf '#!/bin/sh\nexit 1\n' > "$T/r$N/remote.git/hooks/pre-receive"; chmod +x "
 run "$W" --dir . --commit HEAD --name-style v
 check "exit 30" "$RC" 30
 has "push-failed line" "RELEASE_TAG: push-failed name=v1.2.3"
-has "retry command" "push origin refs/tags/v1.2.3"
+has "retry command" "push --no-follow-tags origin refs/tags/v1.2.3"
 check "local tag kept for retry" "$(git -C "$W" tag -l)" v1.2.3
 
 echo "== unreachable remote → 30"
@@ -629,6 +629,56 @@ echo "== a UTF-8 BOM in a JSON source (verify R6)"
 new_repo; put "$W" .claude-plugin/plugin.json "$(printf '\xef\xbb\xbf{ "name": "p", "version": "1.0.0" }')"; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run
 check "exit 0" "$RC" 0
+
+echo "== push.followTags=true does not carry other local tags along (verify R8, Codex)"
+new_repo; plugin_json "$W" "" 1.0.0; commit "$W"
+git -C "$W" tag -a v1.0.0-preview -m preview HEAD
+git -C "$W" config push.followTags true
+run "$W" --dir . --commit HEAD --name-style v
+check "exit 0" "$RC" 0
+check "v1.0.0 reached the remote" "$(remote_commit "$W" v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
+check "…and the unpushed v1.0.0-preview did not" "$(git -C "$W" ls-remote --tags origin refs/tags/v1.0.0-preview)" ""
+
+echo "== hatch reads the version file with universal newlines, like open() (verify R8)"
+hatch_repo "$(printf '__version__ = "1.0.0"\r')" "pattern = '^__version__ = \"(?P<version>[^\"]+)\"\$'"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "CRLF file, pattern ending in \$ → exit 0" "$RC" 0
+has "…version 1.0.0" "version=1.0.0"
+hatch_repo "$(printf '# x\r__version__ = "1.0.0"\r')" "pattern = '^__version__ = \"(?P<version>[^\"]+)\"\$'"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "lone CR line ends → exit 0" "$RC" 0
+
+echo "== a Swift multi-line string is not code (verify R8, Codex)"
+new_repo
+put "$W" Sources/S/Version.swift 'enum V {
+    static let version = "1.0.0"
+    static let doc = """
+    static let version = "0.9.0"
+    """
+}'
+put "$W" Sources/S/Server.swift 'let s = Server(name: "s", version: "1.0.0")
+let help = """
+Server(name: "old", version: "0.9.0")
+"""'
+commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "declarations inside \"\"\" … \"\"\" do not count → exit 0" "$RC" 0
+has "…version 1.0.0" "version=1.0.0"
+new_repo; put "$W" Sources/S/Version.swift 'enum V { static let version = """
+1.0.0
+""" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a version declared as a multi-line string is still not a plain literal → exit 21" "$RC" 21
+
+echo "== deeply nested JSON or TOML is a problem line, not a traceback (verify R8)"
+new_repo; put "$W" package.json "$(printf '%*s' 200000 '' | tr ' ' '[')"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "package.json nested 200000 deep → exit 21" "$RC" 21
+if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
+new_repo; put "$W" pyproject.toml "x = $(printf '%*s' 5000 '' | tr ' ' '[')"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "pyproject.toml nested 5000 deep → exit 21" "$RC" 21
+if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
 
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
