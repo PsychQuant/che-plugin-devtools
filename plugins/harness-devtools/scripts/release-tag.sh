@@ -22,10 +22,16 @@
 #                 version source at all (the version is computed at build time),
 #                 the tag uses this value.
 #   --at-bump     tag the commit that set the version, not --commit itself:
-#                 walking back from --commit over commits that touch a version
-#                 source, the oldest commit of the run in which every source
-#                 already equals the current version (plugin-update,
-#                 plugin-deploy). Without it the tag goes on --commit.
+#                 walking back from --commit over commits that touch any path of
+#                 the closed list below (deleted ones included), the oldest commit
+#                 of the run in which every source already equals the current
+#                 version (plugin-update, plugin-deploy). Without it the tag goes
+#                 on --commit. When that commit cannot be determined — the newest
+#                 candidate already disagrees, or the walk reaches its limit
+#                 (500 commits; RELEASE_TAG_MAX_WALK overrides it for tests) —
+#                 the run is unreadable (21): a guessed commit is never tagged.
+#                 Later commits that change --dir are counted in a note, since
+#                 the tag will not include them.
 #   --dry-run     resolve the version and print the decision line; create nothing
 #
 # Version sources — a CLOSED list of seven, read relative to --dir. Do not add an
@@ -34,12 +40,24 @@
 #   1. .claude-plugin/plugin.json or plugin.json         "version"
 #   2. pyproject.toml                                    [project].version (static)
 #   3. pyproject.toml dynamic version                    [tool.hatch.version].path → __version__ = "x.y.z"
+#      (2 and 3 need python3 >= 3.11 for tomllib: with an older python3 first on
+#      PATH — /usr/bin/python3 on macOS is 3.9 — any pyproject.toml makes the run
+#      unreadable; #48)
 #   4. package.json                                      "version" (absent → not a source)
-#   5. Sources/*/Version.swift                           static let version|current = "x.y.z"
-#                                                        (no such declaration → not a source)
+#   5. Sources/*/Version.swift                           static let|var version|current [: String] = "x.y.z"
+#                                                        (no such declaration → not a source; a
+#                                                        declaration that is not a string literal
+#                                                        → unreadable)
 #   6. mcpb/manifest.json                                "version"
 #   7. Sources/*/Server.swift                            version: "x.y.z" (none → not a source;
 #                                                        two different values → unreadable)
+#
+# The version must also make a valid git tag name (`git check-ref-format`), which
+# is checked before anything is created, so --dry-run and a real run agree.
+#
+# Runs under bash 3.2 (/bin/bash on macOS): the Python below is read into a
+# variable from a top-level heredoc, because bash 3.2 mis-parses a heredoc inside
+# $( … ) whose text has quotes in it (#42 verify R2).
 #
 # Output: one decision line on stdout, details on stderr:
 #   RELEASE_TAG: <status> name=<tag> commit=<short> version=<x.y.z> sources=<a,b,…>
@@ -107,12 +125,22 @@ SHA=$(git -C "$TOP" rev-parse -q --verify "${COMMIT}^{commit}" 2>/dev/null) || d
 # value from the repository (a path in pyproject.toml, a file name) must never be
 # able to add a field or a line — that is how a TAB in a hatch path once became
 # the tag name (#42 verify R1).
-SOURCES_OUT=$(python3 -I - "$TOP" "$SHA" "$PREFIX" "$AT_BUMP" <<'PY'
+MAX_WALK=${RELEASE_TAG_MAX_WALK:-500}
+case "$MAX_WALK" in ''|*[!0-9]*|0) MAX_WALK=500 ;; esac
+# Read into a variable from a TOP-LEVEL heredoc, then run with -c: bash 3.2 cannot
+# parse a heredoc inside $( … ) when its text contains quotes (#42 verify R2).
+IFS= read -r -d '' PYSRC <<'PY' || true
 import json, re, subprocess, sys
 
 top, sha, prefix, at_bump = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
-SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$")
-MAX_WALK = 500
+MAX_WALK = int(sys.argv[5])
+SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?")   # used with fullmatch: no trailing newline
+# Version.swift: the declaration, and the declaration with a string-literal value
+SWIFT_DECL = re.compile(r'\bstatic\s+(?:let|var)\s+(?:version|current)\b')
+SWIFT_VALUE = re.compile(r'\bstatic\s+(?:let|var)\s+(?:version|current)\s*(?::\s*String\s*)?=\s*"([^"]+)"')
+# every path of the closed list, for the --at-bump walk (a deleted source counts too)
+SOURCE_SPECS = [".claude-plugin/plugin.json", "plugin.json", "pyproject.toml", "package.json",
+                "mcpb/manifest.json", "Sources/*/Version.swift", "Sources/*/Server.swift"]
 
 def safe(s):
     return re.sub(r"[^A-Za-z0-9._/:@+-]", "?", str(s))
@@ -137,7 +165,7 @@ def read_sources(commit):
         return [p[len(prefix):] for p in r.stdout.split("\0") if p]
 
     def add(name, value, rel):
-        if isinstance(value, str) and SEMVER.match(value):
+        if isinstance(value, str) and SEMVER.fullmatch(value):
             found.append((name, value)); paths.append(prefix + rel)
         else:
             problems.append(f"{safe(name)}: version {safe(value)!r} is not x.y.z")
@@ -198,13 +226,20 @@ def read_sources(commit):
         if len(parts) != 3:
             continue
         if parts[2] == "Version.swift":
-            vals = sorted(set(re.findall(r'static\s+let\s+(?:version|current)\s*=\s*"([^"]+)"', show(path) or "")))
+            text = show(path) or ""
+            literals = SWIFT_VALUE.findall(text)
+            vals = sorted(set(literals))
             if len(vals) > 1:
                 problems.append(f"{safe(path)}: several different versions {[safe(v) for v in vals]}")
+            elif len(SWIFT_DECL.findall(text)) > len(literals):
+                # a version/current declaration whose value is not a string literal:
+                # skipping it would let --expect stand in for a version the file
+                # does state (#42 verify R2)
+                problems.append(f"{safe(path)}: declares version/current but not as a string literal")
             elif vals:
                 add(safe(path), vals[0], path)
             else:
-                notes.append(f"{safe(path)}: no static let version/current declaration — not a version source")
+                notes.append(f"{safe(path)}: no static version/current declaration — not a version source")
         elif parts[2] == "Server.swift":
             vals = sorted(set(v for v in re.findall(r'\bversion:\s*"([^"]+)"', show(path) or "")
                               if re.match(r"^[0-9]+\.[0-9]+", v)))
@@ -224,26 +259,42 @@ for p in problems:
 for n in notes:
     print(f"NOTE\t{safe(n).replace('?', ' ')}")
 
-# --at-bump: walk back over commits that touch a source; the release commit is the
-# oldest commit of the newest run in which every source equals the current version.
+# --at-bump: walk back over commits that touch any path of the closed list (deleted
+# sources included — a commit that drops a stale source can be the one where the
+# rest first agree); the release commit is the oldest commit of the newest run in
+# which every source equals the current version. When that cannot be determined
+# the run stops: a guessed commit would get a permanent tag (#42 verify R2).
 values = {v for _, v in found}
 if at_bump and found and not problems and len(values) == 1:
     current = next(iter(values))
-    r = git("rev-list", f"--max-count={MAX_WALK}", sha, "--", *paths)
+    specs = list(dict.fromkeys([prefix + s for s in SOURCE_SPECS] + paths))
+    r = git("rev-list", f"--max-count={MAX_WALK + 1}", sha, "--", *specs)
     candidates = r.stdout.split() if r.returncode == 0 else []
-    release = sha
+    release, stopped = None, False
     for c in candidates:
         f2, p2, _, _ = read_sources(c)
         if f2 and not p2 and {v for _, v in f2} == {current}:
             release = c
         else:
+            stopped = True
             break
+    if r.returncode != 0:
+        print(f"PROBLEM\tcannot walk the history of the version sources")
+    elif not stopped and len(candidates) > MAX_WALK:
+        print(f"PROBLEM\t--at-bump reached its walk limit of {MAX_WALK} commits without finding where {safe(current)} was set; not tagging a guess")
+    elif release is None:
+        print(f"PROBLEM\t--at-bump cannot find the commit that set {safe(current)}; not tagging a guess")
     else:
-        if len(candidates) >= MAX_WALK:
-            print(f"NOTE\tstopped after {MAX_WALK} commits; tagging the oldest one checked")
-    print(f"RELEASE\t{release}")
+        print(f"RELEASE\t{release}")
+        if release != sha:
+            later = git("rev-list", "--count", f"{release}..{sha}", "--", prefix or ".")
+            n = later.stdout.strip() if later.returncode == 0 else "?"
+            if n != "0":
+                where = safe(prefix.rstrip("/")) if prefix else "the repository"
+                print(f"NOTE\tthe tag goes on {release[:7]}, where {safe(current)} was set; commits after the tagged one that change {where}: {safe(n)}")
 PY
-) || { echo "RELEASE_TAG: unreadable name=? commit=$(git -C "$TOP" rev-parse --short "$SHA") version=? sources=?"; echo "$PROG: python3 failed while reading versions" >&2; exit 21; }
+SOURCES_OUT=$(python3 -I -c "$PYSRC" "$TOP" "$SHA" "$PREFIX" "$AT_BUMP" "$MAX_WALK") \
+  || { echo "RELEASE_TAG: unreadable name=? commit=$(git -C "$TOP" rev-parse --short "$SHA") version=? sources=?"; echo "$PROG: python3 failed while reading versions" >&2; exit 21; }
 
 field() { printf '%s\n' "$SOURCES_OUT" | awk -F'\t' -v k="$1" -v c="$2" '$1==k{print $c}'; }
 SOURCES=$(field SOURCE 2 | paste -sd, -)
@@ -293,6 +344,10 @@ case "$STYLE" in
   plugin) NAME="$PLUGIN-v$VERSION" ;;
 esac
 case "$NAME" in *[!A-Za-z0-9._+-]*) echo "RELEASE_TAG: unreadable name=? commit=$SHORT version=? sources=$SOURCES"; echo "$PROG: tag name has unexpected characters" >&2; exit 21 ;; esac
+# git's own rules (no `..`, no trailing `.` or `.lock`, …): checked here so that
+# --dry-run fails the same way the real run would (#42 verify R2)
+git check-ref-format "refs/tags/$NAME" \
+  || { echo "RELEASE_TAG: unreadable name=? commit=$SHORT version=$VERSION sources=$SOURCES"; echo "$PROG: $NAME is not a valid git tag name" >&2; exit 21; }
 # the annotated tag's message names the repository (from the remote URL), not the
 # checkout directory — a worktree directory is called idd-42 (#42 verify R1)
 if [ -n "$PLUGIN" ]; then

@@ -33,7 +33,10 @@ put() { mkdir -p "$(dirname "$1/$2")"; printf '%s\n' "$3" > "$1/$2"; }
 commit() { git -C "$1" add -A && git -C "$1" commit -qm "${2:-c}" && git -C "$1" push -q origin main 2>/dev/null; }
 run() {   # run <work> [helper args...]; sets OUT and RC
   local w="$1"; shift
-  OUT=$(cd "$w" && bash "$HELPER" "$@" 2>&1); RC=$?
+  # RT_BASH picks the bash that runs the helper; the suite reruns itself with /bin/bash
+  # (3.2 on macOS) at the end, because that is the bash `bash "$HELPER"` meets on a Mac
+  # without Homebrew bash first on PATH (#42 verify R2)
+  OUT=$(cd "$w" && "${RT_BASH:-bash}" "$HELPER" "$@" 2>&1); RC=$?
 }
 remote_commit() { git -C "$1" ls-remote --tags origin "refs/tags/$2^{}" | cut -f1; }
 plugin_json() { put "$1" "${2:-}.claude-plugin/plugin.json" "{ \"name\": \"p\", \"version\": \"$3\" }"; }
@@ -249,6 +252,7 @@ put "$W" a.txt 1; commit "$W" wip1; put "$W" b.txt 2; commit "$W" wip2
 run "$W" --dir . --commit HEAD --name-style v --at-bump
 check "exit 0" "$RC" 0
 check "remote v1.0.0 points at the bump commit" "$(remote_commit "$W" v1.0.0)" "$BUMP"
+has "notes the later commits the tag does not include" "commits after the tagged one that change the repository: 2"
 run "$W" --dir . --commit HEAD --name-style v --at-bump
 check "second run: exit 0 (exists)" "$RC" 0
 has "second run says exists" "RELEASE_TAG: exists name=v1.0.0"
@@ -288,6 +292,56 @@ new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v
 OUT=$(git -C "$W" cat-file -p v1.2.3); has "tag object message is 'remote 1.2.3'" "remote 1.2.3"
 
+echo "== --at-bump follows a commit that deleted a version source (verify R2, Codex)"
+new_repo; plugin_json "$W" "" 1.0.0; put "$W" package.json '{ "version": "1.0.0" }'; commit "$W" base
+plugin_json "$W" "" 2.0.0; commit "$W" half
+rm "$W/package.json"; commit "$W" drop
+DROP=$(git -C "$W" rev-parse HEAD)
+put "$W" e.txt 5; commit "$W" unrelated
+run "$W" --dir . --commit HEAD --name-style v --at-bump
+check "exit 0" "$RC" 0
+check "remote v2.0.0 points at the commit where the sources first agree (the deletion)" "$(remote_commit "$W" v2.0.0)" "$DROP"
+
+echo "== --at-bump refuses to guess when the walk limit is reached (verify R2)"
+new_repo; plugin_json "$W" "" 1.0.0; commit "$W" first
+for i in 1 2 3 4; do put "$W" .claude-plugin/plugin.json "{ \"name\": \"p$i\", \"version\": \"1.0.0\" }"; commit "$W" "rename $i"; done
+OUT=$(cd "$W" && RELEASE_TAG_MAX_WALK=3 "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --at-bump 2>&1); RC=$?
+check "exit 21" "$RC" 21
+has "says why" "walk limit"
+check "no remote tag" "$(git -C "$W" ls-remote --tags origin)" ""
+OUT=$(cd "$W" && RELEASE_TAG_MAX_WALK=9 "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --at-bump 2>&1); RC=$?
+check "within the limit: exit 0" "$RC" 0
+check "within the limit: tag on the first commit" "$(remote_commit "$W" v1.0.0)" "$(git -C "$W" rev-list --max-parents=0 HEAD)"
+
+echo "== Version.swift with a type annotation, an access modifier or var is a source (verify R2, Codex)"
+new_repo; put "$W" Sources/S/Version.swift 'public enum V { public static let version: String = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --expect 2.0.0
+check "the file says 1.0.0, the release is 2.0.0 → exit 20" "$RC" 20
+has "names the Swift source" "Sources/S/Version.swift"
+check "no remote tag" "$(git -C "$W" ls-remote --tags origin)" ""
+run "$W" --dir . --commit HEAD --name-style v --expect 1.0.0
+check "agreeing release → exit 0" "$RC" 0
+new_repo; put "$W" Sources/S/Version.swift 'enum V { static var current = "3.1.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v
+check "static var current → exit 0" "$RC" 0
+has "tag v3.1.0" "name=v3.1.0"
+
+echo "== a version declaration that is not a string literal → unreadable, not ignored (verify R2)"
+new_repo; put "$W" Sources/S/Version.swift 'enum V { static let version = Bundle.main.shortVersion }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --expect 1.0.0
+check "exit 21 (no fallback to --expect)" "$RC" 21
+check "no remote tag" "$(git -C "$W" ls-remote --tags origin)" ""
+
+echo "== versions git refuses as a tag name are refused before tagging, dry-run included (verify R2)"
+for bad_v in '1.0.0-a..b' '1.0.0-x.lock' '1.0.0-rc.'; do
+  new_repo; plugin_json "$W" "" "$bad_v"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run
+  check "$bad_v: dry-run exit 21" "$RC" 21
+done
+new_repo; put "$W" .claude-plugin/plugin.json '{ "name": "p", "version": "1.0.0\n" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a version with a trailing newline → exit 21" "$RC" 21
+
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
 run "$W" --dir . --name-style v;                                   check "missing --commit" "$RC" 2
@@ -297,6 +351,21 @@ run "$W" --dir . --commit HEAD --name-style plugin --plugin 'a b'; check "bad pl
 run "$W" --dir . --commit nope --name-style v;                     check "unknown commit" "$RC" 2
 run "$W" --dir . --commit HEAD --name-style v --expect 1.2;        check "--expect not x.y.z" "$RC" 2
 
+echo "== the helper parses under every bash it can meet (verify R2: /bin/bash is 3.2 on macOS)"
+for b in /bin/bash bash; do
+  command -v "$b" >/dev/null 2>&1 || continue
+  if ERR=$("$b" -n "$HELPER" 2>&1); then ok "$b -n ($("$b" -c 'echo $BASH_VERSION'))"; else bad "$b -n fails" "$ERR"; fi
+done
+if [ -z "${RT_BASH:-}" ] && [ -x /bin/bash ] \
+   && [ "$(/bin/bash -c 'echo $BASH_VERSION')" != "$(bash -c 'echo $BASH_VERSION')" ]; then
+  echo "== the whole suite again, the helper run by /bin/bash $(/bin/bash -c 'echo $BASH_VERSION')"
+  if RT_BASH=/bin/bash bash "${BASH_SOURCE[0]}" > "$T/system-bash.log" 2>&1; then
+    ok "every case passes under /bin/bash ($(tail -1 "$T/system-bash.log"))"
+  else
+    bad "cases fail under /bin/bash: $(tail -1 "$T/system-bash.log")" "$(grep '✗' "$T/system-bash.log")"
+  fi
+fi
+
 echo
-echo "release-tag: $PASS passed, $FAIL failed"
+echo "release-tag${RT_BASH:+ (helper under $RT_BASH)}: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
