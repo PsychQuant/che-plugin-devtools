@@ -36,9 +36,10 @@ TaskCreate(name="mcp_binary_check", description="Step 2.5: 若是 MCP plugin，�
 TaskCreate(name="readme_freshness_gate", description="Step 2.6: README 是否跟上 plugin.json 版本 / 新工具；minor/major bump stale → BLOCK")
 TaskCreate(name="present_checklist", description="Step 3: 顯示結果，讓使用者決定繼續或修問題")
 TaskCreate(name="fix_issues", description="Step 4: 若使用者選修問題，處理 README/LICENSE/hooks 等")
-TaskCreate(name="version_bump", description="Step 5: patch/minor/major bump plugin.json + marketplace.json")
+TaskCreate(name="version_bump", description="Step 5: patch/minor/major bump plugin.json + marketplace.json + plugin 目錄下套件自己的版本檔（封閉列舉見 Step 5）")
 TaskCreate(name="update_marketplace_json", description="Step 6: 同步 marketplace.json 確認 version / description")
 TaskCreate(name="commit_and_push", description="Step 7: git add + commit + push")
+TaskCreate(name="tag_release", description="Step 7.5 (#42): push 後呼叫 scripts/release-tag.sh 打版號 tag 並推送；沒打成不中止，結果寫進 Step 9 回報")
 TaskCreate(name="sync_and_reload", description="Step 8: claude plugin marketplace update + plugin update")
 TaskCreate(name="verify", description="Step 9: claude plugin list 驗證版本")
 ```
@@ -342,9 +343,17 @@ binary 對應的獨立 repo（如 `PsychQuant/che-word-mcp`）才是使用者主
 4. 自訂版本號
 ```
 
-更新兩個地方的版本號：
+更新版本號：
 1. `plugins/{name}/.claude-plugin/plugin.json` 的 `version`
 2. `.claude-plugin/marketplace.json` 中對應 plugin 的 `version`
+3. plugin 目錄下**套件自己的版本**——plugin 目錄裡有下列任何一個檔案，就要一起改成同一個版本（封閉列舉，與 `scripts/release-tag.sh` 認得的來源同一份，#42）：
+   - `pyproject.toml` 的 `[project].version`；版本是 `dynamic` 時，改 `[tool.hatch.version].path` 指到的檔案裡的 `__version__`
+   - `package.json` 的 `version`
+   - `Sources/*/Version.swift` 的 `static let version` / `static let current`
+   - `mcpb/manifest.json` 的 `version`
+   - `Sources/*/Server.swift` 的 `version: "…"`
+
+   漏改任何一個，Step 7.5 會因版本不一致而不打 tag。
 
 ### Step 6: Update marketplace.json
 
@@ -361,6 +370,23 @@ git add "plugins/{plugin-name}" ".claude-plugin/marketplace.json"
 git commit -m "release: {plugin-name} v{new_version} — {簡述變更}"
 git push origin main
 ```
+
+### Step 7.5: 版號 tag（#42）
+
+push 成功後，在推送出去的 HEAD 打版號 tag 並推上去。規則與 `plugin-update` Phase 2.7 相同，實作只有一份 `scripts/release-tag.sh`：版本從 commit 的內容讀，Step 5 列的來源全部一致才打；同名 tag 已在別的 commit（沒升版號）時不打、不移動；推送失敗印出重跑指令。tag 名稱：marketplace.json 只列一個 plugin → `v{version}`，否則 `{plugin-name}-v{version}`。
+
+```bash
+cd "$MARKETPLACE_ROOT" || exit 1
+PLUGIN_NAME='{plugin-name}'
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || { echo "⚠ Step 7.5: 沒有 upstream — 沒有打 tag"; exit 0; }
+[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: HEAD 不等於 ${UPSTREAM}（Step 7 沒推成功？）— 沒有打 tag"; exit 0; }
+N_PLUGINS=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len([p for p in (d.get("plugins") or []) if isinstance(p, dict)]))' .claude-plugin/marketplace.json 2>/dev/null) || N_PLUGINS=""
+if [ "$N_PLUGINS" = 1 ]; then STYLE_ARGS=(--name-style v); else STYLE_ARGS=(--name-style plugin --plugin "$PLUGIN_NAME"); fi
+bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh" --dir "plugins/$PLUGIN_NAME" --commit HEAD --remote "${UPSTREAM%%/*}" "${STYLE_ARGS[@]}"
+echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 沒升版號；20/21 版本不一致或讀不出；30 推送失敗，見上方重跑指令）"
+```
+
+tag 沒打成（10／20／21／30）不中止，繼續 Step 8，並把結果寫進 Step 9 的回報。
 
 ### Step 8: Sync & Reload
 
@@ -385,6 +411,7 @@ claude plugin list | grep {plugin-name}
 
 - marketplace.json ✅ 已更新
 - git push ✅ 已推送
+- 版號 tag {Step 7.5 的結果：已打 / 已存在 / 沒升版號 / 版本不一致 / 推送失敗（附重跑指令）}
 - plugin cache ✅ 已同步
 - 安裝版本 ✅ 已更新
 
