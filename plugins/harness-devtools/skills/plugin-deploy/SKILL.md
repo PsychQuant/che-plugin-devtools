@@ -351,7 +351,7 @@ binary 對應的獨立 repo（如 `PsychQuant/che-word-mcp`）才是使用者主
    - `package.json` 的 `version`
    - `Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
    - `mcpb/manifest.json` 的 `version`
-   - `Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓版本判成不一致而停下：改成具名常數，或移出 Server.swift）
+   - `Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）
 
    漏改任何一個，Step 7.5 會因版本不一致而不打 tag。
 
@@ -409,7 +409,7 @@ DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("
 [ -n "$DEFAULT" ] && [ "$UPSTREAM_BRANCH" = "$DEFAULT" ] || { echo "⚠ Step 7.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是 $REMOTE 的預設 branch（${DEFAULT:-?}）— 沒有打 tag"; exit 0; }
 # @{u} 是本機記錄的位置；remote 上那個 branch 實際指向哪裡要問 remote（#42 verify 第 7 輪）
 LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
-[ -n "$LIVE" ] && [ "$LIVE" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期）— git fetch 確認後重跑；沒有打 tag"; exit 0; }
+[ -n "$LIVE" ] && [ "$LIVE" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）— git pull 後重跑這一步，--at-bump 仍會打在升版號的 commit；沒有打 tag"; exit 0; }
 bash "$HELPER" --dir "plugins/$PLUGIN_NAME" --commit HEAD --at-bump --remote "$REMOTE" --name-style plugin --plugin "$PLUGIN_NAME"
 echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 同名 tag 在別的 commit；20/21 版本不一致或讀不出；30 推送失敗或 push URL 指向別的 repo，見上方的原因）"
 ```

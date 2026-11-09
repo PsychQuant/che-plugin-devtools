@@ -73,7 +73,7 @@ echo "Binary: $BINARY_NAME"
 - `Sources/*/Version.swift` — 更新版本字串
 - 其他可能的位置由 Step 0.3 決定
 
-Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`）、`Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓版本判成不一致而停下：改成具名常數，或移出 Server.swift）、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（或 hatch `path` 指到的檔案，照 hatch 自己的讀法）、`.claude-plugin/plugin.json` 或根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。Phase 3 Step 1 會把清單裡改過的檔案都 stage 進 release commit；改了 hatch `path` 指到的檔案時，那個檔案要自己 `git add`。
+Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`）、`Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（或 hatch `path` 指到的檔案，照 hatch 自己的讀法）、`.claude-plugin/plugin.json` 或根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。Phase 3 Step 1 會把清單裡改過的檔案都 stage 進 release commit；改了 hatch `path` 指到的檔案時，那個檔案要自己 `git add`。
 
 ### Step 2: 更新 CHANGELOG.md
 
@@ -242,8 +242,9 @@ lipo -info .release/$BINARY_NAME
 # Phase 3 Step 1: stage Phase 1 改過的檔案——CHANGELOG、README，以及 Step 1.5 會讀的版本來源（封閉列舉，
 # 與 Phase 1 Step 1 同一份），只限已追蹤且有修改的；untracked 的只收 CHANGELOG.md（Phase 1 Step 2 可能新建它）。
 # 原本就存在、與這次無關的 untracked package.json 之類不會被收進來。不存在的路徑不會報錯
-# （#42 verify 第 2–4 輪：原本只 stage Version.swift 與 CHANGELOG.md，其他來源的改動沒進 commit）
-{ git -c core.quotePath=false ls-files -m -- CHANGELOG.md README.md 'Sources/*/Version.swift' 'Sources/*/Server.swift' \
+# （#42 verify 第 2–4 輪：原本只 stage Version.swift 與 CHANGELOG.md，其他來源的改動沒進 commit）。
+# :(glob)：pathspec 的 * 預設會跨過 /，Sources/A/B/Version.swift 不是版本來源（#42 verify 第 8 輪）
+{ git -c core.quotePath=false ls-files -m -- CHANGELOG.md README.md ':(glob)Sources/*/Version.swift' ':(glob)Sources/*/Server.swift' \
       mcpb/manifest.json package.json pyproject.toml .claude-plugin/plugin.json plugin.json
   git -c core.quotePath=false ls-files -o --exclude-standard -- CHANGELOG.md; } \
   | while IFS= read -r f; do git add -- "$f"; done
@@ -281,7 +282,7 @@ BRANCH=$(git branch --show-current)
 REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
 case "$REMOTE" in ''|.) echo "✗ Step 1.5: $BRANCH 沒有指向 remote 的 upstream — 先 git push -u <remote> $BRANCH 再重跑這一步"; exit 1 ;; esac
 git remote | grep -qxF -- "$REMOTE" || { echo "✗ Step 1.5: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 停止，不建 release"; exit 1; }
-[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 1.5: HEAD 還沒推到 upstream（Step 1 沒推成功？）— 停止，不建 release"; exit 1; }
+[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 1.5: HEAD 與 upstream 不同（Step 1 沒推成功，或 fetch 之後 upstream 已經前進）— 停止，不建 release"; exit 1; }
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
 DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
@@ -290,7 +291,7 @@ fi
 # @{u} 是本機記錄的位置；remote 上那個 branch 實際指向哪裡要問 remote（#42 verify 第 7 輪）
 LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
 if [ -z "$LIVE" ] || [ "$LIVE" != "$(git rev-parse HEAD)" ]; then
-    echo "✗ Step 1.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）— git fetch 確認後重跑這一步；停止，不建 release"; exit 1
+    echo "✗ Step 1.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD：有人在 release commit 之後推了 commit，或 remote 被改寫。不要 pull 之後重跑這一步——這一步打在 HEAD，tag 會落在別人的 commit；先確認要發的是哪一個 commit。停止，不建 release"; exit 1
 fi
 OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \

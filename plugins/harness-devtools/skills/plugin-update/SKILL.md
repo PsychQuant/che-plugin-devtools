@@ -2004,7 +2004,7 @@ fi
 # (2b) @{u} 是本機記錄的位置；remote 上那個 branch 實際指向哪裡要問 remote（#42 verify 第 7 輪）
 LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
 if [ -z "$LIVE" ] || [ "$LIVE" != "$(git rev-parse HEAD)" ]; then
-    echo "→ Phase 2.7: skipped — $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）"; audit "skipped (the remote branch is not at HEAD)"; exit 0
+    echo "→ Phase 2.7: skipped — $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）；git pull 後重跑 plugin-update，--at-bump 仍會打在升版號的 commit"; audit "skipped (the remote branch is not at HEAD)"; exit 0
 fi
 # (3) plugin 目錄與 marketplace 是同一個 git repo
 if [ "$(git -C "$PLUGIN_DIR" rev-parse --show-toplevel 2>/dev/null)" != "$(git rev-parse --show-toplevel)" ]; then

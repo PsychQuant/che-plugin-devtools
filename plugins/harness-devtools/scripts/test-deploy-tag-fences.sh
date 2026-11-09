@@ -165,7 +165,13 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
   for sh in $SHELLS; do
     run "$sh" "$W" "$T/f7.sh"
     has "the remote's main was rewritten, the local @{u} still says HEAD → stops ($sh)" "$OUT" "不是 HEAD"
+    has "…and warns not to pull and rerun, which would tag someone else's commit ($sh)" "$OUT" "不要 pull"
   done
+  # verify R8: after a fetch the local @{u} is ahead of HEAD — not "the push failed"
+  git -C "$W" fetch -q origin
+  run bash "$W" "$T/f7.sh"
+  hasnt "after a fetch: HEAD behind upstream is not reported as an unpushed HEAD" "$OUT" "沒推成功？）"
+  has "…it says HEAD differs from the upstream" "$OUT" "HEAD 與 upstream 不同"
   same "…and no tag pushed" "$(rtag "$T/$S-stale.git" v1.0.0)" ""
 
   mk "$S-swift"; W="$T/$S-swift"
@@ -231,14 +237,17 @@ echo "cli-deploy Phase 3 Step 1: every bumped version file is staged, nothing el
 mk cli-stage; W="$T/cli-stage"
 put "$W" Sources/S/Version.swift 'enum V { static let version = "1.0.0" }'
 put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; put "$W" CHANGELOG.md x; put "$W" notes.txt keep
+put "$W" Sources/S/Deep/Version.swift deep
 ci "$W"; push "$W"
 put "$W" Sources/S/Version.swift 'enum V { static let version = "1.1.0" }'
 put "$W" mcpb/manifest.json '{ "version": "1.1.0" }'; put "$W" CHANGELOG.md y; put "$W" notes.txt unrelated
+put "$W" Sources/S/Deep/Version.swift unrelated
 fence cli-deploy "Phase 3 Step 1: stage" "$T/stage.sh" '{version}: {change-summary} ==> 1.1.0: test'
 run bash "$W" "$T/stage.sh"
 same "Version.swift committed" "$(git -C "$W" show HEAD:Sources/S/Version.swift)" 'enum V { static let version = "1.1.0" }'
 same "mcpb/manifest.json committed" "$(git -C "$W" show HEAD:mcpb/manifest.json)" '{ "version": "1.1.0" }'
 same "an unrelated modified file is not committed" "$(git -C "$W" show HEAD:notes.txt)" keep
+same "a deeper Sources/*/*/Version.swift is not a version source and is not committed (verify R8)" "$(git -C "$W" show HEAD:Sources/S/Deep/Version.swift)" deep
 fence cli-deploy "Step 1.5: VERSION" "$T/c15.sh" "VERSION='{version}' ==> VERSION='1.1.0'"
 run bash "$W" "$T/c15.sh"
 has "Step 1.5 then tags v1.1.0" "$OUT" "→ Step 1.5: v1.1.0 已在 o/r"
