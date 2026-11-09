@@ -386,12 +386,12 @@ Step 7 推送前若要向使用者確認，同一個確認要列出這個 tag。
 
 ```bash
 MARKETPLACE_ROOT='{marketplace-root}'
-case "$MARKETPLACE_ROOT" in ''|'{marketplace-root}') echo "⚠ Step 7.5: MARKETPLACE_ROOT 未代入 — 沒有打 tag"; exit 0 ;; esac
+case "$MARKETPLACE_ROOT" in ''|*'{'*|*'}'*) echo "⚠ Step 7.5: MARKETPLACE_ROOT 未代入 — 沒有打 tag"; exit 0 ;; esac
 [ "$(git -C "$MARKETPLACE_ROOT" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$MARKETPLACE_ROOT" 2>/dev/null && pwd -P)" ] \
   || { echo "⚠ Step 7.5: $MARKETPLACE_ROOT 不是 git repo 的根目錄 — 沒有打 tag"; exit 0; }
 cd "$MARKETPLACE_ROOT" || exit 0
 PLUGIN_NAME='{plugin-name}'
-case "$PLUGIN_NAME" in ''|'{plugin-name}'|.*|-*|*[!A-Za-z0-9._-]*) echo "⚠ Step 7.5: PLUGIN_NAME 未代入或不合法 — 沒有打 tag"; exit 0 ;; esac
+case "$PLUGIN_NAME" in ''|.*|-*|*[!A-Za-z0-9._-]*) echo "⚠ Step 7.5: PLUGIN_NAME 未代入或不合法 — 沒有打 tag"; exit 0 ;; esac
 HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法：skill 載入時會被代換成 plugin 路徑（#39）
 [ -f "$HELPER" ] || { echo "⚠ Step 7.5: 找不到 $HELPER — 沒有打 tag"; exit 0; }
 # plugin 目錄若自己是另一個 git repo（巢狀 clone、submodule），下面的檢查看的是 marketplace repo，
@@ -408,7 +408,7 @@ UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANC
 DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 [ -n "$DEFAULT" ] && [ "$UPSTREAM_BRANCH" = "$DEFAULT" ] || { echo "⚠ Step 7.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是 $REMOTE 的預設 branch（${DEFAULT:-?}）— 沒有打 tag"; exit 0; }
 bash "$HELPER" --dir "plugins/$PLUGIN_NAME" --commit HEAD --at-bump --remote "$REMOTE" --name-style plugin --plugin "$PLUGIN_NAME"
-echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 同名 tag 在別的 commit；20/21 版本不一致或讀不出；30 推送失敗，見上方重跑指令）"
+echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 同名 tag 在別的 commit；20/21 版本不一致或讀不出；30 推送失敗或 push URL 指向別的 repo，見上方的原因）"
 ```
 
 tag 沒打成（10／20／21／30）不中止，繼續 Step 8，並把結果寫進 Step 9 的回報。

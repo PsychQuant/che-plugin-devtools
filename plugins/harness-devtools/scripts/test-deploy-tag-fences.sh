@@ -108,6 +108,13 @@ release_blocks() { python3 -I -c 'import re,sys; print("\n".join(b for b in re.f
 for s in mcp-deploy cli-deploy; do
   hasnt "$s: the release blocks do not substitute v{version} unchecked" "$(release_blocks "$s")" 'v{version}'
 done
+# verify R4: the guard must not repeat the placeholder it guards — substituting {version}
+# everywhere would turn the sentinel into the real version and reject every valid run
+for s in mcp-deploy cli-deploy; do
+  hasnt "$s: no case pattern repeats '{version}'" "$(bash_blocks "$s")" "'{version}'|"
+done
+hasnt "plugin-deploy: no case pattern repeats '{plugin-name}'" "$(bash_blocks plugin-deploy)" "'{plugin-name}'|"
+hasnt "plugin-deploy: no case pattern repeats '{marketplace-root}'" "$(bash_blocks plugin-deploy)" "|'{marketplace-root}')"
 # verify R3 / #39: skill loading may replace $0, $1, … with the invocation's arguments
 for SM in "mcp-deploy:Step 3.5: VERSION" "cli-deploy:Step 1.5: VERSION" "plugin-deploy:Step 7.5: PLUGIN_NAME"; do
   fence "${SM%%:*}" "${SM#*:}" "$T/pos.sh"
@@ -222,9 +229,11 @@ has "Step 1.5 then tags v1.1.0" "$OUT" "→ Step 1.5: v1.1.0 已在 o/r"
 mk cli-new; W="$T/cli-new"
 put "$W" Sources/S/Version.swift 'enum V { static let version = "1.0.0" }'; ci "$W"; push "$W"
 put "$W" Sources/S/Version.swift 'enum V { static let version = "1.1.0" }'; put "$W" CHANGELOG.md first; put "$W" scratch.txt junk
+put "$W" package.json '{ "private": true }'
 run bash "$W" "$T/stage.sh"
 same "a newly created CHANGELOG.md is committed" "$(git -C "$W" show HEAD:CHANGELOG.md 2>/dev/null)" first
 same "an unrelated new file is not committed" "$(git -C "$W" ls-tree --name-only HEAD scratch.txt)" ""
+same "an untracked package.json this release did not create is not committed (verify R4)" "$(git -C "$W" ls-tree --name-only HEAD package.json)" ""
 
 echo "plugin-deploy Step 7.5"
 mk pd; W="$T/pd"

@@ -864,7 +864,7 @@ echo "→ 回 Phase 0.3 Step 2 重跑（會落到 Case C；Phase 0.5 會問怎�
 
 ## Phase 0.5: Git State Preview & Confirmation Gate（v1.16.0+ #60）
 
-> **為什麼這 phase 在 Phase 1 之前**:Phase 1+ 會 `git add` / `git commit` / `git push` / `claude plugin marketplace update`,在那之前,user 必須對樹上**既有**的變更（未提交 / 未推送 / 分歧，Case B–E）明確表態要不要一起推。clean start（Case A）沒有裁決點，直接通過（#19）——這代表在 clean start 下（含 unattended）**以下動作不經人工確認就會發生（封閉列舉，不得類推）**：(1) Phase 2 對 `.claude-plugin/marketplace.json` 的鏡像 commit + push——只在該檔的 entry 版本已等於 plugin.json 且相對 HEAD 有變更時，push 前列出視窗內混進的 commit 與其 plugin 歸屬；(2) Phase 3 `claude plugin marketplace update`（重拉 plugin index）；(3) Phase 4 `claude plugin update` / `install`（把 plugin 程式碼裝進本機；binary-backed plugin 的 wrapper 下次啟動會自動下載 release binary）；(4) Phase 2.7 推送版號 tag（#42）——只在 upstream 追蹤的是預設 branch、`@{u} == HEAD`、plugin 目錄與 marketplace 是同一個 git repo、且七種版本來源全部一致時打，tag 打在升版號的那個 commit（不一致或讀不出 → 不打、unattended 印 `AUDIT:`），不移動、不覆寫既有 tag。還沒有版號 tag 的 plugin，第一次跑時會替**目前版本**補打在它當初升版號的 commit；更早的版本不補。attended 的 Case A 也不另外問，依據是使用者對 #42 的指示：「自動打，所以我才希望更新plugin，發版時應該要tag」（2026-11-09），以及 issue 的 Expected「不另外問要不要打」；Case B–E 的 push 選項則把 tag 寫進同一次確認。#19 之前 unattended 在 Phase 0.5 一律 abort，(1)–(3) 從未在無人看管下執行過；現在它們是 common-release-flow 自動鏈刻意要的行為。(4) 由 #42 加入：使用者要求發版自動打 tag（上面那句指示），且同意 unattended 下來源一致就打（#42 Implementation Plan 核准時）。binary pin 的 bump **不在**這個列舉裡：unattended 下從不自動 bump（#22）。其餘兩道互動閘在 unattended 下：**仍會 abort** 的只有 Phase 1.5 Step 4（binary 不同步）；Phase 2.5 Step 2（README stale）**不 abort**，自動「先略過」繼續 Phase 3，並印一行 `AUDIT:` 供 Phase 5 的最終 report 收錄。Phase 2.7 不是互動閘：它不問、不 abort，不打 tag 的情況在 unattended 下同樣印 `AUDIT:`。
+> **為什麼這 phase 在 Phase 1 之前**:Phase 1+ 會 `git add` / `git commit` / `git push` / `claude plugin marketplace update`,在那之前,user 必須對樹上**既有**的變更（未提交 / 未推送 / 分歧，Case B–E）明確表態要不要一起推。clean start（Case A）沒有裁決點，直接通過（#19）——這代表在 clean start 下（含 unattended）**以下動作不經人工確認就會發生（封閉列舉，不得類推）**：(1) Phase 2 對 `.claude-plugin/marketplace.json` 的鏡像 commit + push——只在該檔的 entry 版本已等於 plugin.json 且相對 HEAD 有變更時，push 前列出視窗內混進的 commit 與其 plugin 歸屬；(2) Phase 3 `claude plugin marketplace update`（重拉 plugin index）；(3) Phase 4 `claude plugin update` / `install`（把 plugin 程式碼裝進本機；binary-backed plugin 的 wrapper 下次啟動會自動下載 release binary）；(4) Phase 2.7 推送版號 tag（#42）——只在 upstream 追蹤的是預設 branch、`@{u} == HEAD`、plugin 目錄與 marketplace 是同一個 git repo、且七種版本來源全部一致時打，tag 打在升版號的那個 commit（不一致或讀不出 → 不打、unattended 印 `AUDIT:`），不移動、不覆寫既有 tag。還沒有版號 tag 的 plugin，第一次跑時會替**目前版本**補打在它當初升版號的 commit；更早的版本不補。attended 的 Case A 也不另外問，依據是使用者對 #42 的指示：「自動打，所以我才希望更新plugin，發版時應該要tag」（2026-11-09），以及 issue 的 Expected「不另外問要不要打」。Expected 還要求 tag 與推 branch 列在同一次確認裡，但 Case A 沒有推送確認可以併入；Case A 不問、以及第一次跑會補打目前版本，使用者在 2026-11-10 看過這兩項寫法後明確同意（#42 verify 第 3 輪推送前的確認）；Case B–E 的 push 選項則把 tag 寫進同一次確認。#19 之前 unattended 在 Phase 0.5 一律 abort，(1)–(3) 從未在無人看管下執行過；現在它們是 common-release-flow 自動鏈刻意要的行為。(4) 由 #42 加入：使用者要求發版自動打 tag（上面那句指示），且同意 unattended 下來源一致就打（#42 Implementation Plan 核准時）。binary pin 的 bump **不在**這個列舉裡：unattended 下從不自動 bump（#22）。其餘兩道互動閘在 unattended 下：**仍會 abort** 的只有 Phase 1.5 Step 4（binary 不同步）；Phase 2.5 Step 2（README stale）**不 abort**，自動「先略過」繼續 Phase 3，並印一行 `AUDIT:` 供 Phase 5 的最終 report 收錄。Phase 2.7 不是互動閘：它不問、不 abort，不打 tag 的情況在 unattended 下同樣印 `AUDIT:`。
 >
 > 既有 (pre-v1.16.0) 行為:Phase 1 Step 2 印出 `git status` 後接 narrative reminder text 「請先 commit + push」,但**沒實際 gate**,AI executor 可以印 reminder 後繼續。新 phase 把這個決定升格成 **AskUserQuestion** explicit dispatch,跟 skill 內既有 [Phase 1.5: External Binary Dependency Check](#phase-15-external-binary-dependency-check若有) + [Phase 2.5: README Freshness Check](#phase-25-readme-freshness-check) 同 pattern(用 section refs 而非 line numbers,避免後續 insert 後 stale)。
 >
@@ -1964,7 +1964,7 @@ tag 的實作只有一份：`scripts/release-tag.sh`（四個發版 skill 共用
 | `tagged` / `exists`（0） | 印出結果，繼續 Phase 3 |
 | `not-bumped`（10） | 同名 tag 已在另一個 commit 上（例如以前手動打在別處）——印出、不移動，unattended 另印 `AUDIT:`；繼續 |
 | `mismatch`（20）/ `unreadable`（21） | **不打 tag**；attended 印 ⚠ 與各來源的值，unattended 印 `AUDIT:`；繼續 Phase 3（branch 已推送，安裝不受影響） |
-| `push-failed`（30） | 印出 helper 給的重跑指令，unattended 另印 `AUDIT:`；繼續 Phase 3 |
+| `push-failed`（30） | 印出 helper 給的原因與重跑指令（push URL 指向別的 repo 時沒有重跑指令，要先改 remote 設定），unattended 另印 `AUDIT:`；繼續 Phase 3 |
 | 其他（usage error、helper 不存在） | 印 ✗ 與原因，unattended 另印 `AUDIT:`；繼續 Phase 3 |
 
 **能不能打**（封閉列舉，四項都要成立）：(1) 目前 branch 有指向 remote 的 upstream（必須是 `git remote` 列得出的 remote 名稱），且 `@{u} == HEAD`；(2) 目前 branch 追蹤的 upstream branch 是那個 remote 的預設 branch——看 upstream，不看本機 branch 名，feature branch 上不打；(3) plugin 目錄與 marketplace 是同一個 git repo——plugin 目錄若自己是另一個 repo（巢狀 clone、submodule），前兩項檢查的是 marketplace repo，helper 卻會在 plugin 目錄的 repo 打 tag 並推送（#42 verify 第 2 輪）；(4) helper 找得到 `scripts/release-tag.sh`。
@@ -2020,9 +2020,9 @@ case "$RC" in
   0)  echo "→ Phase 2.7: done — ${LINE#RELEASE_TAG: }" ;;
   10) echo "→ Phase 2.7: 同名 tag 已在另一個 commit 上（不是升版號的那個）— 不移動，沒有打 tag"
       audit "same-name tag already on another commit (rc 10) — not moved, no tag" ;;
-  20|21) echo "⚠ Phase 2.7: 版本來源不一致或讀不出（見上方）— 沒有打 tag；修正版號後重跑 plugin-update 即可補打"
+  20|21) echo "⚠ Phase 2.7: 版本來源不一致、讀不出，或判斷不了升版號的 commit（見上方的原因）— 沒有打 tag；照原因處理後重跑 plugin-update 即可補打"
          audit "version sources disagree or unreadable (rc ${RC}) — no tag pushed under unattended" ;;
-  30) echo "⚠ Phase 2.7: tag 推送失敗（重跑指令見上方）— branch 已推送，繼續 Phase 3"
+  30) echo "⚠ Phase 2.7: tag 沒推成（見上方的原因；push URL 指向別的 repo 時先改 remote 設定）— branch 已推送，繼續 Phase 3"
       audit "tag push failed (rc 30) — retry command in the report" ;;
   *)  echo "✗ Phase 2.7: release-tag.sh 回了 rc ${RC}（usage error 或 helper 壞掉）— 沒有打 tag"
       audit "release-tag.sh rc ${RC} — no tag" ;;

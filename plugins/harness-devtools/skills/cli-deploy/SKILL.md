@@ -239,12 +239,13 @@ lipo -info .release/$BINARY_NAME
 **只 stage 本次 deploy 實際動過的檔案** — `git add -A` 會把使用者 working tree 裡無關的 modified files（例如 session-start hook 改的 `.claude/*`、`CLAUDE.md`）全部塞進 release commit，污染歷史。
 
 ```bash
-# Phase 3 Step 1: stage Phase 1 改過或新建的檔案——CHANGELOG、README，以及 Step 1.5 會讀的版本來源（封閉列舉，
-# 與 Phase 1 Step 1 同一份）。只看這些路徑：已追蹤且有修改的、以及這次新建的（不含 .gitignore 擋掉的）；
-# 不存在的路徑不會報錯（#42 verify 第 2、3 輪：原本只 stage Version.swift 與 CHANGELOG.md，
-# 其他來源的改動沒進 commit，Step 1.5 讀 commit 就判成不一致）
-git -c core.quotePath=false ls-files -mo --exclude-standard -- CHANGELOG.md README.md 'Sources/*/Version.swift' 'Sources/*/Server.swift' \
-    mcpb/manifest.json package.json pyproject.toml .claude-plugin/plugin.json plugin.json \
+# Phase 3 Step 1: stage Phase 1 改過的檔案——CHANGELOG、README，以及 Step 1.5 會讀的版本來源（封閉列舉，
+# 與 Phase 1 Step 1 同一份），只限已追蹤且有修改的；untracked 的只收 CHANGELOG.md（Phase 1 Step 2 可能新建它）。
+# 原本就存在、與這次無關的 untracked package.json 之類不會被收進來。不存在的路徑不會報錯
+# （#42 verify 第 2–4 輪：原本只 stage Version.swift 與 CHANGELOG.md，其他來源的改動沒進 commit）
+{ git -c core.quotePath=false ls-files -m -- CHANGELOG.md README.md 'Sources/*/Version.swift' 'Sources/*/Server.swift' \
+      mcpb/manifest.json package.json pyproject.toml .claude-plugin/plugin.json plugin.json
+  git -c core.quotePath=false ls-files -o --exclude-standard -- CHANGELOG.md; } \
   | while IFS= read -r f; do git add -- "$f"; done
 
 # 檢查 staging 內容，確認沒混進無關檔案
@@ -273,7 +274,7 @@ tag 名稱固定是 `v{version}`：安裝指令從 `releases/latest/download` �
 
 ```bash
 VERSION='{version}'   # Phase 0 Step 4 決定的版本
-case "$VERSION" in ''|'{version}'|*[!0-9A-Za-z.+-]*) echo "✗ Step 1.5: VERSION 未代入或不合法"; exit 1 ;; esac
+case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ Step 1.5: VERSION 未代入或不合法"; exit 1 ;; esac
 HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法：skill 載入時會被代換成 plugin 路徑（#39）
 [ -f "$HELPER" ] || { echo "✗ Step 1.5: 找不到 ${HELPER}（plugin 路徑沒有代換，或 cache 不完整）— 停止，不建 release"; exit 1; }
 BRANCH=$(git branch --show-current)
@@ -297,7 +298,7 @@ if [ "$RC" != 0 ] || [ "$TAG" != "v$VERSION" ]; then
       10) echo "✗ Step 1.5: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止。前者要先升版號；後者確認那個 tag 該不該留（刪 remote 上的 tag 由你決定）" ;;
       20) echo "✗ Step 1.5: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 1 Step 1 改成同一個版本" ;;
       21) echo "✗ Step 1.5: 有版本檔讀不出值（見上方的原因；pyproject.toml 需要 python3 3.11 以上，見 #48）— 修好後重跑這一步" ;;
-      30) echo "✗ Step 1.5: tag 推送失敗（重跑指令見上方）" ;;
+      30) echo "✗ Step 1.5: tag 沒推成（見上方的原因：push URL 指向別的 repo 時先改 remote 設定，其他情況照上方的重跑指令）" ;;
       *)  echo "✗ Step 1.5: release-tag rc=${RC}、tag=${TAG:-?}（預期 v${VERSION}）" ;;
     esac
     echo "  停止，不建 release：沒有 tag 就建 release，GitHub 會在預設 branch 上自動建一個。"; exit 1
@@ -317,7 +318,7 @@ echo "→ Step 1.5: $TAG 已在 ${OWNER_REPO}；Step 2 在同一個 repo 用這�
 
 ```bash
 VERSION='{version}'   # 與 Step 1.5 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
-case "$VERSION" in ''|'{version}'|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
+case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
 # 與 Step 1.5 同一個 repo：從推送的 remote 推導，不讓 gh 自己選（#42 verify：fork 工作流兩者可能不同）
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "✗ 推不出 owner/repo — 先跑完 Step 1.5"; exit 1; }

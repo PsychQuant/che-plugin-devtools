@@ -491,7 +491,7 @@ binary repo 的 tag 名稱固定是 `v{version}`：wrapper 從 `releases/downloa
 
 ```bash
 VERSION='{version}'   # Phase 0 Step 4 決定的版本
-case "$VERSION" in ''|'{version}'|*[!0-9A-Za-z.+-]*) echo "✗ Step 3.5: VERSION 未代入或不合法"; exit 1 ;; esac
+case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ Step 3.5: VERSION 未代入或不合法"; exit 1 ;; esac
 HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法：skill 載入時會被代換成 plugin 路徑（#39）
 [ -f "$HELPER" ] || { echo "✗ Step 3.5: 找不到 ${HELPER}（plugin 路徑沒有代換，或 cache 不完整）— 停止，不建 release"; exit 1; }
 BRANCH=$(git branch --show-current)
@@ -515,7 +515,7 @@ if [ "$RC" != 0 ] || [ "$TAG" != "v$VERSION" ]; then
       10) echo "✗ Step 3.5: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止。前者要先升版號；後者確認那個 tag 該不該留（刪 remote 上的 tag 由你決定）" ;;
       20) echo "✗ Step 3.5: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 2 Step 2 改成同一個版本" ;;
       21) echo "✗ Step 3.5: 有版本檔讀不出值（見上方的原因；pyproject.toml 需要 python3 3.11 以上，見 #48）— 修好後重跑這一步" ;;
-      30) echo "✗ Step 3.5: tag 推送失敗（重跑指令見上方）" ;;
+      30) echo "✗ Step 3.5: tag 沒推成（見上方的原因：push URL 指向別的 repo 時先改 remote 設定，其他情況照上方的重跑指令）" ;;
       *)  echo "✗ Step 3.5: release-tag rc=${RC}、tag=${TAG:-?}（預期 v${VERSION}）" ;;
     esac
     echo "  停止，不建 release：沒有 tag 就建 release，GitHub 會在預設 branch 上自動建一個。"; exit 1
@@ -569,7 +569,7 @@ Published as `io.github.{owner}/{project-name}` on the [Official MCP Registry](h
 ```bash
 # 準備變數
 VERSION='{version}'   # 與 Step 3.5 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
-case "$VERSION" in ''|'{version}'|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
+case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
 PROJECT_NAME=$(cat mcpb/manifest.json | grep '"name"' | head -1 | sed 's/.*"\([^"]*\)".*/\1/' | tr -d ' ')
 BINARY_NAME=$(ls mcpb/server/ | grep -v '.sh' | grep -v '.gitkeep' | head -1)
 MCPB_FILE=$(ls mcpb/*.mcpb | head -1)
@@ -626,7 +626,7 @@ gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] |
 
 ```bash
 VERSION='{version}'   # 與 Step 3.5 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
-case "$VERSION" in ''|'{version}'|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
+case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
 # --verify-tag：tag 不在 remote 就中止，不讓 gh 自己建 tag（#42，tag 由 Step 3.5 建）；--repo 與 Step 3.5 同一個 repo
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3.5"; exit 1; }
