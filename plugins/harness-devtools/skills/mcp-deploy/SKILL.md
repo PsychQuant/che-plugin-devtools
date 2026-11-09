@@ -28,7 +28,7 @@ disable-model-invocation: true
 TaskCreate(name="detect_project", description="Phase 0: 確認 MCP 專案目錄 + 識別語言 + 讀當前版本 + 確認新版本號")
 TaskCreate(name="compile_binary", description="Phase 1: 編譯（Swift/Python/TS），Swift 要做 universal binary + codesign")
 TaskCreate(name="update_version_and_package", description="Phase 2: manifest.json + CHANGELOG + README + 打包 .mcpb + 驗證格式")
-TaskCreate(name="publish_to_github", description="Phase 3: git commit/push + gh release create + curl upload assets（大 binary 必須 curl）")
+TaskCreate(name="publish_to_github", description="Phase 3: git commit/push + Step 3.5 release-tag.sh 打 v{version}（rc 非 0 不建 release，#42）+ gh release create + curl upload assets（大 binary 必須 curl）")
 TaskCreate(name="verify_binary_consistency", description="Phase 3.5 (Swift only)：hash 比對 + 架構確認")
 TaskCreate(name="publish_plugin", description="Phase 4 (可選)：發布為 Claude Code Plugin，更新 marketplace.json + cache 同步")
 TaskCreate(name="report_completion", description="Phase 5: 輸出版本資訊、Release URL、下一步提示")
@@ -470,6 +470,22 @@ git push origin main
 
 **注意**：如果使用 Git LFS，會自動上傳大型檔案。
 
+### Step 3.5: 在 release commit 打版號 tag（#42）
+
+**先打 tag，再建 release。** 以前是讓 release API 帶 `target_commitish="main"`，由 GitHub 在建 release 那一刻的 remote main 上自動建 tag——那不保證是剛推的 commit，也沒有比對版號。現在由 `scripts/release-tag.sh`（四個發版 skill 共用）在推送後的 HEAD 打 `v{version}`：版本從 commit 的內容讀，`mcpb/manifest.json`、`Sources/*/Server.swift`、`Sources/*/Version.swift`、`package.json`、`pyproject.toml` 這些在 repo 根目錄找得到的版本來源必須全部一致。
+
+binary repo 的 tag 名稱固定是 `v{version}`：wrapper 從 `releases/download/v{version}/…` 下載，不能改。
+
+```bash
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || { echo "✗ Step 3.5: 沒有 upstream — 停止，不建 release"; exit 1; }
+[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 3.5: HEAD 不等於 ${UPSTREAM}（Step 3 沒推成功？）— 停止，不建 release"; exit 1; }
+bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh" --dir . --commit HEAD --name-style v --remote "${UPSTREAM%%/*}"
+RC=$?
+[ "$RC" = 0 ] || { echo "✗ Step 3.5: release-tag rc=${RC}（10 版號沒升、tag 已在別的 commit；20/21 版本來源不一致或讀不出；30 推送失敗）— 停止，不建 release"; exit 1; }
+```
+
+**rc 不是 0 就不進 Step 4**：沒有 tag 就建 release，GitHub 會退回在 main 上自動建 tag，正是這一步要避免的情況。版本不一致時，回 Phase 2 把各版本檔改成同一個版本再重來；rc 10 表示這個版本已經發過，要先升版號。
+
 ### Step 4: 建立 GitHub Release
 
 使用 AskUserQuestion 詢問：
@@ -513,9 +529,9 @@ MCPB_FILE=$(ls mcpb/*.mcpb | head -1)
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 
 # Step 1: 建立 Release（不帶 assets，秒完成）
+# tag_name 用 Step 3.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不再帶 target_commitish（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   -f tag_name="v{version}" \
-  -f target_commitish="main" \
   -f name="v{version} - {title}" \
   -f body="{release-notes}" \
   -F draft=false \
@@ -559,7 +575,8 @@ gh release view v{version} --json assets --jq '.assets[] | "\(.name) (\(.size) b
 只適合 binary < 10MB 的小型專案：
 
 ```bash
-gh release create v{version} \
+# --verify-tag：tag 不在 remote 就中止，不讓 gh 自己建 tag（#42，tag 由 Step 3.5 建）
+gh release create v{version} --verify-tag \
   --title "v{version} - {title}" \
   --notes "{release-notes}" \
   mcpb/server/$BINARY_NAME \

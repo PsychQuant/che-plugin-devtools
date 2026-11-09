@@ -250,15 +250,28 @@ git push origin main
 
 如果 `git diff --cached --stat` 顯示了非預期的檔案，停下來檢查 — 可能是 working tree 本來就髒。
 
+### Step 1.5: 在 release commit 打版號 tag（#42）
+
+**先打 tag，再建 release。** 以前是讓 release API 帶 `target_commitish="main"`，由 GitHub 在建 release 那一刻的 remote main 上自動建 tag——那不保證是剛推的 commit，也沒有比對版號。現在由 `scripts/release-tag.sh`（四個發版 skill 共用）在推送後的 HEAD 打 `v{version}`，版本從 commit 的內容讀（`Sources/*/Version.swift` 等，repo 根目錄找得到的來源必須全部一致）。tag 名稱固定是 `v{version}`：安裝指令從 `releases/latest/download` 與 `releases/download/v{version}` 下載。
+
+```bash
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || { echo "✗ Step 1.5: 沒有 upstream — 停止，不建 release"; exit 1; }
+[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 1.5: HEAD 不等於 ${UPSTREAM}（Step 1 沒推成功？）— 停止，不建 release"; exit 1; }
+bash "${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh" --dir . --commit HEAD --name-style v --remote "${UPSTREAM%%/*}"
+RC=$?
+[ "$RC" = 0 ] || { echo "✗ Step 1.5: release-tag rc=${RC}（10 版號沒升、tag 已在別的 commit；20/21 版本來源不一致或讀不出；30 推送失敗）— 停止，不建 release"; exit 1; }
+```
+
+**rc 不是 0 就不進 Step 2**：沒有 tag 就建 release，GitHub 會退回在 main 上自動建 tag。
+
 ### Step 2: 建立 GitHub Release
 
 ```bash
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 
-# 建立 Release
+# 建立 Release：tag_name 用 Step 1.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不再帶 target_commitish（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   -f tag_name="v{version}" \
-  -f target_commitish="main" \
   -f name="v{version}" \
   -f body="{release-notes}" \
   -F draft=false \
