@@ -482,6 +482,49 @@ run "$W" --dir . --commit HEAD --name-style v
 check "a local tag on another commit → exit 10" "$RC" 10
 check "…nothing on the remote" "$(git -C "$W" ls-remote --tags origin)" ""
 
+echo "== Server.swift: only a whole string literal counts (verify R5, Codex)"
+for arg in '"1.0.0" + "-beta"' '"1.0.0".lowercased()'; do
+  new_repo; put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'
+  put "$W" Sources/S/Server.swift "let s = Server(name: \"s\", version: $arg)"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --expect 1.0.0
+  check "version: $arg → exit 21, not 1.0.0" "$RC" 21
+  check "…no remote tag" "$(git -C "$W" ls-remote --tags origin)" ""
+done
+
+echo "== --at-bump follows a hatch version file that was renamed (verify R5, Codex)"
+new_repo
+printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "x/old.py"\n' > "$W/pyproject.toml"
+put "$W" x/old.py '__version__ = "1.0.0"'; commit "$W" A
+put "$W" x/old.py '__version__ = "2.0.0"'; commit "$W" B
+B=$(git -C "$W" rev-parse HEAD)
+git -C "$W" mv x/old.py x/new.py
+printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "x/new.py"\n' > "$W/pyproject.toml"; commit "$W" C
+put "$W" z.txt 1; commit "$W" D
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "exit 0" "$RC" 0
+has "…on the commit that bumped the old file, not the rename" "commit=$(git -C "$W" rev-parse --short "$B")"
+
+echo "== hatch __version__ in a file python3 cannot parse whole (verify R5)"
+hatch_repo "$(printf '\xef\xbb\xbf"""doc"""\n__version__ = "1.0.0"')"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a UTF-8 BOM → exit 0" "$RC" 0
+hatch_repo "$(printf 'type Alias = int\ndef f[T](x: T) -> T:\n    return x\n__version__ = "1.0.0"')"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "syntax newer than this python3 → the __version__ line is still read (exit 0)" "$RC" 0
+hatch_repo "__version__ = $(printf '%*s' 200000 '' | tr ' ' '-')1"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a pathological expression → exit 21" "$RC" 21
+if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
+
+echo "== a root plugin.json without a version field is not a source (verify R5)"
+new_repo; put "$W" .claude-plugin/plugin.json '{ "name": "p", "description": "d" }'; put "$W" mcpb/manifest.json '{ "version": "1.2.3" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --expect 1.2.3 --dry-run
+check "mcpb/manifest.json decides → exit 0" "$RC" 0
+has "…and plugin.json is not listed as a source" "sources=mcpb/manifest.json"
+new_repo; put "$W" .claude-plugin/plugin.json '{ "name": "p" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "plugin.json without a version and nothing else → still exit 21 (no version source)" "$RC" 21
+
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
 run "$W" --dir . --name-style v;                                   check "missing --commit" "$RC" 2

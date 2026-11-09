@@ -176,7 +176,7 @@ bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v
 - **tag 名稱**：
   - `mcp-deploy`、`cli-deploy`：固定 `v<version>`（wrapper 從 `releases/download/v<version>/…` 下載）。
   - `plugin-update`、`plugin-deploy`：只看佈局。plugin 目錄就是 git repo 的根目錄（repo 本身就是 plugin）→ `v<version>`；其他一律 `<plugin>-v<version>`，例如本 repo 的 `harness-devtools-v<version>`，binary repo 裡的 `./plugin` 是 `<plugin>-v<version>`（`v<version>` 留給 binary 的 release）。不看 marketplace 列了幾個 plugin，所以多加一個 plugin 不會改變既有 plugin 的 tag 名稱。
-- **結束碼**：0 已打或已存在 / 10 同名 tag 已在另一個 commit 上（這個版本以前發過，或上次發版推完 tag 就停了；不移動）/ 20 來源不一致 / 21 讀不出 / 30 推送失敗（印重跑指令）/ 2 引數錯誤。
+- **結束碼**：0 已打或已存在 / 10 同名 tag 已在另一個 commit 上（這個版本以前發過，或上次發版推完 tag 就停了；不移動）/ 20 來源不一致 / 21 讀不出或判斷不了 / 30 推送失敗（印重跑指令），或 push URL 指向別的 repo（什麼都沒推，沒有重跑指令，要先改 remote 設定）/ 2 引數錯誤。
 - 不移動、不刪除 tag，不用 `--force`。
 
 `plugin-update`、`plugin-deploy` 沒打成 tag 不中止（branch 已推送）；`mcp-deploy`、`cli-deploy` 沒打成就不建 release——沒有 tag 時 GitHub 會在 main 上自動建一個，那正是 #42 要避免的情況。

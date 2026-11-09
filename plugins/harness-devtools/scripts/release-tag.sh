@@ -174,10 +174,21 @@ def python_version(src):
     """(values, problem) for a module-level __version__: only `__version__ = "x"` or
     `__version__: str = "x"` with a plain string literal counts; anything else
     (concatenation, a call, a conditional) is a problem (#42 verify R4)."""
-    try:
-        tree = ast.parse(src)
-    except (SyntaxError, ValueError):
-        return [], "not valid Python"
+    src = src.lstrip("\ufeff")   # a UTF-8 BOM is legal in a .py file but not in ast.parse(str)
+
+    def parse(text):
+        try:
+            return ast.parse(text)
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            return None
+    tree = parse(src)
+    if tree is None:
+        # The file needs a newer python than this one (or is broken): read only the
+        # module-level __version__ statements (#42 verify R5).
+        lines = [l for l in src.splitlines() if re.match(r"__version__\s*(?::[^=]*)?=", l)]
+        tree = parse("\n".join(lines)) if lines else None
+        if tree is None:
+            return [], f"cannot be parsed by python {sys.version_info[0]}.{sys.version_info[1]}"
     vals, bad = [], False
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -192,6 +203,25 @@ def python_version(src):
             else:
                 bad = True
     return vals, ("__version__ is not a plain string literal" if bad else None)
+
+def hatch_path(pp_text):
+    """The [tool.hatch.version].path of a pyproject.toml text, when it is a plain
+    relative path; None otherwise (or without tomllib)."""
+    try:
+        import tomllib
+        doc = tomllib.loads(pp_text or "")
+    except Exception:
+        return None
+    path = (((doc.get("tool") or {}).get("hatch") or {}).get("version") or {}).get("path")
+    if isinstance(path, str) and re.fullmatch(r"[A-Za-z0-9._/-]+", path) and ".." not in path.split("/"):
+        return path
+    return None
+
+# Server.swift: `version: "x"` counts only when the string literal is the whole
+# argument, i.e. followed by `,` `)` `]` or `}` (#42 verify R5)
+SERVER_ANY = re.compile(r'\bversion:\s*"([^"\\\n]*)"')
+SERVER_VALUE = re.compile(r'\bversion:\s*"([^"\\\n]*)"(?=\s*[,)\]}])')
+VERSIONISH = re.compile(r"[0-9]+\.[0-9]+")
 
 def oneline(s):
     """A message line: control characters out, ASCII only (a non-UTF-8 locale must not
@@ -246,8 +276,10 @@ def read_sources(commit):
             return True
         add(name, data["version"], rel); return True
 
-    if not json_version(".claude-plugin/plugin.json", "plugin.json", True):
-        json_version("plugin.json", "plugin.json", True)
+    # a plugin.json without "version" is legal and is not a version source, like
+    # package.json (#42 verify R5)
+    if not json_version(".claude-plugin/plugin.json", "plugin.json", False):
+        json_version("plugin.json", "plugin.json", False)
 
     pp = show("pyproject.toml")
     if pp is not None:
@@ -306,9 +338,13 @@ def read_sources(commit):
             else:
                 notes.append(f"{safe(path)}: no static version/current declaration; not a version source")
         elif parts[2] == "Server.swift":
-            vals = sorted(set(v for v in re.findall(r'\bversion:\s*"([^"]+)"', swift_code(show(path) or ""))
-                              if re.match(r"^[0-9]+\.[0-9]+", v)))
-            if len(vals) > 1:
+            code = swift_code(show(path) or "")
+            started = [v for v in SERVER_ANY.findall(code) if VERSIONISH.match(v)]
+            whole = [v for v in SERVER_VALUE.findall(code) if VERSIONISH.match(v)]
+            vals = sorted(set(whole))
+            if len(started) > len(whole):
+                problems.append(f"{safe(path)}: version: is not a plain string literal")
+            elif len(vals) > 1:
                 problems.append(f"{safe(path)}: several different versions {[safe(v) for v in vals]}")
             elif vals:
                 add(safe(path), vals[0], path)
@@ -332,7 +368,16 @@ for n in notes:
 values = {v for _, v in found}
 if at_bump and found and not problems and len(values) == 1:
     current = next(iter(values))
-    specs = list(dict.fromkeys([prefix + s for s in SOURCE_SPECS] + paths))
+    # every hatch path the pyproject.toml ever named, so a renamed version file's
+    # history is walked too (#42 verify R5)
+    old_hatch = []
+    rp = git("rev-list", f"--max-count={MAX_WALK}", sha, "--", prefix + "pyproject.toml")
+    for c in (rp.stdout.split() if rp.returncode == 0 else []):
+        r_pp = git("cat-file", "blob", f"{c}:{prefix}pyproject.toml")
+        hp = hatch_path(r_pp.stdout) if r_pp.returncode == 0 else None
+        if hp:
+            old_hatch.append(prefix + hp)
+    specs = list(dict.fromkeys([prefix + s for s in SOURCE_SPECS] + paths + old_hatch))
     r = git("rev-list", f"--max-count={MAX_WALK + 1}", sha, "--", *specs)
     candidates = r.stdout.split() if r.returncode == 0 else []
     release, stopped, unclear = None, False, None
@@ -343,10 +388,9 @@ if at_bump and found and not problems and len(values) == 1:
             release = c
             continue
         stopped = True
-        # a manifest with no "version" field means the version was not set there yet:
-        # that is a definite boundary, not an unreadable source (#42 verify R4)
-        real_p2 = [p for p in p2 if not p.endswith('no "version" field')]
-        if real_p2 and not (vals2 - {current}):
+        # (a manifest with no "version" field is not a source, so a commit before the
+        # version existed is a definite boundary — #42 verify R4, R5)
+        if p2 and not (vals2 - {current}):
             # a source here cannot be read and every readable one already equals the
             # current version: it cannot be told whether the version was set here or
             # earlier (#42 verify R3)
