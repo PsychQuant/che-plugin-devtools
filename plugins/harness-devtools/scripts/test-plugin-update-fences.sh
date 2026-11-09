@@ -675,7 +675,10 @@ echo "Phase 2.7 (#42): version tag on the bump commit — runs whether or not Ph
 # annotated tags need a committer; a user's tag.gpgSign (or init.defaultBranch) must not reach the fixtures:
 # isolate the global config for this section only (the R1 guard put -c tag.gpgSign=false on `git commit`,
 # which the helper's `git tag -a` never sees — #42 verify R1)
-export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_CONFIG_GLOBAL=/dev/null
+# release tags are opt-in (harness-devtools.releaseTag, #42 user decision 2026-11-10): this section's
+# global config turns them on, and the tagoff cases below turn it off again
+printf '[harness-devtools]\n\treleaseTag = true\n' > "$T/gitconfig-tags-on"
+export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_CONFIG_GLOBAL="$T/gitconfig-tags-on"
 TAG_MARK='HELPER="${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh"'
 mk_tag_fx() {   # name version [source] → marketplace with one plugin at <source>, pushed to a bare remote
   local d="$T/dev/fx-$1" src="${3:-./}" pdir
@@ -730,6 +733,24 @@ mk_tag_fx tagstale 1.0.0
 prep01 tagstale
 run_both "tagstale: the remote's default branch was rewritten, the local @{u} still says HEAD → skipped" "$TAG_MARK" tagstale "不是 HEAD"
 if [ -z "$(remote_tags tagstale | tr -d ' ')" ]; then PASS=$((PASS+1)); echo "  ✓ tagstale: nothing tagged"; else FAIL=$((FAIL+1)); echo "  ✗ tagstale: tags reached the remote: $(remote_tags tagstale)"; fi
+
+# opt-in (#42, 2026-11-10): without harness-devtools.releaseTag = true nothing is tagged
+mk_tag_fx tagoff 1.0.0
+export GIT_CONFIG_GLOBAL=/dev/null
+prep01 tagoff
+run_both "tagoff: release tags not enabled → skipped" "$TAG_MARK" tagoff "→ Phase 2.7: skipped — 沒有開啟自動推 tag"
+export IDD_ALL_UNATTENDED=1
+run_both "tagoff: unattended → AUDIT" "$TAG_MARK" tagoff "AUDIT: Phase 2.7 skipped (release tags not enabled)"
+unset IDD_ALL_UNATTENDED
+if [ -z "$(remote_tags tagoff | tr -d ' ')" ]; then PASS=$((PASS+1)); echo "  ✓ tagoff: nothing tagged"; else FAIL=$((FAIL+1)); echo "  ✗ tagoff: tags reached the remote: $(remote_tags tagoff)"; fi
+( cd "$T/dev/fx-tagoff" && git config harness-devtools.releaseTag true )
+prep01 tagoff
+run_both "tagoff: enabled in the repo's own config → tagged" "$TAG_MARK" tagoff "→ Phase 2.7: done"
+export GIT_CONFIG_GLOBAL="$T/gitconfig-tags-on"
+mk_tag_fx tagno 1.0.0
+( cd "$T/dev/fx-tagno" && git config harness-devtools.releaseTag false )
+prep01 tagno
+run_both "tagno: the repo says false while the global config says true → skipped" "$TAG_MARK" tagno "沒有開啟自動推 tag"
 
 # verify R2: rc 10 is a no-tag case too, so unattended prints AUDIT for it
 mk_tag_fx tagten 3.0.0
@@ -789,8 +810,9 @@ unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_CONFIG_GLOBAL
 
 SKILL_TEXT=$(cat "$SKILL")
 assert_contains "Phase 0.5 lists the tag push as unattended action (4)" "(4) Phase 2.7 推送版號 tag" "$SKILL_TEXT"
+assert_contains "Phase 0.5 (4) says the tag push is opt-in" "harness-devtools.releaseTag" "$(printf '%s' "$SKILL_TEXT" | grep '(4) Phase 2.7 推送版號 tag')"
 assert_contains "Phase 5 report has a Phase 2.7 row" "- Phase 2.7: <tagged" "$SKILL_TEXT"
-N_TPL=$(printf '%s' "$SKILL_TEXT" | grep -c '推送後 Phase 2.7 會在升版號的 commit 推版號 tag（#42）"')
+N_TPL=$(printf '%s' "$SKILL_TEXT" | grep -c '推送後 Phase 2.7 會在升版號的 commit 推版號 tag（#42，harness-devtools.releaseTag 開啟時）"')
 if [ "$N_TPL" -ge 7 ]; then PASS=$((PASS+1)); echo "  ✓ every Case B–E push option names the tag ($N_TPL)"; else FAIL=$((FAIL+1)); echo "  ✗ only $N_TPL Case B–E push option(s) name the tag (expected 7)"; fi
 ORDER=$(python3 - "$SKILL" <<'PY'
 import sys

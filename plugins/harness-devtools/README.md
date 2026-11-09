@@ -155,7 +155,15 @@ list_marketplaces                          # 所有已發現的名稱
 
 ### 發版 tag：`scripts/release-tag.sh`（#42）
 
-四個發版 skill（`plugin-update` Phase 2.7、`plugin-deploy` Step 7.5、`mcp-deploy` Phase 3 Step 3a、`cli-deploy` Phase 3 Step 1.5）共用的 tag 實作。推送完成後，依**套件自己的版本**打 annotated tag 並推上去：
+四個發版 skill（`plugin-update` Phase 2.7、`plugin-deploy` Step 7.5、`mcp-deploy` Phase 3 Step 3a、`cli-deploy` Phase 3 Step 1.5）共用的 tag 實作。推送完成後，依**套件自己的版本**打 annotated tag 並推上去。`plugin-update`、`plugin-deploy` 的自動推 tag 是 **opt-in**：
+
+```bash
+git config --global harness-devtools.releaseTag true   # 所有 repo；不加 --global 則只開目前的 repo
+```
+
+開關沒開時這兩個 skill 印一行怎麼打開，不打 tag。`mcp-deploy`、`cli-deploy` 建 release 一定要先有 `v<version>` tag，不受開關影響。
+
+
 
 ```bash
 bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v|plugin [--plugin <name>] \

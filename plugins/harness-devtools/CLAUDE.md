@@ -165,6 +165,7 @@ bash "$HELPER" --dir <版本根目錄> --commit HEAD --name-style v|plugin [--pl
 ```
 
 - 版本來源是七種的封閉列舉，定義在 helper 檔頭；skill 的 bump 清單照抄那一份，改來源時兩邊一起改。
+- `plugin-update`、`plugin-deploy` 的自動推 tag 是 opt-in（git config `harness-devtools.releaseTag`，#42 使用者決定）；`mcp-deploy`、`cli-deploy` 建 release 需要 tag，不看開關。
 - helper 只決定**打什麼**；**什麼時候打**由呼叫的 fence 決定：upstream 是設定過的 remote、追蹤的是預設 branch、`git ls-remote` 查到 remote 上那個 branch 就是 HEAD。四個 fence 各有一份這些檢查，由 `scripts/test-deploy-tag-fences.sh` 與 `scripts/test-plugin-update-fences.sh` 從 SKILL.md 抽出來跑。
 - fence 的寫法限制：deploy 三個 skill 的 fence 不用 `${CLAUDE_PLUGIN_ROOT:?}`（Bash 工具裡沒有值，#39；plugin-update 的 fence 仍沿用 `:?`，等 #39 一起改，在那之前要手動 export `CLAUDE_PLUGIN_ROOT`）、不寫裸的錢號加數字（skill 載入時會被代換成呼叫引數，awk 欄位寫 `$(2)`）、placeholder 守衛不重複寫 placeholder 本身。
 

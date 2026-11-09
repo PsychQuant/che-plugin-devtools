@@ -269,6 +269,7 @@ put "$W" plugins/foo/.claude-plugin/plugin.json '{ "name": "foo", "version": "0.
 put "$W" plugins/foo/.claude-plugin/plugin.json '{ "name": "foo", "version": "1.0.0" }'; ci "$W" bump
 B=$(git -C "$W" rev-parse HEAD)
 put "$W" plugins/foo/README.md wip; ci "$W" wip; push "$W"
+git -C "$W" config harness-devtools.releaseTag true   # opt-in (#42, 2026-11-10)
 fence plugin-deploy "Step 7.5: PLUGIN_NAME" "$T/p.sh" "PLUGIN_NAME='{plugin-name}' ==> PLUGIN_NAME='foo'" "MARKETPLACE_ROOT='{marketplace-root}' ==> MARKETPLACE_ROOT='$W'"
 for sh in $SHELLS; do
   run "$sh" "$T" "$T/p.sh"
@@ -290,6 +291,7 @@ git -C "$W" checkout -q main
 mk pds; W="$T/pds"
 put "$W" .claude-plugin/marketplace.json '{ "plugins": [ { "name": "foo", "source": "./plugins/foo" } ] }'
 put "$W" plugins/foo/.claude-plugin/plugin.json '{ "name": "foo", "version": "1.0.0" }'; ci "$W" a; push "$W"
+git -C "$W" config harness-devtools.releaseTag true
 git -C "$W" checkout -q -b side; put "$W" side.txt s; ci "$W"; git -C "$W" push -q origin side 2>/dev/null; git -C "$W" checkout -q main
 git --git-dir="$T/pds.git" update-ref refs/heads/main "$(git -C "$W" rev-parse side)"
 fence plugin-deploy "Step 7.5: PLUGIN_NAME" "$T/ps.sh" "PLUGIN_NAME='{plugin-name}' ==> PLUGIN_NAME='foo'" "MARKETPLACE_ROOT='{marketplace-root}' ==> MARKETPLACE_ROOT='$W'"
@@ -301,7 +303,7 @@ same "…and nothing tagged" "$(rtag "$T/pds.git" foo-v1.0.0)" ""
 
 mk pdn; W="$T/pdn"
 put "$W" .claude-plugin/marketplace.json '{ "plugins": [ { "name": "bar", "source": "./plugins/bar" } ] }'
-put "$W" README.md outer; ci "$W" outer; push "$W"
+put "$W" README.md outer; ci "$W" outer; push "$W"; git -C "$W" config harness-devtools.releaseTag true
 git init -q --bare -b main "$T/inner.git"; git init -q -b main "$W/plugins/bar"
 git -C "$W/plugins/bar" remote add origin "$T/inner.git"
 put "$W/plugins/bar" .claude-plugin/plugin.json '{ "name": "bar", "version": "1.0.0" }'; ci "$W/plugins/bar" inner
@@ -309,6 +311,21 @@ fence plugin-deploy "Step 7.5: PLUGIN_NAME" "$T/pn.sh" "PLUGIN_NAME='{plugin-nam
 run bash "$T" "$T/pn.sh"
 has "plugin dir is its own git repo → no tag" "$OUT" "是另一個 git repo"
 same "…and nothing reached that repo's remote" "$(git --git-dir="$T/inner.git" for-each-ref --format=x | wc -l | tr -d ' ')" 0
+
+# opt-in (#42, 2026-11-10): plugin-deploy does not push a tag unless harness-devtools.releaseTag is true
+mk pdo; W="$T/pdo"
+put "$W" .claude-plugin/marketplace.json '{ "plugins": [ { "name": "foo", "source": "./plugins/foo" } ] }'
+put "$W" plugins/foo/.claude-plugin/plugin.json '{ "name": "foo", "version": "1.0.0" }'; ci "$W" a; push "$W"
+fence plugin-deploy "Step 7.5: PLUGIN_NAME" "$T/po.sh" "PLUGIN_NAME='{plugin-name}' ==> PLUGIN_NAME='foo'" "MARKETPLACE_ROOT='{marketplace-root}' ==> MARKETPLACE_ROOT='$W'"
+for sh in $SHELLS; do
+  run "$sh" "$T" "$T/po.sh"
+  has "release tags not enabled → no tag, says how to enable ($sh)" "$OUT" "git config harness-devtools.releaseTag true"
+done
+same "…and nothing tagged" "$(rtag "$T/pdo.git" foo-v1.0.0)" ""
+# mcp-deploy and cli-deploy need the tag to build the release, so the switch does not apply to them
+for s in mcp-deploy cli-deploy; do
+  hasnt "$s: the release tag does not depend on harness-devtools.releaseTag" "$(bash_blocks "$s")" 'harness-devtools.releaseTag'
+done
 
 echo
 echo "deploy tag fences: $PASS passed, $FAIL failed"
