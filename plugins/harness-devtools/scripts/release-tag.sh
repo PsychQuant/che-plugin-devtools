@@ -132,7 +132,7 @@ case "$MAX_WALK" in ''|*[!0-9]*|0) MAX_WALK=500 ;; esac
 # Read into a variable from a TOP-LEVEL heredoc, then run with -c: bash 3.2 cannot
 # parse a heredoc inside $( … ) when its text contains quotes (#42 verify R2).
 IFS= read -r -d '' PYSRC <<'PY' || true
-import json, re, subprocess, sys
+import ast, json, re, subprocess, sys
 
 top, sha, prefix, at_bump = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 MAX_WALK = int(sys.argv[5])
@@ -146,13 +146,58 @@ SWIFT_VALUE = re.compile(r'\bstatic\s+(?:let|var)\s+(?:version|current)\s*(?::\s
                          r'(?=[ \t]*(?:;|\}|\n|$))(?![ \t]*\n\s*[-+.?\[(&|*%<>=!/])')
 
 def swift_code(text):
-    """Swift source with /* */ and // comments removed (a version string has no //)."""
-    return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", " ", text, flags=re.S))
+    """Swift source with // and /* */ comments removed. String literals are skipped
+    while scanning, so a URL inside a string is not taken for a comment (#42 verify R4)."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        if text.startswith('"""', i):
+            j = text.find('"""', i + 3)
+            j = n if j < 0 else j + 3
+            out.append(text[i:j]); i = j
+        elif text[i] == '"':
+            j = i + 1
+            while j < n and text[j] not in '"\n':
+                j += 2 if text[j] == "\\" else 1
+            j = min(j + 1, n)
+            out.append(text[i:j]); i = j
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            out.append(" "); i = n if j < 0 else j + 2
+        else:
+            out.append(text[i]); i += 1
+    return "".join(out)
+
+def python_version(src):
+    """(values, problem) for a module-level __version__: only `__version__ = "x"` or
+    `__version__: str = "x"` with a plain string literal counts; anything else
+    (concatenation, a call, a conditional) is a problem (#42 verify R4)."""
+    try:
+        tree = ast.parse(src)
+    except (SyntaxError, ValueError):
+        return [], "not valid Python"
+    vals, bad = [], False
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "__version__" for t in targets):
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                vals.append(value.value)
+            else:
+                bad = True
+    return vals, ("__version__ is not a plain string literal" if bad else None)
 
 def oneline(s):
-    """A message line: control characters out. Values from the repository are already
-    passed through safe() where the message is built, so their ? marks stay (#42 verify R3)."""
-    return re.sub(r"[\x00-\x1f\x7f]", " ", str(s))
+    """A message line: control characters out, ASCII only (a non-UTF-8 locale must not
+    break the run). Values from the repository are already passed through safe() where
+    the message is built, so their ? marks stay (#42 verify R3, R4)."""
+    return re.sub(r"[\x00-\x1f\x7f]", " ", str(s)).encode("ascii", "replace").decode("ascii")
 # every path of the closed list, for the --at-bump walk (a deleted source counts too)
 SOURCE_SPECS = [".claude-plugin/plugin.json", "plugin.json", "pyproject.toml", "package.json",
                 "mcpb/manifest.json", "Sources/*/Version.swift", "Sources/*/Server.swift"]
@@ -228,9 +273,12 @@ def read_sources(commit):
                         problems.append(f"pyproject.toml: [tool.hatch.version].path {safe(path)!r} has characters outside [A-Za-z0-9._/-]")
                     else:
                         src = show(path)
-                        vals = sorted(set(re.findall(r'(?m)^__version__\s*=\s*["\']([^"\']+)["\']', src or "")))
+                        found_vals, why = python_version(src or "")
+                        vals = sorted(set(found_vals))
                         if src is None:
                             problems.append(f"hatch:{path}: file not found at this commit")
+                        elif why:
+                            problems.append(f"hatch:{path}: {why}")
                         elif len(vals) != 1:
                             problems.append(f"hatch:{path}: expected one __version__, found {[safe(v) for v in vals] or 'none'}")
                         else:
@@ -256,9 +304,9 @@ def read_sources(commit):
             elif vals:
                 add(safe(path), vals[0], path)
             else:
-                notes.append(f"{safe(path)}: no static version/current declaration — not a version source")
+                notes.append(f"{safe(path)}: no static version/current declaration; not a version source")
         elif parts[2] == "Server.swift":
-            vals = sorted(set(v for v in re.findall(r'\bversion:\s*"([^"]+)"', show(path) or "")
+            vals = sorted(set(v for v in re.findall(r'\bversion:\s*"([^"]+)"', swift_code(show(path) or ""))
                               if re.match(r"^[0-9]+\.[0-9]+", v)))
             if len(vals) > 1:
                 problems.append(f"{safe(path)}: several different versions {[safe(v) for v in vals]}")
@@ -295,7 +343,10 @@ if at_bump and found and not problems and len(values) == 1:
             release = c
             continue
         stopped = True
-        if p2 and not (vals2 - {current}):
+        # a manifest with no "version" field means the version was not set there yet:
+        # that is a definite boundary, not an unreadable source (#42 verify R4)
+        real_p2 = [p for p in p2 if not p.endswith('no "version" field')]
+        if real_p2 and not (vals2 - {current}):
             # a source here cannot be read and every readable one already equals the
             # current version: it cannot be told whether the version was set here or
             # earlier (#42 verify R3)
@@ -392,11 +443,15 @@ LINE_TAIL="name=$NAME commit=$SHORT version=$VERSION sources=$SOURCES"
 # different repositories and the tag is published before anything notices (#42
 # verify R3). Refuse before any push; the URLs are not printed (they may carry
 # credentials). A --remote that is a URL or path, not a remote name, has one URL.
+# The same repository written as https, ssh:// or scp form (the usual pushInsteadOf
+# setup: fetch over https, push over ssh) is not a different repository (#42 verify R4).
+norm_url() { printf '%s\n' "$1" | sed -E 's#/+$##; s#\.git$##; s#^[A-Za-z][A-Za-z0-9+.-]*://([^/@]*@)?##; s#^[^/@:]+@([^/:]+):#\1/#'; }
 if FETCH_URL=$(git -C "$TOP" remote get-url "$REMOTE" 2>/dev/null); then
   PUSH_URLS=$(git -C "$TOP" remote get-url --push --all "$REMOTE" 2>/dev/null) || PUSH_URLS="?"
-  if [ "$(printf '%s\n' "$PUSH_URLS" | sort -u)" != "$FETCH_URL" ]; then
+  PUSH_NORM=$(printf '%s\n' "$PUSH_URLS" | while IFS= read -r u; do norm_url "$u"; done | sort -u)
+  if [ "$PUSH_NORM" != "$(norm_url "$FETCH_URL")" ]; then
     echo "RELEASE_TAG: push-failed $LINE_TAIL"
-    echo "$PROG: remote '$REMOTE' has a push URL that differs from its fetch URL (remote.$REMOTE.pushurl) — the tag would go to a repository the checks never looked at; nothing tagged or pushed" >&2
+    echo "$PROG: remote '$REMOTE' has a push URL for a different repository than its fetch URL (remote.$REMOTE.pushurl or url.*.pushInsteadOf) - the tag would go where the checks never looked; nothing tagged or pushed. Fix the remote settings and retry." >&2
     exit 30
   fi
 fi

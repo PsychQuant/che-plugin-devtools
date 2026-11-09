@@ -412,6 +412,76 @@ new_repo; plugin_json "$W" "p[1]/" 1.0.0; commit "$W"
 run "$W" --dir "p[1]" --commit HEAD --name-style plugin --plugin p --dry-run
 check "exit 0" "$RC" 0
 
+echo "== hatch __version__: only a whole string literal counts (verify R4, Codex)"
+hatch_repo() {   # hatch_repo <__init__.py text>
+  new_repo; plugin_json "$W" "" 1.0.0
+  printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "x/__init__.py"\n' > "$W/pyproject.toml"
+  put "$W" x/__init__.py "$1"; commit "$W"
+}
+for init in '__version__ = "1.0.0" + "-beta"' '__version__ = "1.0.0".lower()' '__version__ = "1.0.0" if True else "2"'; do
+  hatch_repo "$init"
+  run "$W" --dir . --commit HEAD --name-style v
+  check "[$init] → exit 21, not 1.0.0" "$RC" 21
+  check "…no remote tag" "$(git -C "$W" ls-remote --tags origin)" ""
+done
+hatch_repo '__version__: str = "1.0.0"  # typed'
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "annotated __version__ with a trailing comment → exit 0" "$RC" 0
+
+echo "== Server.swift: comments do not count (verify R4)"
+new_repo; put "$W" mcpb/manifest.json '{ "version": "1.1.0" }'
+put "$W" Sources/S/Server.swift '// Before 1.1 this said Server(name: "s", version: "1.0.0")
+/* version: "0.9.0" */
+let s = Server(name: "s", version: "1.1.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "old versions in comments are ignored → exit 0" "$RC" 0
+has "…and Server.swift is a source" "Sources/S/Server.swift"
+
+echo "== // inside a Swift string is not a comment (verify R4)"
+new_repo; put "$W" Sources/S/Version.swift 'enum V { static let repo = "https://x.y/a"; static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --expect 2.0.0
+check "the version after a URL string is still read → mismatch, exit 20" "$RC" 20
+check "…no remote tag" "$(git -C "$W" ls-remote --tags origin)" ""
+
+echo "== --at-bump: an older commit with no version field means the version was not set there (verify R4)"
+new_repo; put "$W" .claude-plugin/plugin.json '{ "name": "p" }'; commit "$W" c1
+plugin_json "$W" "" 0.1.0; commit "$W" c2
+C2=$(git -C "$W" rev-parse HEAD); put "$W" d.txt 1; commit "$W" c3
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "exit 0" "$RC" 0
+has "…on the commit that added the version" "commit=$(git -C "$W" rev-parse --short "$C2")"
+
+echo "== push URL: the same repository written another way is not a different repository (verify R4)"
+new_repo; plugin_json "$W" "" 1.0.0; commit "$W"
+git -C "$W" remote set-url origin https://github.com/o/r.git
+git -C "$W" config url.git@github.com:.pushInsteadOf https://github.com/
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "https fetch + ssh push to github.com/o/r → passes the check (dry-run exit 0)" "$RC" 0
+git -C "$W" config --unset url.git@github.com:.pushInsteadOf
+git -C "$W" remote set-url --push origin git@github.com:o/other.git
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a push URL for another repository → exit 30" "$RC" 30
+has "…and says the push URL differs" "push URL"
+
+echo "== messages stay ASCII, so a non-UTF-8 locale does not break the run (verify R4)"
+new_repo; plugin_json "$W" "" 1.0.0; put "$W" Sources/S/Version.swift 'struct Version { func run() { print("x") } }'; commit "$W"
+if locale -a 2>/dev/null | grep -qx 'en_US.ISO8859-15'; then
+  OUT=$(cd "$W" && LC_ALL=en_US.ISO8859-15 "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+  check "LC_ALL=en_US.ISO8859-15 → exit 0" "$RC" 0
+fi
+
+echo "== local tags (verify R4)"
+new_repo; plugin_json "$W" "" 1.0.0; commit "$W"
+git -C "$W" tag -a v1.0.0 -m local HEAD; LOCAL_OBJ=$(git -C "$W" rev-parse v1.0.0)
+run "$W" --dir . --commit HEAD --name-style v
+check "a local tag on this commit, not yet on the remote → pushed (exit 0)" "$RC" 0
+check "…the same tag object, not a new one" "$(git -C "$W" ls-remote --tags origin refs/tags/v1.0.0 | cut -f1)" "$LOCAL_OBJ"
+new_repo; plugin_json "$W" "" 1.0.0; commit "$W"; put "$W" e.txt 1; commit "$W"
+git -C "$W" tag -a v1.0.0 -m old HEAD~1
+run "$W" --dir . --commit HEAD --name-style v
+check "a local tag on another commit → exit 10" "$RC" 10
+check "…nothing on the remote" "$(git -C "$W" ls-remote --tags origin)" ""
+
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
 run "$W" --dir . --name-style v;                                   check "missing --commit" "$RC" 2
