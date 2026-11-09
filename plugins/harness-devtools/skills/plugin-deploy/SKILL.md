@@ -405,7 +405,7 @@ git remote | grep -qxF -- "$REMOTE" || { echo "⚠ Step 7.5: $BRANCH 的 upstrea
 [ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: HEAD 還沒推上去（Step 7 沒推成功？）— 沒有打 tag"; exit 0; }
 # 預設 branch 看的是 upstream 追蹤的 branch，不是本機 branch 名
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
-DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')
+DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 [ -n "$DEFAULT" ] && [ "$UPSTREAM_BRANCH" = "$DEFAULT" ] || { echo "⚠ Step 7.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是 $REMOTE 的預設 branch（${DEFAULT:-?}）— 沒有打 tag"; exit 0; }
 bash "$HELPER" --dir "plugins/$PLUGIN_NAME" --commit HEAD --at-bump --remote "$REMOTE" --name-style plugin --plugin "$PLUGIN_NAME"
 echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 同名 tag 在別的 commit；20/21 版本不一致或讀不出；30 推送失敗，見上方重跑指令）"

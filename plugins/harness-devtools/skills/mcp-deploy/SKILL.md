@@ -500,11 +500,11 @@ case "$REMOTE" in ''|.) echo "✗ Step 3.5: $BRANCH 沒有指向 remote 的 upst
 git remote | grep -qxF -- "$REMOTE" || { echo "✗ Step 3.5: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 停止，不建 release"; exit 1; }
 [ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 3.5: HEAD 還沒推到 upstream（Step 3 沒推成功？）— 停止，不建 release"; exit 1; }
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
-DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')
+DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
     echo "✗ Step 3.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT:-讀不到}）— 合併到預設 branch 後再發版；停止，不建 release"; exit 1
 fi
-OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
+OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' \
   || { echo "✗ Step 3.5: 從 remote $REMOTE 的網址推不出 github.com 的 owner/repo（ssh host alias、GitHub Enterprise 不支援）— 停止，不建 release"; exit 1; }
 LINE=$(bash "$HELPER" --dir . --commit HEAD --name-style v --remote "$REMOTE" --expect "$VERSION"); RC=$?
@@ -514,14 +514,18 @@ if [ "$RC" != 0 ] || [ "$TAG" != "v$VERSION" ]; then
     case "$RC" in
       10) echo "✗ Step 3.5: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止。前者要先升版號；後者確認那個 tag 該不該留（刪 remote 上的 tag 由你決定）" ;;
       20) echo "✗ Step 3.5: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 2 Step 2 改成同一個版本" ;;
-      21) echo "✗ Step 3.5: 有版本檔讀不出值（見上方）— 修好那個檔案再重來" ;;
+      21) echo "✗ Step 3.5: 有版本檔讀不出值（見上方的原因；pyproject.toml 需要 python3 3.11 以上，見 #48）— 修好後重跑這一步" ;;
       30) echo "✗ Step 3.5: tag 推送失敗（重跑指令見上方）" ;;
       *)  echo "✗ Step 3.5: release-tag rc=${RC}、tag=${TAG:-?}（預期 v${VERSION}）" ;;
     esac
     echo "  停止，不建 release：沒有 tag 就建 release，GitHub 會在預設 branch 上自動建一個。"; exit 1
 fi
-gh api "repos/$OWNER_REPO/git/ref/tags/$TAG" --jq .object.sha >/dev/null 2>&1 \
-  || { echo "✗ Step 3.5: $OWNER_REPO 上找不到 ${TAG}（tag 推到的 remote 與 release 的 repo 不是同一個？）— 停止，不建 release"; exit 1; }
+# GitHub 上的那個 tag 必須就是剛推到 $REMOTE 的那一個（同一個 tag 物件），不只是同名（#42 verify 第 3 輪）
+GH_TAG_OBJ=$(gh api "repos/$OWNER_REPO/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null)
+PUSHED_TAG_OBJ=$(git ls-remote "$REMOTE" "refs/tags/$TAG" 2>/dev/null | cut -f1)
+if [ -z "$GH_TAG_OBJ" ] || [ "$GH_TAG_OBJ" != "$PUSHED_TAG_OBJ" ]; then
+    echo "✗ Step 3.5: $OWNER_REPO 上的 ${TAG} 與推到 $REMOTE 的不是同一個 tag（或找不到）— tag 推到的 remote 與 release 的 repo 不是同一個？停止，不建 release"; exit 1
+fi
 echo "→ Step 3.5: $TAG 已在 ${OWNER_REPO}；Step 4 在同一個 repo 用這個 tag 建 release"
 ```
 
@@ -564,19 +568,21 @@ Published as `io.github.{owner}/{project-name}` on the [Official MCP Registry](h
 
 ```bash
 # 準備變數
+VERSION='{version}'   # 與 Step 3.5 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
+case "$VERSION" in ''|'{version}'|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
 PROJECT_NAME=$(cat mcpb/manifest.json | grep '"name"' | head -1 | sed 's/.*"\([^"]*\)".*/\1/' | tr -d ' ')
 BINARY_NAME=$(ls mcpb/server/ | grep -v '.sh' | grep -v '.gitkeep' | head -1)
 MCPB_FILE=$(ls mcpb/*.mcpb | head -1)
 # 與 Step 3.5 同一個 repo：從推送的 remote 推導，不讓 gh 自己選（#42 verify：fork 工作流兩者可能不同）
-OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
+OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3.5"; exit 1; }
-gh api "repos/$OWNER_REPO/git/ref/tags/v{version}" --jq .object.sha >/dev/null || { echo "✗ $OWNER_REPO 上沒有 v{version} — 先跑完 Step 3.5"; exit 1; }
+gh api "repos/$OWNER_REPO/git/ref/tags/v$VERSION" --jq .object.sha >/dev/null || { echo "✗ $OWNER_REPO 上沒有 v$VERSION — 先跑完 Step 3.5"; exit 1; }
 
 # Step 1: 建立 Release（不帶 assets，秒完成）
 # tag_name 用 Step 3.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不另外指定 commit（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
-  -f tag_name="v{version}" \
-  -f name="v{version} - {title}" \
+  -f tag_name="v$VERSION" \
+  -f name="v$VERSION - {title}" \
   -f body="{release-notes}" \
   -F draft=false \
   -F prerelease=false \
@@ -606,7 +612,7 @@ curl -L -X POST \
   --progress-bar -o /dev/null -w "MCPB upload: HTTP %{http_code}, %{size_upload} bytes\n"
 
 # Step 4: 驗證
-gh release view v{version} --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
+gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
 ```
 
 **為什麼不用 `gh release create` 帶 assets**：
@@ -619,11 +625,13 @@ gh release view v{version} --repo "$OWNER_REPO" --json assets --jq '.assets[] | 
 只適合 binary < 10MB 的小型專案：
 
 ```bash
+VERSION='{version}'   # 與 Step 3.5 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
+case "$VERSION" in ''|'{version}'|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
 # --verify-tag：tag 不在 remote 就中止，不讓 gh 自己建 tag（#42，tag 由 Step 3.5 建）；--repo 與 Step 3.5 同一個 repo
-OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
+OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3.5"; exit 1; }
-gh release create v{version} --verify-tag --repo "$OWNER_REPO" \
-  --title "v{version} - {title}" \
+gh release create "v$VERSION" --verify-tag --repo "$OWNER_REPO" \
+  --title "v$VERSION - {title}" \
   --notes "{release-notes}" \
   mcpb/server/$BINARY_NAME \
   $MCPB_FILE

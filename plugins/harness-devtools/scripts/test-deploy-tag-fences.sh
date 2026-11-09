@@ -57,14 +57,14 @@ run() {
     *)   OUT=$(cd "$dir" && PATH="$T/bin:$PATH" "$sh" "$f" 2>&1); RC=$? ;;
   esac
 }
-# gh stub: only `gh api repos/o/r/git/ref/tags/<tag>`, answered from the bare remote in GH_STUB_REMOTE
+# gh stub: only `gh api repos/o/r/git/ref/tags/<tag> --jq .object.sha`, answered with the tag
+# object id from the bare repo in GH_STUB_REMOTE — "the GitHub repo o/r"
 mkdir -p "$T/bin"
 cat > "$T/bin/gh" <<'SH'
 #!/bin/sh
 [ "$1" = api ] || exit 1
 case "$2" in repos/o/r/git/ref/tags/*) tag=${2#repos/o/r/git/ref/tags/} ;; *) exit 1 ;; esac
-git --git-dir="$GH_STUB_REMOTE" rev-parse -q --verify "refs/tags/$tag" >/dev/null || exit 1
-echo sha
+git --git-dir="$GH_STUB_REMOTE" rev-parse -q --verify "refs/tags/$tag" || exit 1
 SH
 chmod +x "$T/bin/gh"
 
@@ -103,6 +103,16 @@ for s in mcp-deploy cli-deploy; do
   has "$s: the completion report has a tag line" "$(cat "$PLUGIN_ROOT/skills/$s/SKILL.md")" '- **Tag**: '
 done
 has "mcp-deploy: gh release create checks the tag exists" "$(grep 'gh release create' "$PLUGIN_ROOT/skills/mcp-deploy/SKILL.md")" '--verify-tag'
+# verify R3: the release steps use the VERSION checked at the top of their block, not a raw {version}
+release_blocks() { python3 -I -c 'import re,sys; print("\n".join(b for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1]).read(), re.S) if "releases --method POST" in b or "gh release create" in b))' "$PLUGIN_ROOT/skills/$1/SKILL.md"; }
+for s in mcp-deploy cli-deploy; do
+  hasnt "$s: the release blocks do not substitute v{version} unchecked" "$(release_blocks "$s")" 'v{version}'
+done
+# verify R3 / #39: skill loading may replace $0, $1, … with the invocation's arguments
+for SM in "mcp-deploy:Step 3.5: VERSION" "cli-deploy:Step 1.5: VERSION" "plugin-deploy:Step 7.5: PLUGIN_NAME"; do
+  fence "${SM%%:*}" "${SM#*:}" "$T/pos.sh"
+  hasnt "${SM%%:*}: the tag fence has no bare \$<digit> (#39)" "$(grep -oE '\$[0-9]' "$T/pos.sh" | head -1)" '$'
+done
 
 for SK in mcp-deploy:3.5 cli-deploy:1.5; do
   S=${SK%%:*}; STEP=${SK#*:}
@@ -161,7 +171,24 @@ for SK in mcp-deploy:3.5 cli-deploy:1.5; do
   has "credentials in the remote URL → still o/r" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
   hasnt "…and the token is not printed" "$OUT" "sekret"
 
-  W="$T/$S-main"; git -C "$W" config branch.main.remote nosuch
+  mk "$S-nothost" "https://notgithub.com/o/r.git"; W="$T/$S-nothost"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
+  run bash "$W" "$T/f4.sh"
+  has "a host that only ends in github.com → owner/repo cannot be derived" "$OUT" "推不出 github.com 的 owner/repo"
+  same "…and no tag pushed" "$(rtag "$T/$S-nothost.git" v1.0.0)" ""
+
+  # verify R3: the GitHub repo gh talks to must hold the SAME tag the push created
+  mk "$S-other"; W="$T/$S-other"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
+  git init -q --bare -b main "$T/$S-impostor.git"
+  git -C "$W" push -q "$T/$S-impostor.git" main 2>/dev/null
+  git -C "$W" tag -a v1.0.0 -m impostor && git -C "$W" push -q "$T/$S-impostor.git" v1.0.0 2>/dev/null && git -C "$W" tag -d v1.0.0 >/dev/null
+  export GH_STUB_REMOTE="$T/$S-impostor.git"
+  run bash "$W" "$T/f4.sh"
+  has "gh's o/r has a different v1.0.0 → stops" "$OUT" "不是同一個 tag"
+  hasnt "…and does not hand over to the release step" "$OUT" "已在 o/r；Step"
+
+  W="$T/$S-main"; export GH_STUB_REMOTE="$T/$S-main.git"; git -C "$W" config branch.main.remote nosuch
   run bash "$W" "$T/f.sh"
   has "upstream remote that is not a configured remote → stops" "$OUT" "不是這個 repo 設定過的 remote"
   git -C "$W" config branch.main.remote origin
@@ -190,6 +217,14 @@ same "an unrelated modified file is not committed" "$(git -C "$W" show HEAD:note
 fence cli-deploy "Step 1.5: VERSION" "$T/c15.sh" "VERSION='{version}' ==> VERSION='1.1.0'"
 run bash "$W" "$T/c15.sh"
 has "Step 1.5 then tags v1.1.0" "$OUT" "→ Step 1.5: v1.1.0 已在 o/r"
+
+# verify R3: a CHANGELOG.md created by this release (untracked) is staged too; other new files are not
+mk cli-new; W="$T/cli-new"
+put "$W" Sources/S/Version.swift 'enum V { static let version = "1.0.0" }'; ci "$W"; push "$W"
+put "$W" Sources/S/Version.swift 'enum V { static let version = "1.1.0" }'; put "$W" CHANGELOG.md first; put "$W" scratch.txt junk
+run bash "$W" "$T/stage.sh"
+same "a newly created CHANGELOG.md is committed" "$(git -C "$W" show HEAD:CHANGELOG.md 2>/dev/null)" first
+same "an unrelated new file is not committed" "$(git -C "$W" ls-tree --name-only HEAD scratch.txt)" ""
 
 echo "plugin-deploy Step 7.5"
 mk pd; W="$T/pd"

@@ -1973,7 +1973,9 @@ tag 的實作只有一份：`scripts/release-tag.sh`（四個發版 skill 共用
 
 **可能觸發 CI**：repo 若有 `on: push: tags` 的 workflow，自動推的 tag 會啟動它。
 
-**tag 名稱只看佈局**（#42 decision）：plugin 目錄就是 marketplace root（repo 本身就是 plugin，例如 iss-compute-mcp）→ `v<version>`；其他一律 `<plugin>-v<version>`（例如 harness-devtools 在 che-plugin-devtools 裡是 `harness-devtools-v2.6.0`，binary repo 裡的 `./plugin` 佈局如 che-keychain 是 `che-keychain-v0.4.0`——`v<version>` 留給 binary 自己的 release）。不看 marketplace 列了幾個 plugin，所以 marketplace 多一個 plugin 時名稱不會改變。
+**repo 本身是 plugin、又用 mcp-deploy／cli-deploy 發 binary 時**，兩邊共用 `v<version>` 這個名稱：先打的那一個決定 tag 在哪個 commit。plugin-update 打在升版號的 commit、mcp-deploy 打在 release commit；兩者不同時，後跑的那一個會得到 rc 10（mcp-deploy 因此停下、不建 release）。
+
+**tag 名稱只看佈局**（#42 decision）：plugin 目錄就是 git repo 的根目錄（repo 本身就是 plugin，例如 iss-compute-mcp）→ `v<version>`；marketplace 在大 repo 的子目錄裡時，即使 plugin source 是 `.` 也不算；其他一律 `<plugin>-v<version>`（例如 harness-devtools 在 che-plugin-devtools 裡是 `harness-devtools-v2.6.0`，binary repo 裡的 `./plugin` 佈局如 che-keychain 是 `che-keychain-v0.4.0`——`v<version>` 留給 binary 自己的 release）。不看 marketplace 列了幾個 plugin，所以 marketplace 多一個 plugin 時名稱不會改變。
 
 ```bash
 # ── 前導（每個 bash block 都以此開頭；Bash 工具的 shell 狀態不跨呼叫存活）──
@@ -1982,7 +1984,7 @@ source "${CLAUDE_PLUGIN_ROOT:?}/scripts/resolve-marketplace.sh"
 load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 UNATTENDED=""; [ "${IDD_ALL_UNATTENDED:-}" = 1 ] && UNATTENDED=1
-audit() { [ -n "$UNATTENDED" ] && echo "AUDIT: Phase 2.7 $1"; }
+audit() { [ -n "$UNATTENDED" ] && echo "AUDIT: Phase 2.7 $*"; }   # 用 $*：skill 載入時「錢號加數字」可能被換成呼叫引數（#39）
 HELPER="${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh"
 [ -f "$HELPER" ] || { echo "✗ Phase 2.7: 找不到 scripts/release-tag.sh（plugin cache 不完整）— 沒有打 tag"; audit "helper missing — no tag"; exit 0; }
 # (1) upstream 指向 remote，且 HEAD 已推送
@@ -1995,7 +1997,7 @@ if [ "$(git rev-parse '@{u}' 2>/dev/null)" != "$(git rev-parse HEAD)" ]; then
 fi
 # (2) 只在 remote 的預設 branch 上打——比的是 upstream 追蹤的 branch，不是本機 branch 名
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
-DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')
+DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
     echo "→ Phase 2.7: skipped — ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是 $REMOTE 的預設 branch（${DEFAULT:-讀不到}）"; audit "skipped (not the default branch)"; exit 0   # ${…}：bash 會把緊接的全形括號吃進變數名
 fi
@@ -2003,8 +2005,9 @@ fi
 if [ "$(git -C "$PLUGIN_DIR" rev-parse --show-toplevel 2>/dev/null)" != "$(git rev-parse --show-toplevel)" ]; then
     echo "→ Phase 2.7: skipped — plugin 目錄是另一個 git repo，不是 marketplace repo 的一部分（上面的檢查不適用於它）"; audit "skipped (plugin dir is a separate git repo)"; exit 0
 fi
-# tag 名稱只看佈局：repo 本身就是 plugin → v<version>；其他 → <plugin>-v<version>
-if [ "$(cd "$PLUGIN_DIR" && pwd -P)" = "$(pwd -P)" ]; then
+# tag 名稱只看佈局：plugin 目錄就是 git repo 的根目錄 → v<version>；其他 → <plugin>-v<version>
+# 比的是 git toplevel，不是 marketplace root：marketplace 可能在大 repo 的子目錄裡（#42 verify 第 3 輪）
+if [ "$(cd "$PLUGIN_DIR" && pwd -P)" = "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" ]; then
     STYLE_ARGS=(--name-style v)
 else
     STYLE_ARGS=(--name-style plugin --plugin "$PLUGIN_NAME")

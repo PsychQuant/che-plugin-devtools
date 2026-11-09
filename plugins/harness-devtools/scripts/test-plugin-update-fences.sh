@@ -731,6 +731,23 @@ export IDD_ALL_UNATTENDED=1
 run_both "tagten: same-name tag already on another commit, unattended → AUDIT" "$TAG_MARK" tagten "AUDIT: Phase 2.7 same-name tag"
 unset IDD_ALL_UNATTENDED
 
+# verify R3: a marketplace inside a subdirectory of a larger repo, plugin source '.', is NOT the
+# repo root — v<version> would be a repo-wide name
+SAVED_SEARCH_ROOT=$MARKETPLACE_SEARCH_ROOT
+mkdir -p "$T/big/dev/fx-tagsub/.claude-plugin"
+printf '{ "name": "fx-tagsub", "plugins": [ { "name": "tagsub", "version": "1.0.0", "source": "./" } ] }\n' > "$T/big/dev/fx-tagsub/.claude-plugin/marketplace.json"
+printf '{ "name": "tagsub", "version": "1.0.0" }\n' > "$T/big/dev/fx-tagsub/.claude-plugin/plugin.json"
+git init -q --bare "$T/remote-tagsub.git"
+( cd "$T/big" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm init && git remote add origin "$T/remote-tagsub.git" && git push -q -u origin HEAD 2>/dev/null )
+export MARKETPLACE_SEARCH_ROOT="$T/big/dev"
+prep01 tagsub
+run_both "tagsub: marketplace in a subdirectory, source '.' → <plugin>-v<version>" "$TAG_MARK" tagsub "name=tagsub-v1.0.0"
+export MARKETPLACE_SEARCH_ROOT="$SAVED_SEARCH_ROOT"
+
+# verify R3 / #39: skill loading may replace $0, $1, … with the invocation's arguments
+P27=$(python3 -I -c 'import re,sys; print("\n".join(b for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1]).read(), re.S) if "Phase 2.7" in b and "release-tag.sh" in b))' "$SKILL")
+if printf '%s' "$P27" | grep -qE '\$[0-9]'; then FAIL=$((FAIL+1)); echo "  ✗ Phase 2.7 fence has a bare \$<digit>: $(printf '%s' "$P27" | grep -nE '\$[0-9]' | head -3)"; else PASS=$((PASS+1)); echo "  ✓ Phase 2.7 fence has no bare \$<digit> (#39)"; fi
+
 # verify R2: a plugin dir that is its own git repo would be tagged and pushed in THAT repo
 mk_tag_fx tagnest 1.0.0 ./plugins/tagnest
 ( cd "$T/dev/fx-tagnest/plugins/tagnest" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm inner )

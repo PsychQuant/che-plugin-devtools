@@ -239,10 +239,11 @@ lipo -info .release/$BINARY_NAME
 **只 stage 本次 deploy 實際動過的檔案** — `git add -A` 會把使用者 working tree 裡無關的 modified files（例如 session-start hook 改的 `.claude/*`、`CLAUDE.md`）全部塞進 release commit，污染歷史。
 
 ```bash
-# Phase 3 Step 1: stage Phase 1 改過的檔案——CHANGELOG、README，以及 Step 1.5 會讀的版本來源（封閉列舉，
-# 與 Phase 1 Step 1 同一份）。只 stage 已追蹤且有修改的檔案；不存在的路徑不會報錯（#42 verify 第 2 輪：
-# 原本只 stage Version.swift，其他來源的改動沒進 commit，Step 1.5 讀 commit 就判成不一致）
-git -c core.quotePath=false ls-files -m -- CHANGELOG.md README.md 'Sources/*/Version.swift' 'Sources/*/Server.swift' \
+# Phase 3 Step 1: stage Phase 1 改過或新建的檔案——CHANGELOG、README，以及 Step 1.5 會讀的版本來源（封閉列舉，
+# 與 Phase 1 Step 1 同一份）。只看這些路徑：已追蹤且有修改的、以及這次新建的（不含 .gitignore 擋掉的）；
+# 不存在的路徑不會報錯（#42 verify 第 2、3 輪：原本只 stage Version.swift 與 CHANGELOG.md，
+# 其他來源的改動沒進 commit，Step 1.5 讀 commit 就判成不一致）
+git -c core.quotePath=false ls-files -mo --exclude-standard -- CHANGELOG.md README.md 'Sources/*/Version.swift' 'Sources/*/Server.swift' \
     mcpb/manifest.json package.json pyproject.toml .claude-plugin/plugin.json plugin.json \
   | while IFS= read -r f; do git add -- "$f"; done
 
@@ -281,11 +282,11 @@ case "$REMOTE" in ''|.) echo "✗ Step 1.5: $BRANCH 沒有指向 remote 的 upst
 git remote | grep -qxF -- "$REMOTE" || { echo "✗ Step 1.5: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 停止，不建 release"; exit 1; }
 [ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 1.5: HEAD 還沒推到 upstream（Step 1 沒推成功？）— 停止，不建 release"; exit 1; }
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
-DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')
+DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
     echo "✗ Step 1.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT:-讀不到}）— 合併到預設 branch 後再發版；停止，不建 release"; exit 1
 fi
-OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
+OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' \
   || { echo "✗ Step 1.5: 從 remote $REMOTE 的網址推不出 github.com 的 owner/repo（ssh host alias、GitHub Enterprise 不支援）— 停止，不建 release"; exit 1; }
 LINE=$(bash "$HELPER" --dir . --commit HEAD --name-style v --remote "$REMOTE" --expect "$VERSION"); RC=$?
@@ -295,14 +296,18 @@ if [ "$RC" != 0 ] || [ "$TAG" != "v$VERSION" ]; then
     case "$RC" in
       10) echo "✗ Step 1.5: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止。前者要先升版號；後者確認那個 tag 該不該留（刪 remote 上的 tag 由你決定）" ;;
       20) echo "✗ Step 1.5: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 1 Step 1 改成同一個版本" ;;
-      21) echo "✗ Step 1.5: 有版本檔讀不出值（見上方）— 修好那個檔案再重來" ;;
+      21) echo "✗ Step 1.5: 有版本檔讀不出值（見上方的原因；pyproject.toml 需要 python3 3.11 以上，見 #48）— 修好後重跑這一步" ;;
       30) echo "✗ Step 1.5: tag 推送失敗（重跑指令見上方）" ;;
       *)  echo "✗ Step 1.5: release-tag rc=${RC}、tag=${TAG:-?}（預期 v${VERSION}）" ;;
     esac
     echo "  停止，不建 release：沒有 tag 就建 release，GitHub 會在預設 branch 上自動建一個。"; exit 1
 fi
-gh api "repos/$OWNER_REPO/git/ref/tags/$TAG" --jq .object.sha >/dev/null 2>&1 \
-  || { echo "✗ Step 1.5: $OWNER_REPO 上找不到 ${TAG}（tag 推到的 remote 與 release 的 repo 不是同一個？）— 停止，不建 release"; exit 1; }
+# GitHub 上的那個 tag 必須就是剛推到 $REMOTE 的那一個（同一個 tag 物件），不只是同名（#42 verify 第 3 輪）
+GH_TAG_OBJ=$(gh api "repos/$OWNER_REPO/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null)
+PUSHED_TAG_OBJ=$(git ls-remote "$REMOTE" "refs/tags/$TAG" 2>/dev/null | cut -f1)
+if [ -z "$GH_TAG_OBJ" ] || [ "$GH_TAG_OBJ" != "$PUSHED_TAG_OBJ" ]; then
+    echo "✗ Step 1.5: $OWNER_REPO 上的 ${TAG} 與推到 $REMOTE 的不是同一個 tag（或找不到）— tag 推到的 remote 與 release 的 repo 不是同一個？停止，不建 release"; exit 1
+fi
 echo "→ Step 1.5: $TAG 已在 ${OWNER_REPO}；Step 2 在同一個 repo 用這個 tag 建 release"
 ```
 
@@ -311,15 +316,17 @@ echo "→ Step 1.5: $TAG 已在 ${OWNER_REPO}；Step 2 在同一個 repo 用這�
 ### Step 2: 建立 GitHub Release
 
 ```bash
+VERSION='{version}'   # 與 Step 1.5 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
+case "$VERSION" in ''|'{version}'|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
 # 與 Step 1.5 同一個 repo：從推送的 remote 推導，不讓 gh 自己選（#42 verify：fork 工作流兩者可能不同）
-OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
+OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "✗ 推不出 owner/repo — 先跑完 Step 1.5"; exit 1; }
-gh api "repos/$OWNER_REPO/git/ref/tags/v{version}" --jq .object.sha >/dev/null || { echo "✗ $OWNER_REPO 上沒有 v{version} — 先跑完 Step 1.5"; exit 1; }
+gh api "repos/$OWNER_REPO/git/ref/tags/v$VERSION" --jq .object.sha >/dev/null || { echo "✗ $OWNER_REPO 上沒有 v$VERSION — 先跑完 Step 1.5"; exit 1; }
 
 # 建立 Release：tag_name 用 Step 1.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不另外指定 commit（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
-  -f tag_name="v{version}" \
-  -f name="v{version}" \
+  -f tag_name="v$VERSION" \
+  -f name="v$VERSION" \
   -f body="{release-notes}" \
   -F draft=false \
   -F prerelease=false \
@@ -338,7 +345,7 @@ curl -L -X POST \
   --progress-bar -o /dev/null -w "Upload: HTTP %{http_code}, %{size_upload} bytes\n"
 
 # 驗證
-gh release view v{version} --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
+gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
 ```
 
 Release Notes 模板：
