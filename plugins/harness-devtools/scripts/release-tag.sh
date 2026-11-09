@@ -39,18 +39,25 @@
 # present but cannot be read stops the run:
 #   1. .claude-plugin/plugin.json or plugin.json         "version"
 #   2. pyproject.toml                                    [project].version (static)
-#   3. pyproject.toml dynamic version                    [tool.hatch.version].path → __version__ = "x.y.z"
+#   3. pyproject.toml dynamic version                    the file at [tool.hatch.version].path, read
+#                                                        exactly as hatchling's regex source reads it
+#                                                        (its default pattern or the configured one,
+#                                                        first match); another hatch source → unreadable
 #      (2 and 3 need python3 >= 3.11 for tomllib: with an older python3 first on
 #      PATH — /usr/bin/python3 on macOS is 3.9 — any pyproject.toml makes the run
 #      unreadable; #48)
-#   4. package.json                                      "version" (absent → not a source)
+#   4. package.json                                      "version"
 #   5. Sources/*/Version.swift                           static let|var version|current [: String] = "x.y.z"
 #                                                        (no such declaration → not a source; a
-#                                                        declaration that is not a string literal
-#                                                        → unreadable)
+#                                                        declaration whose value is not one whole
+#                                                        string literal → unreadable)
 #   6. mcpb/manifest.json                                "version"
-#   7. Sources/*/Server.swift                            version: "x.y.z" (none → not a source;
-#                                                        two different values → unreadable)
+#   7. Sources/*/Server.swift                            version: "x.y.z" as a whole argument (none →
+#                                                        not a source; a version string that is not
+#                                                        the whole argument, or two different values
+#                                                        → unreadable)
+#   A JSON source (1, 4, 6) without a "version" field is not a source. The Swift
+#   sources are read with comments removed; block comments nest.
 #
 # The version must also make a valid git tag name (`git check-ref-format`), which
 # is checked before anything is created, so --dry-run and a real run agree.
@@ -132,7 +139,7 @@ case "$MAX_WALK" in ''|*[!0-9]*|0) MAX_WALK=500 ;; esac
 # Read into a variable from a TOP-LEVEL heredoc, then run with -c: bash 3.2 cannot
 # parse a heredoc inside $( … ) when its text contains quotes (#42 verify R2).
 IFS= read -r -d '' PYSRC <<'PY' || true
-import ast, json, re, subprocess, sys
+import json, re, subprocess, sys
 
 top, sha, prefix, at_bump = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 MAX_WALK = int(sys.argv[5])
@@ -164,62 +171,76 @@ def swift_code(text):
             j = text.find("\n", i)
             i = n if j < 0 else j
         elif text.startswith("/*", i):
-            j = text.find("*/", i + 2)
-            out.append(" "); i = n if j < 0 else j + 2
+            # Swift block comments nest (#42 verify R6)
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth += 1; j += 2
+                elif text.startswith("*/", j):
+                    depth -= 1; j += 2
+                else:
+                    j += 1
+            out.append(" "); i = j
         else:
             out.append(text[i]); i += 1
     return "".join(out)
 
-def python_version(src):
-    """(values, problem) for a module-level __version__: only `__version__ = "x"` or
-    `__version__: str = "x"` with a plain string literal counts; anything else
-    (concatenation, a call, a conditional) is a problem (#42 verify R4)."""
-    src = src.lstrip("\ufeff")   # a UTF-8 BOM is legal in a .py file but not in ast.parse(str)
-
-    def parse(text):
-        try:
-            return ast.parse(text)
-        except (SyntaxError, ValueError, RecursionError, MemoryError):
+def dig(d, *keys):
+    """d[k1][k2]... when every level is a table; None otherwise."""
+    for k in keys:
+        if not isinstance(d, dict):
             return None
-    tree = parse(src)
-    if tree is None:
-        # The file needs a newer python than this one (or is broken): read only the
-        # module-level __version__ statements (#42 verify R5).
-        lines = [l for l in src.splitlines() if re.match(r"__version__\s*(?::[^=]*)?=", l)]
-        tree = parse("\n".join(lines)) if lines else None
-        if tree is None:
-            return [], f"cannot be parsed by python {sys.version_info[0]}.{sys.version_info[1]}"
-    vals, bad = [], False
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            targets, value = node.targets, node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            targets, value = [node.target], node.value
-        else:
-            continue
-        if any(isinstance(t, ast.Name) and t.id == "__version__" for t in targets):
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                vals.append(value.value)
-            else:
-                bad = True
-    return vals, ("__version__ is not a plain string literal" if bad else None)
+        d = d.get(k)
+    return d
 
-def hatch_path(pp_text):
-    """The [tool.hatch.version].path of a pyproject.toml text, when it is a plain
-    relative path; None otherwise (or without tomllib)."""
-    try:
-        import tomllib
-        doc = tomllib.loads(pp_text or "")
-    except Exception:
-        return None
-    path = (((doc.get("tool") or {}).get("hatch") or {}).get("version") or {}).get("path")
+# hatchling/version/core.py (read 2026-11-10): the regex version source searches the
+# file with this pattern, or [tool.hatch.version].pattern, under re.MULTILINE and takes
+# the FIRST match's `version` group. The tag has to say what the build publishes, so
+# the helper reads the file the same way: `__version__ = "1.0.0" + "-beta"` builds
+# 1.0.0 (#42 verify R6; rounds 4-5 had read it more strictly than hatch itself does).
+HATCH_DEFAULT_PATTERN = r'(?i)^(__version__|VERSION) *= *([\'"])v?(?P<version>.+?)\2'
+
+def hatch_config(doc):
+    cfg = dig(doc, "tool", "hatch", "version")
+    return cfg if isinstance(cfg, dict) else None
+
+def hatch_path_of(cfg):
+    path = cfg.get("path") if cfg else None
     if isinstance(path, str) and re.fullmatch(r"[A-Za-z0-9._/-]+", path) and ".." not in path.split("/"):
         return path
     return None
 
+def hatch_read(text, cfg):
+    """(version, problem): the version hatchling's regex source reads from text."""
+    source = cfg.get("source", "regex")
+    if source != "regex":
+        return None, f"hatch version source {safe(source)!r} is not supported (only regex)"
+    pattern = cfg.get("pattern", "")
+    if not isinstance(pattern, str):
+        return None, "[tool.hatch.version].pattern is not a string"
+    try:
+        m = re.search(pattern or HATCH_DEFAULT_PATTERN, text, flags=re.MULTILINE)
+    except (re.error, RecursionError, MemoryError):
+        return None, "[tool.hatch.version].pattern is not a valid regex"
+    if not m:
+        return None, "hatch's pattern finds no version in the file"
+    if "version" not in m.groupdict():
+        return None, "[tool.hatch.version].pattern has no group named version"
+    return m.group("version"), None
+
+def hatch_path(pp_text):
+    """The [tool.hatch.version].path of a pyproject.toml text, or None (--at-bump walk)."""
+    try:
+        import tomllib
+        return hatch_path_of(hatch_config(tomllib.loads(pp_text or "")))
+    except Exception:
+        return None
+
 # Server.swift: `version: "x"` counts only when the string literal is the whole
-# argument, i.e. followed by `,` `)` `]` or `}` (#42 verify R5)
-SERVER_ANY = re.compile(r'\bversion:\s*"([^"\\\n]*)"')
+# argument, i.e. followed by `,` `)` `]` or `}` (#42 verify R5). Every `version:` whose
+# string starts like a version is counted, escapes and interpolation included, so one
+# that is not a whole plain literal is a problem rather than invisible (#42 verify R6).
+SERVER_ANY = re.compile(r'\bversion:\s*"(?=[0-9]+\.[0-9]+)')
 SERVER_VALUE = re.compile(r'\bversion:\s*"([^"\\\n]*)"(?=\s*[,)\]}])')
 VERSIONISH = re.compile(r"[0-9]+\.[0-9]+")
 
@@ -235,9 +256,17 @@ SOURCE_SPECS = [".claude-plugin/plugin.json", "plugin.json", "pyproject.toml", "
 def safe(s):
     return re.sub(r"[^A-Za-z0-9._/:@+-]", "?", str(s))
 
+def literal(path):
+    return ":(literal)" + path
+
+def glob_escape(path):
+    return re.sub(r"([][*?])", r"[\1]", path)
+
 def git(*args):
+    # errors="replace": a version file may legally hold bytes that are not UTF-8 (a
+    # latin-1 comment); that must not crash the run (#42 verify R6)
     return subprocess.run(["git", "-C", top, "-c", "core.quotePath=false", *args],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 def read_sources(commit):
     """Return (found, problems, notes, paths) for the version sources at commit."""
@@ -250,8 +279,7 @@ def read_sources(commit):
         return r.stdout if r.returncode == 0 else None
 
     def listed(rel_dir):
-        r = subprocess.run(["git", "-C", top, "ls-tree", "-r", "-z", "--name-only", commit, "--", prefix + rel_dir],
-                           capture_output=True, text=True)
+        r = git("ls-tree", "-r", "-z", "--name-only", commit, "--", prefix + rel_dir)
         if r.returncode != 0:
             return []
         return [p[len(prefix):] for p in r.stdout.split("\0") if p]
@@ -262,24 +290,23 @@ def read_sources(commit):
         else:
             problems.append(f"{safe(name)}: version {safe(value)!r} is not x.y.z")
 
-    def json_version(rel, name, required):
+    def json_version(rel, name):
+        """A JSON file without a "version" field is not a version source (plugin.json,
+        package.json, mcpb/manifest.json alike — #42 verify R5, R6). A UTF-8 BOM is
+        dropped first."""
         text = show(rel)
         if text is None:
             return False
         try:
-            data = json.loads(text)
+            data = json.loads(text.lstrip("\ufeff"))
         except ValueError:
             problems.append(f"{name}: not valid JSON"); return True
-        if not isinstance(data, dict) or "version" not in data:
-            if required:
-                problems.append(f"{name}: no \"version\" field")
-            return True
-        add(name, data["version"], rel); return True
+        if isinstance(data, dict) and "version" in data:
+            add(name, data["version"], rel)
+        return True
 
-    # a plugin.json without "version" is legal and is not a version source, like
-    # package.json (#42 verify R5)
-    if not json_version(".claude-plugin/plugin.json", "plugin.json", False):
-        json_version("plugin.json", "plugin.json", False)
+    if not json_version(".claude-plugin/plugin.json", "plugin.json"):
+        json_version("plugin.json", "plugin.json")
 
     pp = show("pyproject.toml")
     if pp is not None:
@@ -298,25 +325,25 @@ def read_sources(commit):
                 if "version" in proj:
                     add("pyproject", proj["version"], "pyproject.toml")
                 elif "version" in dynamic:
-                    path = (((doc.get("tool") or {}).get("hatch") or {}).get("version") or {}).get("path")
-                    if not isinstance(path, str) or not path:
+                    cfg = hatch_config(doc)
+                    raw = cfg.get("path") if cfg else None
+                    path = hatch_path_of(cfg)
+                    if not isinstance(raw, str) or not raw:
                         problems.append("pyproject.toml: dynamic version is not a [tool.hatch.version] path")
-                    elif not re.fullmatch(r"[A-Za-z0-9._/-]+", path) or ".." in path.split("/"):
-                        problems.append(f"pyproject.toml: [tool.hatch.version].path {safe(path)!r} has characters outside [A-Za-z0-9._/-]")
+                    elif path is None:
+                        problems.append(f"pyproject.toml: [tool.hatch.version].path {safe(raw)!r} has characters outside [A-Za-z0-9._/-]")
                     else:
                         src = show(path)
-                        found_vals, why = python_version(src or "")
-                        vals = sorted(set(found_vals))
                         if src is None:
                             problems.append(f"hatch:{path}: file not found at this commit")
-                        elif why:
-                            problems.append(f"hatch:{path}: {why}")
-                        elif len(vals) != 1:
-                            problems.append(f"hatch:{path}: expected one __version__, found {[safe(v) for v in vals] or 'none'}")
                         else:
-                            add(f"hatch:{path}", vals[0], path)
+                            v, why = hatch_read(src, cfg)
+                            if why:
+                                problems.append(f"hatch:{path}: {why}")
+                            else:
+                                add(f"hatch:{path}", v, path)
 
-    json_version("package.json", "package.json", False)
+    json_version("package.json", "package.json")
 
     for path in listed("Sources/"):
         parts = path.split("/")
@@ -339,17 +366,17 @@ def read_sources(commit):
                 notes.append(f"{safe(path)}: no static version/current declaration; not a version source")
         elif parts[2] == "Server.swift":
             code = swift_code(show(path) or "")
-            started = [v for v in SERVER_ANY.findall(code) if VERSIONISH.match(v)]
+            started = len(SERVER_ANY.findall(code))
             whole = [v for v in SERVER_VALUE.findall(code) if VERSIONISH.match(v)]
             vals = sorted(set(whole))
-            if len(started) > len(whole):
+            if started > len(whole):
                 problems.append(f"{safe(path)}: version: is not a plain string literal")
             elif len(vals) > 1:
                 problems.append(f"{safe(path)}: several different versions {[safe(v) for v in vals]}")
             elif vals:
                 add(safe(path), vals[0], path)
 
-    json_version("mcpb/manifest.json", "mcpb/manifest.json", True)
+    json_version("mcpb/manifest.json", "mcpb/manifest.json")
     return found, problems, notes, paths
 
 found, problems, notes, paths = read_sources(sha)
@@ -371,13 +398,17 @@ if at_bump and found and not problems and len(values) == 1:
     # every hatch path the pyproject.toml ever named, so a renamed version file's
     # history is walked too (#42 verify R5)
     old_hatch = []
-    rp = git("rev-list", f"--max-count={MAX_WALK}", sha, "--", prefix + "pyproject.toml")
+    rp = git("rev-list", f"--max-count={MAX_WALK}", sha, "--", literal(prefix + "pyproject.toml"))
     for c in (rp.stdout.split() if rp.returncode == 0 else []):
         r_pp = git("cat-file", "blob", f"{c}:{prefix}pyproject.toml")
         hp = hatch_path(r_pp.stdout) if r_pp.returncode == 0 else None
         if hp:
             old_hatch.append(prefix + hp)
-    specs = list(dict.fromkeys([prefix + s for s in SOURCE_SPECS] + paths + old_hatch))
+    # pathspec magic: the directory part is literal even when its name has [ ] * ?
+    # (#42 verify R6); the Sources/*/ part keeps its one-level wildcard
+    specs = list(dict.fromkeys(
+        [(":(glob)" + glob_escape(prefix) + s) if "*" in s else literal(prefix + s) for s in SOURCE_SPECS]
+        + [literal(x) for x in paths + old_hatch]))
     r = git("rev-list", f"--max-count={MAX_WALK + 1}", sha, "--", *specs)
     candidates = r.stdout.split() if r.returncode == 0 else []
     release, stopped, unclear = None, False, None
@@ -388,8 +419,8 @@ if at_bump and found and not problems and len(values) == 1:
             release = c
             continue
         stopped = True
-        # (a manifest with no "version" field is not a source, so a commit before the
-        # version existed is a definite boundary — #42 verify R4, R5)
+        # (a JSON manifest with no "version" field is not a source, so a commit before
+        # the version existed is a definite boundary — #42 verify R4, R5, R6)
         if p2 and not (vals2 - {current}):
             # a source here cannot be read and every readable one already equals the
             # current version: it cannot be told whether the version was set here or
@@ -411,7 +442,7 @@ if at_bump and found and not problems and len(values) == 1:
     else:
         print(f"RELEASE\t{release}")
         if release != sha:
-            later = git("rev-list", "--count", f"{release}..{sha}", "--", prefix or ".")
+            later = git("rev-list", "--count", f"{release}..{sha}", "--", literal(prefix) if prefix else ".")
             n = later.stdout.strip() if later.returncode == 0 else "?"
             if n != "0":
                 where = safe(prefix.rstrip("/")) if prefix else "the repository"

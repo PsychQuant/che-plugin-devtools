@@ -412,21 +412,33 @@ new_repo; plugin_json "$W" "p[1]/" 1.0.0; commit "$W"
 run "$W" --dir "p[1]" --commit HEAD --name-style plugin --plugin p --dry-run
 check "exit 0" "$RC" 0
 
-echo "== hatch __version__: only a whole string literal counts (verify R4, Codex)"
-hatch_repo() {   # hatch_repo <__init__.py text>
+echo "== hatch: the version is read exactly as hatchling reads it (verify R6: its regex source, first match)"
+# hatchling/version/core.py: DEFAULT_PATTERN = (?i)^(__version__|VERSION) *= *(['"])v?(?P<version>.+?)\2,
+# re.MULTILINE, first match; [tool.hatch.version] pattern overrides it; source defaults to "regex".
+# So `"1.0.0" + "-beta"` builds 1.0.0, and the tag must say what the build publishes.
+hatch_repo() {   # hatch_repo <__init__.py text> [extra [tool.hatch.version] lines]
   new_repo; plugin_json "$W" "" 1.0.0
-  printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "x/__init__.py"\n' > "$W/pyproject.toml"
+  printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "x/__init__.py"\n%s' "${2:-}" > "$W/pyproject.toml"
   put "$W" x/__init__.py "$1"; commit "$W"
 }
-for init in '__version__ = "1.0.0" + "-beta"' '__version__ = "1.0.0".lower()' '__version__ = "1.0.0" if True else "2"'; do
+for init in '__version__ = "1.0.0" + "-beta"' '__version__ = "1.0.0".lower()' '__version__ = "1.0.0" if True else "2"' '__version__ = "v1.0.0"' 'VERSION = "1.0.0"'; do
   hatch_repo "$init"
-  run "$W" --dir . --commit HEAD --name-style v
-  check "[$init] → exit 21, not 1.0.0" "$RC" 21
-  check "…no remote tag" "$(git -C "$W" ls-remote --tags origin)" ""
+  run "$W" --dir . --commit HEAD --name-style v --dry-run
+  check "[$init] → hatch builds 1.0.0 → exit 0" "$RC" 0
 done
 hatch_repo '__version__: str = "1.0.0"  # typed'
 run "$W" --dir . --commit HEAD --name-style v --dry-run
-check "annotated __version__ with a trailing comment → exit 0" "$RC" 0
+check "an annotated __version__ is not found by hatch's pattern → exit 21" "$RC" 21
+hatch_repo '__version__ = "0.1.0"
+VERSION_STRING = "1.0.0"' 'pattern = "^VERSION_STRING = \"(?P<version>[^\"]+)\""
+'
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a custom [tool.hatch.version] pattern is used → 1.0.0, exit 0" "$RC" 0
+hatch_repo '__version__ = "1.0.0"' 'source = "code"
+'
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a version source other than regex → exit 21" "$RC" 21
+has "…and says so" "source"
 
 echo "== Server.swift: comments do not count (verify R4)"
 new_repo; put "$W" mcpb/manifest.json '{ "version": "1.1.0" }'
@@ -504,17 +516,20 @@ run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
 check "exit 0" "$RC" 0
 has "…on the commit that bumped the old file, not the rename" "commit=$(git -C "$W" rev-parse --short "$B")"
 
-echo "== hatch __version__ in a file python3 cannot parse whole (verify R5)"
+echo "== hatch files python3 would not parse are read like hatch reads them (verify R5, R6)"
 hatch_repo "$(printf '\xef\xbb\xbf"""doc"""\n__version__ = "1.0.0"')"
 run "$W" --dir . --commit HEAD --name-style v --dry-run
-check "a UTF-8 BOM → exit 0" "$RC" 0
+check "a UTF-8 BOM before a docstring → exit 0" "$RC" 0
 hatch_repo "$(printf 'type Alias = int\ndef f[T](x: T) -> T:\n    return x\n__version__ = "1.0.0"')"
 run "$W" --dir . --commit HEAD --name-style v --dry-run
-check "syntax newer than this python3 → the __version__ line is still read (exit 0)" "$RC" 0
+check "syntax newer than python3 → exit 0" "$RC" 0
 hatch_repo "__version__ = $(printf '%*s' 200000 '' | tr ' ' '-')1"
 run "$W" --dir . --commit HEAD --name-style v --dry-run
-check "a pathological expression → exit 21" "$RC" 21
+check "no quoted version (hatch cannot parse it either) → exit 21" "$RC" 21
 if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
+hatch_repo "$(printf '# -*- coding: latin-1 -*-\n# caf\xe9\n__version__ = "1.0.0"')"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a byte that is not UTF-8 in a comment → exit 0, no traceback" "$RC" 0
 
 echo "== a root plugin.json without a version field is not a source (verify R5)"
 new_repo; put "$W" .claude-plugin/plugin.json '{ "name": "p", "description": "d" }'; put "$W" mcpb/manifest.json '{ "version": "1.2.3" }'; commit "$W"
@@ -524,6 +539,53 @@ has "…and plugin.json is not listed as a source" "sources=mcpb/manifest.json"
 new_repo; put "$W" .claude-plugin/plugin.json '{ "name": "p" }'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run
 check "plugin.json without a version and nothing else → still exit 21 (no version source)" "$RC" 21
+
+echo "== Server.swift: an escape or interpolation after a version prefix is not a plain version (verify R6)"
+for arg in '"1.0.\(patch)"' '"1.0.0\u{2d}beta"'; do
+  new_repo; put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'
+  put "$W" Sources/S/Server.swift "let s = Server(name: \"s\", version: $arg)"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --expect 1.0.0 --dry-run
+  check "version: $arg → exit 21" "$RC" 21
+done
+
+echo "== Swift block comments nest (verify R6, Codex)"
+new_repo; put "$W" Sources/S/Version.swift '/* /* old */ static let version = "0.9.0" */
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --expect 1.0.0 --dry-run
+check "a declaration inside a nested comment is ignored → exit 0" "$RC" 0
+
+echo "== --at-bump with [ ] in the plugin directory name and a Swift source (verify R6, Codex)"
+new_repo; put "$W" "p[1]/Sources/S/Version.swift" 'enum V { static let version = "1.0.0" }'; commit "$W" a
+put "$W" "p[1]/Sources/S/Version.swift" 'enum V { static let version = "2.0.0" }'; commit "$W" bump
+B=$(git -C "$W" rev-parse HEAD); put "$W" z.txt 1; commit "$W" later
+run "$W" --dir "p[1]" --commit HEAD --name-style plugin --plugin p --at-bump --dry-run
+check "exit 0" "$RC" 0
+has "…on the bump commit" "commit=$(git -C "$W" rev-parse --short "$B")"
+
+echo "== a pyproject.toml in history whose [tool.hatch] is not a table (verify R6)"
+new_repo; plugin_json "$W" "" 1.0.0; printf '[project]\nname = "x"\n[tool.hatch]\nversion = "oops"\n' > "$W/pyproject.toml"; commit "$W" odd
+printf '[project]\nname = "x"\nversion = "2.0.0"\n' > "$W/pyproject.toml"; plugin_json "$W" "" 2.0.0; commit "$W" bump
+B=$(git -C "$W" rev-parse HEAD); put "$W" z.txt 1; commit "$W" later
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "exit 0" "$RC" 0
+if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
+new_repo; plugin_json "$W" "" 1.0.0; printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch]\nversion = "oops"\n' > "$W/pyproject.toml"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "at HEAD → exit 21" "$RC" 21
+if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
+
+echo "== mcpb/manifest.json without a version at an older commit is not a source (verify R6)"
+new_repo; put "$W" mcpb/manifest.json '{ "name": "m" }'; commit "$W" a
+put "$W" mcpb/manifest.json '{ "name": "m", "version": "1.0.0" }'; commit "$W" b
+B=$(git -C "$W" rev-parse HEAD); put "$W" z.txt 1; commit "$W" c
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "exit 0" "$RC" 0
+has "…on the commit that added the version" "commit=$(git -C "$W" rev-parse --short "$B")"
+
+echo "== a UTF-8 BOM in a JSON source (verify R6)"
+new_repo; put "$W" .claude-plugin/plugin.json "$(printf '\xef\xbb\xbf{ "name": "p", "version": "1.0.0" }')"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "exit 0" "$RC" 0
 
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"

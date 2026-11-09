@@ -347,11 +347,11 @@ binary 對應的獨立 repo（如 `PsychQuant/che-word-mcp`）才是使用者主
 1. `plugins/{name}/.claude-plugin/plugin.json` 的 `version`
 2. `.claude-plugin/marketplace.json` 中對應 plugin 的 `version`
 3. plugin 目錄下**套件自己的版本**——plugin 目錄裡有下列任何一個檔案，就要一起改成同一個版本（封閉列舉，與 `scripts/release-tag.sh` 認得的來源同一份，#42）：
-   - `pyproject.toml` 的 `[project].version`；版本是 `dynamic` 時，改 `[tool.hatch.version].path` 指到的檔案裡的 `__version__`
+   - `pyproject.toml` 的 `[project].version`；版本是 `dynamic` 時，改 `[tool.hatch.version].path` 指到的檔案裡的 `__version__`（helper 照 hatch 自己的讀法讀：預設或設定的 pattern、第一個符合的值）
    - `package.json` 的 `version`
    - `Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
    - `mcpb/manifest.json` 的 `version`
-   - `Sources/*/Server.swift` 的 `version: "…"`
+   - `Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數，不能串接或插值）
 
    漏改任何一個，Step 7.5 會因版本不一致而不打 tag。
 

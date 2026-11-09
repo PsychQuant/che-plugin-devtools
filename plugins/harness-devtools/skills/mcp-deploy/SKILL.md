@@ -223,7 +223,7 @@ chmod +x mcpb/server/run.sh
 
 確保所有地方的版本號一致。下面是 Phase 3 Step 3.5（`scripts/release-tag.sh`）會讀的版本來源，封閉列舉，與 helper 同一份；repo 裡有哪個就改哪個，漏改任何一個，Step 3.5 會因版本不一致而停止、不建 release（#42）：
 - `mcpb/manifest.json` 的 `version`
-- Swift：`Sources/*/Server.swift` 的 `version: "x.x.x"`、`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
+- Swift：`Sources/*/Server.swift` 的 `version: "x.x.x"`（字串必須是整個引數，不能串接或插值）、`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
 - Python：`pyproject.toml` 的 `[project].version`；版本是 `dynamic` 時，`[tool.hatch.version].path` 指到的檔案裡的 `__version__`
 - TypeScript：`package.json` 的 `version`
 - repo 根目錄若有 `.claude-plugin/plugin.json` 或 `plugin.json`，它的 `version`
@@ -505,7 +505,7 @@ if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
     echo "✗ Step 3.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT:-讀不到}）— 合併到預設 branch 後再發版；停止，不建 release"; exit 1
 fi
 OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
-printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' \
+printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
   || { echo "✗ Step 3.5: 從 remote $REMOTE 的網址推不出 github.com 的 owner/repo（ssh host alias、GitHub Enterprise 不支援）— 停止，不建 release"; exit 1; }
 LINE=$(bash "$HELPER" --dir . --commit HEAD --name-style v --remote "$REMOTE" --expect "$VERSION"); RC=$?
 echo "$LINE"
@@ -575,7 +575,7 @@ BINARY_NAME=$(ls mcpb/server/ | grep -v '.sh' | grep -v '.gitkeep' | head -1)
 MCPB_FILE=$(ls mcpb/*.mcpb | head -1)
 # 與 Step 3.5 同一個 repo：從推送的 remote 推導，不讓 gh 自己選（#42 verify：fork 工作流兩者可能不同）
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
-printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3.5"; exit 1; }
+printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3.5"; exit 1; }
 gh api "repos/$OWNER_REPO/git/ref/tags/v$VERSION" --jq .object.sha >/dev/null || { echo "✗ $OWNER_REPO 上沒有 v$VERSION — 先跑完 Step 3.5"; exit 1; }
 
 # Step 1: 建立 Release（不帶 assets，秒完成）
@@ -629,7 +629,7 @@ VERSION='{version}'   # 與 Step 3.5 同一個版本；代入前核對只含 0-9
 case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
 # --verify-tag：tag 不在 remote 就中止，不讓 gh 自己建 tag（#42，tag 由 Step 3.5 建）；--repo 與 Step 3.5 同一個 repo
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
-printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3.5"; exit 1; }
+printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3.5"; exit 1; }
 gh release create "v$VERSION" --verify-tag --repo "$OWNER_REPO" \
   --title "v$VERSION - {title}" \
   --notes "{release-notes}" \

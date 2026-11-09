@@ -163,7 +163,8 @@ bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v
 # → RELEASE_TAG: <tagged|exists|not-bumped|mismatch|unreadable|push-failed|dry-run> name=… commit=… version=… sources=…
 ```
 
-- **版本從 commit 讀，不讀工作樹**；七種來源（封閉列舉）全部一致才打：plugin.json、pyproject 靜態版本、hatch `path` 的 `__version__`（只認整個是字串常值的 `__version__ = "x"`）、package.json、`Sources/*/Version.swift`（`static let|var version|current`，可帶 `: String`；初始值必須整個是一個字串常值）、`mcpb/manifest.json`、`Sources/*/Server.swift`。`Version.swift` 裡沒有這種宣告時不算來源；有宣告但值不是字串常值 → 21。
+- **版本從 commit 讀，不讀工作樹**；七種來源（封閉列舉）全部一致才打：plugin.json、pyproject 靜態版本、hatch `path` 指到的檔案（照 hatchling 的 regex source 讀：預設或設定的 pattern、第一個符合的值，與 hatch 建出的版本一致；其他 hatch source → 21）、package.json、`Sources/*/Version.swift`（`static let|var version|current`，可帶 `: String`；初始值必須整個是一個字串常值）、`mcpb/manifest.json`、`Sources/*/Server.swift`（`version: "x"` 必須是整個引數）。JSON 來源沒有 `version` 欄位、`Version.swift` 沒有這種宣告時都不算來源；Swift 的值不是一整個字串常值 → 21。Swift 先去掉註解（區塊註解可巢狀）。
+- **`--at-bump` 的限制**：走訪看的是目前的路徑（hatch 版本檔改名會跟著走）；plugin 目錄整個搬家、搬家時又沒升版號的話，第一次跑會打在搬家的 commit。
 - **pyproject 需要 python3 3.11 以上**（`tomllib`）。PATH 上第一個 `python3` 比較舊時（macOS 的 `/usr/bin/python3` 是 3.9），有 `pyproject.toml` 的 repo 一律 21（#48）。
 - **bash 3.2 可用**：helper 在 macOS 內建的 `/bin/bash` 下也能跑，測試會在 `/bin/bash` 下把整套重跑一次。
 - **打在哪個 commit**：

@@ -184,6 +184,12 @@ for SK in mcp-deploy:3.5 cli-deploy:1.5; do
   has "a host that only ends in github.com → owner/repo cannot be derived" "$OUT" "推不出 github.com 的 owner/repo"
   same "…and no tag pushed" "$(rtag "$T/$S-nothost.git" v1.0.0)" ""
 
+  # verify R6: dot segments are not an owner/repo
+  mk "$S-dots" "https://github.com/../.."; W="$T/$S-dots"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
+  run bash "$W" "$T/f4.sh"
+  has "a remote URL that reduces to ../.. → owner/repo cannot be derived" "$OUT" "推不出 github.com 的 owner/repo"
+
   # verify R3: the GitHub repo gh talks to must hold the SAME tag the push created
   mk "$S-other"; W="$T/$S-other"
   put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
