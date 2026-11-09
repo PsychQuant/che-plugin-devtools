@@ -349,7 +349,7 @@ binary 對應的獨立 repo（如 `PsychQuant/che-word-mcp`）才是使用者主
 3. plugin 目錄下**套件自己的版本**——plugin 目錄裡有下列任何一個檔案，就要一起改成同一個版本（封閉列舉，與 `scripts/release-tag.sh` 認得的來源同一份，#42）：
    - `pyproject.toml` 的 `[project].version`；版本是 `dynamic` 時，改 `[tool.hatch.version].path` 指到的檔案裡的 `__version__`
    - `package.json` 的 `version`
-   - `Sources/*/Version.swift` 的 `static let version` / `static let current`
+   - `Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
    - `mcpb/manifest.json` 的 `version`
    - `Sources/*/Server.swift` 的 `version: "…"`
 
@@ -382,18 +382,31 @@ push 成功後打版號 tag 並推上去。規則與 `plugin-update` Phase 2.7 �
 
 Step 7 推送前若要向使用者確認，同一個確認要列出這個 tag。
 
+兩個值由 agent 代入：`{marketplace-root}`（Step 1 找到的 marketplace repo 根目錄，絕對路徑）與 `{plugin-name}`。代入前先核對：路徑不含單引號，plugin 名只含 `A-Z a-z 0-9 . _ -`。值裡有單引號會先跳出字串，fence 裡的檢查就擋不到了。每個 Bash 呼叫都是新的 shell，Step 1 設的 `$MARKETPLACE_ROOT` 不會留到這裡；而 zsh 的 `cd ""` 不會失敗，所以這裡明寫路徑並先驗證（#42 verify 第 2 輪）。
+
 ```bash
-cd "$MARKETPLACE_ROOT" || exit 1
+MARKETPLACE_ROOT='{marketplace-root}'
+case "$MARKETPLACE_ROOT" in ''|'{marketplace-root}') echo "⚠ Step 7.5: MARKETPLACE_ROOT 未代入 — 沒有打 tag"; exit 0 ;; esac
+[ "$(git -C "$MARKETPLACE_ROOT" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$MARKETPLACE_ROOT" 2>/dev/null && pwd -P)" ] \
+  || { echo "⚠ Step 7.5: $MARKETPLACE_ROOT 不是 git repo 的根目錄 — 沒有打 tag"; exit 0; }
+cd "$MARKETPLACE_ROOT" || exit 0
 PLUGIN_NAME='{plugin-name}'
 case "$PLUGIN_NAME" in ''|'{plugin-name}'|.*|-*|*[!A-Za-z0-9._-]*) echo "⚠ Step 7.5: PLUGIN_NAME 未代入或不合法 — 沒有打 tag"; exit 0 ;; esac
 HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法：skill 載入時會被代換成 plugin 路徑（#39）
 [ -f "$HELPER" ] || { echo "⚠ Step 7.5: 找不到 $HELPER — 沒有打 tag"; exit 0; }
+# plugin 目錄若自己是另一個 git repo（巢狀 clone、submodule），下面的檢查看的是 marketplace repo，
+# helper 卻會在 plugin 目錄的 repo 打 tag 並推送——兩者必須是同一個 repo（#42 verify 第 2 輪）
+[ "$(git -C "plugins/$PLUGIN_NAME" rev-parse --show-toplevel 2>/dev/null)" = "$(git rev-parse --show-toplevel)" ] \
+  || { echo "⚠ Step 7.5: plugins/$PLUGIN_NAME 是另一個 git repo（或不存在），不是 marketplace repo 的一部分 — 沒有打 tag"; exit 0; }
 BRANCH=$(git branch --show-current)
 REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
 case "$REMOTE" in ''|.) echo "⚠ Step 7.5: $BRANCH 沒有指向 remote 的 upstream — 沒有打 tag"; exit 0 ;; esac
-DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')
-[ -n "$DEFAULT" ] && [ "$BRANCH" = "$DEFAULT" ] || { echo "⚠ Step 7.5: 目前在 ${BRANCH}，不是 $REMOTE 的預設 branch（${DEFAULT:-?}）— 沒有打 tag"; exit 0; }
+git remote | grep -qxF -- "$REMOTE" || { echo "⚠ Step 7.5: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 沒有打 tag"; exit 0; }
 [ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: HEAD 還沒推上去（Step 7 沒推成功？）— 沒有打 tag"; exit 0; }
+# 預設 branch 看的是 upstream 追蹤的 branch，不是本機 branch 名
+UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
+DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')
+[ -n "$DEFAULT" ] && [ "$UPSTREAM_BRANCH" = "$DEFAULT" ] || { echo "⚠ Step 7.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是 $REMOTE 的預設 branch（${DEFAULT:-?}）— 沒有打 tag"; exit 0; }
 bash "$HELPER" --dir "plugins/$PLUGIN_NAME" --commit HEAD --at-bump --remote "$REMOTE" --name-style plugin --plugin "$PLUGIN_NAME"
 echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 同名 tag 在別的 commit；20/21 版本不一致或讀不出；30 推送失敗，見上方重跑指令）"
 ```

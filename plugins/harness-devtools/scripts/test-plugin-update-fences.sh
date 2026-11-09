@@ -716,6 +716,27 @@ f=$(prep "$TAG_MARK" tagbump); OUT=$(cd "$T" && bash "$f" 2>&1)
 assert_contains "tagbump: tagged" "→ Phase 2.7: done — tagged name=v2.1.0" "$OUT"
 assert_contains "tagbump: v2.1.0 is on the bump commit, not on HEAD" "$BUMP" "$(git -C "$T/dev/fx-tagbump" ls-remote --tags origin 'refs/tags/v2.1.0^{}')"
 
+# verify R2: the default-branch check reads the upstream branch, not the local branch name
+mk_tag_fx tagwork 1.2.0
+( cd "$T/dev/fx-tagwork" && git branch -m work )
+prep01 tagwork
+run_both "tagwork: local 'work' tracking the remote's default branch → tagged" "$TAG_MARK" tagwork "→ Phase 2.7: done"
+
+# verify R2: rc 10 is a no-tag case too, so unattended prints AUDIT for it
+mk_tag_fx tagten 3.0.0
+printf 'w\n' > "$T/dev/fx-tagten/W"; commit_fx tagten wip
+( cd "$T/dev/fx-tagten" && git push -q origin HEAD 2>/dev/null && git tag -a v3.0.0 -m x HEAD && git push -q origin v3.0.0 2>/dev/null )
+prep01 tagten
+export IDD_ALL_UNATTENDED=1
+run_both "tagten: same-name tag already on another commit, unattended → AUDIT" "$TAG_MARK" tagten "AUDIT: Phase 2.7 same-name tag"
+unset IDD_ALL_UNATTENDED
+
+# verify R2: a plugin dir that is its own git repo would be tagged and pushed in THAT repo
+mk_tag_fx tagnest 1.0.0 ./plugins/tagnest
+( cd "$T/dev/fx-tagnest/plugins/tagnest" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm inner )
+prep01 tagnest
+run_both "tagnest: plugin dir is its own git repo → skipped" "$TAG_MARK" tagnest "是另一個 git repo"
+
 mk_tag_fx tagself 1.0.0 ./plugin
 prep01 tagself
 run_both "tagself: ./plugin inside a (binary) repo → <plugin>-v<version>, not v<version>" "$TAG_MARK" tagself "name=tagself-v1.0.0"

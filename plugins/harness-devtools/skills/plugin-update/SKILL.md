@@ -864,7 +864,7 @@ echo "→ 回 Phase 0.3 Step 2 重跑（會落到 Case C；Phase 0.5 會問怎�
 
 ## Phase 0.5: Git State Preview & Confirmation Gate（v1.16.0+ #60）
 
-> **為什麼這 phase 在 Phase 1 之前**:Phase 1+ 會 `git add` / `git commit` / `git push` / `claude plugin marketplace update`,在那之前,user 必須對樹上**既有**的變更（未提交 / 未推送 / 分歧，Case B–E）明確表態要不要一起推。clean start（Case A）沒有裁決點，直接通過（#19）——這代表在 clean start 下（含 unattended）**以下動作不經人工確認就會發生（封閉列舉，不得類推）**：(1) Phase 2 對 `.claude-plugin/marketplace.json` 的鏡像 commit + push——只在該檔的 entry 版本已等於 plugin.json 且相對 HEAD 有變更時，push 前列出視窗內混進的 commit 與其 plugin 歸屬；(2) Phase 3 `claude plugin marketplace update`（重拉 plugin index）；(3) Phase 4 `claude plugin update` / `install`（把 plugin 程式碼裝進本機；binary-backed plugin 的 wrapper 下次啟動會自動下載 release binary）；(4) Phase 2.7 推送版號 tag（#42）——只在預設 branch、`@{u} == HEAD`、且七種版本來源全部一致時打，tag 打在升版號的那個 commit（不一致或讀不出 → 不打、unattended 印 `AUDIT:`），不移動、不覆寫既有 tag。attended 的 Case A 也一樣不另外問：clean start 本來就不問推送（同 (1)），tag 比照辦理；Case B–E 的 push 選項則把 tag 寫進同一次確認。#19 之前 unattended 在 Phase 0.5 一律 abort，(1)–(3) 從未在無人看管下執行過；現在它們是 common-release-flow 自動鏈刻意要的行為。(4) 由 #42 加入：使用者要求發版自動打 tag，且同意 unattended 下來源一致就打（#42 Implementation Plan 核准時）。binary pin 的 bump **不在**這個列舉裡：unattended 下從不自動 bump（#22）。其餘兩道互動閘在 unattended 下：**仍會 abort** 的只有 Phase 1.5 Step 4（binary 不同步）；Phase 2.5 Step 2（README stale）**不 abort**，自動「先略過」繼續 Phase 3，並印一行 `AUDIT:` 供 Phase 5 的最終 report 收錄。Phase 2.7 不是互動閘：它不問、不 abort，不打 tag 的情況在 unattended 下同樣印 `AUDIT:`。
+> **為什麼這 phase 在 Phase 1 之前**:Phase 1+ 會 `git add` / `git commit` / `git push` / `claude plugin marketplace update`,在那之前,user 必須對樹上**既有**的變更（未提交 / 未推送 / 分歧，Case B–E）明確表態要不要一起推。clean start（Case A）沒有裁決點，直接通過（#19）——這代表在 clean start 下（含 unattended）**以下動作不經人工確認就會發生（封閉列舉，不得類推）**：(1) Phase 2 對 `.claude-plugin/marketplace.json` 的鏡像 commit + push——只在該檔的 entry 版本已等於 plugin.json 且相對 HEAD 有變更時，push 前列出視窗內混進的 commit 與其 plugin 歸屬；(2) Phase 3 `claude plugin marketplace update`（重拉 plugin index）；(3) Phase 4 `claude plugin update` / `install`（把 plugin 程式碼裝進本機；binary-backed plugin 的 wrapper 下次啟動會自動下載 release binary）；(4) Phase 2.7 推送版號 tag（#42）——只在 upstream 追蹤的是預設 branch、`@{u} == HEAD`、plugin 目錄與 marketplace 是同一個 git repo、且七種版本來源全部一致時打，tag 打在升版號的那個 commit（不一致或讀不出 → 不打、unattended 印 `AUDIT:`），不移動、不覆寫既有 tag。還沒有版號 tag 的 plugin，第一次跑時會替**目前版本**補打在它當初升版號的 commit；更早的版本不補。attended 的 Case A 也不另外問，依據是使用者對 #42 的指示：「自動打，所以我才希望更新plugin，發版時應該要tag」（2026-11-09），以及 issue 的 Expected「不另外問要不要打」；Case B–E 的 push 選項則把 tag 寫進同一次確認。#19 之前 unattended 在 Phase 0.5 一律 abort，(1)–(3) 從未在無人看管下執行過；現在它們是 common-release-flow 自動鏈刻意要的行為。(4) 由 #42 加入：使用者要求發版自動打 tag（上面那句指示），且同意 unattended 下來源一致就打（#42 Implementation Plan 核准時）。binary pin 的 bump **不在**這個列舉裡：unattended 下從不自動 bump（#22）。其餘兩道互動閘在 unattended 下：**仍會 abort** 的只有 Phase 1.5 Step 4（binary 不同步）；Phase 2.5 Step 2（README stale）**不 abort**，自動「先略過」繼續 Phase 3，並印一行 `AUDIT:` 供 Phase 5 的最終 report 收錄。Phase 2.7 不是互動閘：它不問、不 abort，不打 tag 的情況在 unattended 下同樣印 `AUDIT:`。
 >
 > 既有 (pre-v1.16.0) 行為:Phase 1 Step 2 印出 `git status` 後接 narrative reminder text 「請先 commit + push」,但**沒實際 gate**,AI executor 可以印 reminder 後繼續。新 phase 把這個決定升格成 **AskUserQuestion** explicit dispatch,跟 skill 內既有 [Phase 1.5: External Binary Dependency Check](#phase-15-external-binary-dependency-check若有) + [Phase 2.5: README Freshness Check](#phase-25-readme-freshness-check) 同 pattern(用 section refs 而非 line numbers,避免後續 insert 後 stale)。
 >
@@ -1962,12 +1962,16 @@ tag 的實作只有一份：`scripts/release-tag.sh`（四個發版 skill 共用
 | helper 結果 | 本 fence 的處置 |
 |---|---|
 | `tagged` / `exists`（0） | 印出結果，繼續 Phase 3 |
-| `not-bumped`（10） | 同名 tag 已在另一個 commit 上（例如以前手動打在別處）——印出、不移動，繼續 |
+| `not-bumped`（10） | 同名 tag 已在另一個 commit 上（例如以前手動打在別處）——印出、不移動，unattended 另印 `AUDIT:`；繼續 |
 | `mismatch`（20）/ `unreadable`（21） | **不打 tag**；attended 印 ⚠ 與各來源的值，unattended 印 `AUDIT:`；繼續 Phase 3（branch 已推送，安裝不受影響） |
 | `push-failed`（30） | 印出 helper 給的重跑指令，unattended 另印 `AUDIT:`；繼續 Phase 3 |
 | 其他（usage error、helper 不存在） | 印 ✗ 與原因，unattended 另印 `AUDIT:`；繼續 Phase 3 |
 
-**能不能打**（封閉列舉，三項都要成立）：(1) 目前 branch 有指向 remote 的 upstream，且 `@{u} == HEAD`；(2) 目前 branch 是那個 remote 的預設 branch——feature branch 上不打；(3) helper 找得到 `scripts/release-tag.sh`。
+**能不能打**（封閉列舉，四項都要成立）：(1) 目前 branch 有指向 remote 的 upstream（必須是 `git remote` 列得出的 remote 名稱），且 `@{u} == HEAD`；(2) 目前 branch 追蹤的 upstream branch 是那個 remote 的預設 branch——看 upstream，不看本機 branch 名，feature branch 上不打；(3) plugin 目錄與 marketplace 是同一個 git repo——plugin 目錄若自己是另一個 repo（巢狀 clone、submodule），前兩項檢查的是 marketplace repo，helper 卻會在 plugin 目錄的 repo 打 tag 並推送（#42 verify 第 2 輪）；(4) helper 找得到 `scripts/release-tag.sh`。
+
+**第一次跑會補打目前版本**：還沒有版號 tag 的 plugin，下一次 plugin-update 會在目前版本當初升版號的 commit 補一個 tag；更早的版本不補。升版號之後若還有改動 plugin 目錄的 commit，helper 會在 stderr 印出筆數——tag 標的是版本從哪個 commit 開始，不包含那些後來的改動（squash merge 時兩者是同一個 commit）。
+
+**可能觸發 CI**：repo 若有 `on: push: tags` 的 workflow，自動推的 tag 會啟動它。
 
 **tag 名稱只看佈局**（#42 decision）：plugin 目錄就是 marketplace root（repo 本身就是 plugin，例如 iss-compute-mcp）→ `v<version>`；其他一律 `<plugin>-v<version>`（例如 harness-devtools 在 che-plugin-devtools 裡是 `harness-devtools-v2.6.0`，binary repo 裡的 `./plugin` 佈局如 che-keychain 是 `che-keychain-v0.4.0`——`v<version>` 留給 binary 自己的 release）。不看 marketplace 列了幾個 plugin，所以 marketplace 多一個 plugin 時名稱不會改變。
 
@@ -1985,13 +1989,19 @@ HELPER="${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh"
 BRANCH=$(git branch --show-current)
 REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
 case "$REMOTE" in ''|.) echo "→ Phase 2.7: skipped — ${BRANCH:-HEAD} 沒有指向 remote 的 upstream"; audit "skipped (no remote upstream)"; exit 0 ;; esac
+git remote | grep -qxF -- "$REMOTE" || { echo "→ Phase 2.7: skipped — ${BRANCH} 的 upstream 不是這個 repo 設定過的 remote 名稱"; audit "skipped (upstream is not a configured remote)"; exit 0; }
 if [ "$(git rev-parse '@{u}' 2>/dev/null)" != "$(git rev-parse HEAD)" ]; then
     echo "→ Phase 2.7: skipped — HEAD 還沒推到 upstream（只替已推送的 commit 打 tag）"; audit "skipped (HEAD not pushed)"; exit 0
 fi
-# (2) 只在 remote 的預設 branch 上打
+# (2) 只在 remote 的預設 branch 上打——比的是 upstream 追蹤的 branch，不是本機 branch 名
+UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
 DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')
-if [ -z "$DEFAULT" ] || [ "$BRANCH" != "$DEFAULT" ]; then
-    echo "→ Phase 2.7: skipped — 目前在 ${BRANCH}，不是 $REMOTE 的預設 branch（${DEFAULT:-讀不到}）"; audit "skipped (not the default branch)"; exit 0   # ${…}：bash 會把緊接的全形括號吃進變數名
+if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
+    echo "→ Phase 2.7: skipped — ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是 $REMOTE 的預設 branch（${DEFAULT:-讀不到}）"; audit "skipped (not the default branch)"; exit 0   # ${…}：bash 會把緊接的全形括號吃進變數名
+fi
+# (3) plugin 目錄與 marketplace 是同一個 git repo
+if [ "$(git -C "$PLUGIN_DIR" rev-parse --show-toplevel 2>/dev/null)" != "$(git rev-parse --show-toplevel)" ]; then
+    echo "→ Phase 2.7: skipped — plugin 目錄是另一個 git repo，不是 marketplace repo 的一部分（上面的檢查不適用於它）"; audit "skipped (plugin dir is a separate git repo)"; exit 0
 fi
 # tag 名稱只看佈局：repo 本身就是 plugin → v<version>；其他 → <plugin>-v<version>
 if [ "$(cd "$PLUGIN_DIR" && pwd -P)" = "$(pwd -P)" ]; then
@@ -2005,7 +2015,8 @@ LINE=$(bash "$HELPER" --dir "$PLUGIN_DIR" --commit HEAD --at-bump --remote "$REM
 sed 's/^/    /' "$ERRF"; rm -f "$ERRF"
 case "$RC" in
   0)  echo "→ Phase 2.7: done — ${LINE#RELEASE_TAG: }" ;;
-  10) echo "→ Phase 2.7: 同名 tag 已在另一個 commit 上（不是升版號的那個）— 不移動，沒有打 tag" ;;
+  10) echo "→ Phase 2.7: 同名 tag 已在另一個 commit 上（不是升版號的那個）— 不移動，沒有打 tag"
+      audit "same-name tag already on another commit (rc 10) — not moved, no tag" ;;
   20|21) echo "⚠ Phase 2.7: 版本來源不一致或讀不出（見上方）— 沒有打 tag；修正版號後重跑 plugin-update 即可補打"
          audit "version sources disagree or unreadable (rc ${RC}) — no tag pushed under unattended" ;;
   30) echo "⚠ Phase 2.7: tag 推送失敗（重跑指令見上方）— branch 已推送，繼續 Phase 3"

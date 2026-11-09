@@ -73,7 +73,7 @@ echo "Binary: $BINARY_NAME"
 - `Sources/*/Version.swift` — 更新版本字串
 - 其他可能的位置由 Step 0.3 決定
 
-Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let version` / `static let current`、`Sources/*/Server.swift` 的 `version: "…"`、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（或 hatch `path` 的 `__version__`）、根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。
+Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`）、`Sources/*/Server.swift` 的 `version: "…"`、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（或 hatch `path` 的 `__version__`）、`.claude-plugin/plugin.json` 或根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。Phase 3 Step 1 會把清單裡改過的檔案都 stage 進 release commit；改了 hatch `path` 指到的檔案時，那個檔案要自己 `git add`。
 
 ### Step 2: 更新 CHANGELOG.md
 
@@ -239,9 +239,12 @@ lipo -info .release/$BINARY_NAME
 **只 stage 本次 deploy 實際動過的檔案** — `git add -A` 會把使用者 working tree 裡無關的 modified files（例如 session-start hook 改的 `.claude/*`、`CLAUDE.md`）全部塞進 release commit，污染歷史。
 
 ```bash
-# 只 stage Phase 1 改過的檔案
-git add Sources/*/Version.swift CHANGELOG.md
-[ -f README.md ] && git diff --cached --quiet README.md 2>/dev/null || git add README.md 2>/dev/null || true
+# Phase 3 Step 1: stage Phase 1 改過的檔案——CHANGELOG、README，以及 Step 1.5 會讀的版本來源（封閉列舉，
+# 與 Phase 1 Step 1 同一份）。只 stage 已追蹤且有修改的檔案；不存在的路徑不會報錯（#42 verify 第 2 輪：
+# 原本只 stage Version.swift，其他來源的改動沒進 commit，Step 1.5 讀 commit 就判成不一致）
+git -c core.quotePath=false ls-files -m -- CHANGELOG.md README.md 'Sources/*/Version.swift' 'Sources/*/Server.swift' \
+    mcpb/manifest.json package.json pyproject.toml .claude-plugin/plugin.json plugin.json \
+  | while IFS= read -r f; do git add -- "$f"; done
 
 # 檢查 staging 內容，確認沒混進無關檔案
 git diff --cached --stat
@@ -258,10 +261,14 @@ git push origin main
 
 - 版本從 commit 的內容讀，找得到的版本來源都要等於這次要發的 `{version}`（`--expect`）。
 - 樹裡沒有版本、版本是 build 時才算出來的 repo（例如 safari-browser 由 `git describe` 算），就直接用 `{version}`。
-- `Version.swift` 裡沒有 `static let version` / `static let current` 宣告時（例如只在 `run()` 裡 print 版本），不算版本來源。
+- `Version.swift` 裡沒有 `static let|var version|current` 宣告時（例如只在 `run()` 裡 print 版本），不算版本來源；有宣告但值不是字串常值時停下（rc 21）。
 - 打完確認 tag 在 release 要建的那個 GitHub repo 上，並且名稱就是 `v{version}`。
+- **只在 remote 的預設 branch 上發版**：看的是目前 branch 追蹤的 upstream branch，不是本機 branch 名。feature branch 上打的 `v{version}` 會指向還沒合併的 commit，而且 tag 不會移動（#42 verify 第 2 輪）。
+- owner/repo 從 upstream remote 的網址推出，只認 `github.com` 的網址；ssh host alias、GitHub Enterprise 會停下（不印網址，網址可能帶憑證）。
 
 tag 名稱固定是 `v{version}`：安裝指令從 `releases/latest/download` 與 `releases/download/v{version}` 下載。Step 1 推送前若要向使用者確認，同一個確認要列出這個 tag。
+
+代入 `{version}` 前先核對它只含 `0-9 A-Z a-z . + -`：值裡有單引號會先跳出字串，fence 裡的檢查就擋不到了（`git describe` 的備援值尤其要看，#45）。
 
 ```bash
 VERSION='{version}'   # Phase 0 Step 4 決定的版本
@@ -271,9 +278,16 @@ HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法
 BRANCH=$(git branch --show-current)
 REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
 case "$REMOTE" in ''|.) echo "✗ Step 1.5: $BRANCH 沒有指向 remote 的 upstream — 先 git push -u <remote> $BRANCH 再重跑這一步"; exit 1 ;; esac
+git remote | grep -qxF -- "$REMOTE" || { echo "✗ Step 1.5: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 停止，不建 release"; exit 1; }
 [ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 1.5: HEAD 還沒推到 upstream（Step 1 沒推成功？）— 停止，不建 release"; exit 1; }
+UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
+DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')
+if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
+    echo "✗ Step 1.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT:-讀不到}）— 合併到預設 branch 後再發版；停止，不建 release"; exit 1
+fi
 OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
-case "$OWNER_REPO" in */*) ;; *) echo "✗ Step 1.5: remote $REMOTE 不是 GitHub repo"; exit 1 ;; esac
+printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' \
+  || { echo "✗ Step 1.5: 從 remote $REMOTE 的網址推不出 github.com 的 owner/repo（ssh host alias、GitHub Enterprise 不支援）— 停止，不建 release"; exit 1; }
 LINE=$(bash "$HELPER" --dir . --commit HEAD --name-style v --remote "$REMOTE" --expect "$VERSION"); RC=$?
 echo "$LINE"
 TAG=$(printf '%s\n' "$LINE" | sed -n 's/^RELEASE_TAG: [a-z-]* name=\([^ ]*\) .*/\1/p')
@@ -299,9 +313,10 @@ echo "→ Step 1.5: $TAG 已在 ${OWNER_REPO}；Step 2 在同一個 repo 用這�
 ```bash
 # 與 Step 1.5 同一個 repo：從推送的 remote 推導，不讓 gh 自己選（#42 verify：fork 工作流兩者可能不同）
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
+printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "✗ 推不出 owner/repo — 先跑完 Step 1.5"; exit 1; }
 gh api "repos/$OWNER_REPO/git/ref/tags/v{version}" --jq .object.sha >/dev/null || { echo "✗ $OWNER_REPO 上沒有 v{version} — 先跑完 Step 1.5"; exit 1; }
 
-# 建立 Release：tag_name 用 Step 1.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不再帶 target_commitish（#42）
+# 建立 Release：tag_name 用 Step 1.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不另外指定 commit（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   -f tag_name="v{version}" \
   -f name="v{version}" \
@@ -323,7 +338,7 @@ curl -L -X POST \
   --progress-bar -o /dev/null -w "Upload: HTTP %{http_code}, %{size_upload} bytes\n"
 
 # 驗證
-gh release view v{version} --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
+gh release view v{version} --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
 ```
 
 Release Notes 模板：
@@ -370,6 +385,7 @@ rm -rf .release
 - **版本**: v{version}
 - **Binary**: {binary-name} (universal: arm64 + x86_64)
 - **Release**: https://github.com/{owner}/{repo}/releases/tag/v{version}
+- **Tag**: v{version}（Step 1.5 的 `RELEASE_TAG:` 那一行：tagged 或 exists、commit）
 - **本地**: ~/bin/{binary-name}
 
 安裝指令（其他使用者）：

@@ -223,7 +223,7 @@ chmod +x mcpb/server/run.sh
 
 確保所有地方的版本號一致。下面是 Phase 3 Step 3.5（`scripts/release-tag.sh`）會讀的版本來源，封閉列舉，與 helper 同一份；repo 裡有哪個就改哪個，漏改任何一個，Step 3.5 會因版本不一致而停止、不建 release（#42）：
 - `mcpb/manifest.json` 的 `version`
-- Swift：`Sources/*/Server.swift` 的 `version: "x.x.x"`、`Sources/*/Version.swift` 的 `static let version` / `static let current`
+- Swift：`Sources/*/Server.swift` 的 `version: "x.x.x"`、`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
 - Python：`pyproject.toml` 的 `[project].version`；版本是 `dynamic` 時，`[tool.hatch.version].path` 指到的檔案裡的 `__version__`
 - TypeScript：`package.json` 的 `version`
 - repo 根目錄若有 `.claude-plugin/plugin.json` 或 `plugin.json`，它的 `version`
@@ -482,8 +482,12 @@ git push origin main
 - 版本從 commit 的內容讀，repo 根目錄找得到的版本來源（Phase 2 Step 2 的清單）都要等於這次要發的 `{version}`（`--expect`）。
 - 樹裡沒有版本、版本是 build 時才算出來的 repo，就直接用 `{version}`。
 - 打完確認 tag 在 **release 要建的那個 GitHub repo** 上，並且名稱就是 `v{version}`。
+- **只在 remote 的預設 branch 上發版**：看的是目前 branch 追蹤的 upstream branch，不是本機 branch 名。feature branch 上打的 `v{version}` 會指向還沒合併的 commit，而且 tag 不會移動（#42 verify 第 2 輪）。
+- owner/repo 從 upstream remote 的網址推出，只認 `github.com` 的網址；ssh host alias、GitHub Enterprise 會停下（不印網址，網址可能帶憑證）。
 
 binary repo 的 tag 名稱固定是 `v{version}`：wrapper 從 `releases/download/v{version}/…` 下載，不能改。推送前的確認（Step 3）要一併列出這個 tag。
+
+代入 `{version}` 前先核對它只含 `0-9 A-Z a-z . + -`：值裡有單引號會先跳出字串，fence 裡的檢查就擋不到了。
 
 ```bash
 VERSION='{version}'   # Phase 0 Step 4 決定的版本
@@ -493,9 +497,16 @@ HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法
 BRANCH=$(git branch --show-current)
 REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
 case "$REMOTE" in ''|.) echo "✗ Step 3.5: $BRANCH 沒有指向 remote 的 upstream — 先 git push -u <remote> $BRANCH 再重跑這一步"; exit 1 ;; esac
+git remote | grep -qxF -- "$REMOTE" || { echo "✗ Step 3.5: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 停止，不建 release"; exit 1; }
 [ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 3.5: HEAD 還沒推到 upstream（Step 3 沒推成功？）— 停止，不建 release"; exit 1; }
+UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
+DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')
+if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
+    echo "✗ Step 3.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT:-讀不到}）— 合併到預設 branch 後再發版；停止，不建 release"; exit 1
+fi
 OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
-case "$OWNER_REPO" in */*) ;; *) echo "✗ Step 3.5: remote $REMOTE 不是 GitHub repo"; exit 1 ;; esac
+printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' \
+  || { echo "✗ Step 3.5: 從 remote $REMOTE 的網址推不出 github.com 的 owner/repo（ssh host alias、GitHub Enterprise 不支援）— 停止，不建 release"; exit 1; }
 LINE=$(bash "$HELPER" --dir . --commit HEAD --name-style v --remote "$REMOTE" --expect "$VERSION"); RC=$?
 echo "$LINE"
 TAG=$(printf '%s\n' "$LINE" | sed -n 's/^RELEASE_TAG: [a-z-]* name=\([^ ]*\) .*/\1/p')
@@ -558,10 +569,11 @@ BINARY_NAME=$(ls mcpb/server/ | grep -v '.sh' | grep -v '.gitkeep' | head -1)
 MCPB_FILE=$(ls mcpb/*.mcpb | head -1)
 # 與 Step 3.5 同一個 repo：從推送的 remote 推導，不讓 gh 自己選（#42 verify：fork 工作流兩者可能不同）
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
+printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3.5"; exit 1; }
 gh api "repos/$OWNER_REPO/git/ref/tags/v{version}" --jq .object.sha >/dev/null || { echo "✗ $OWNER_REPO 上沒有 v{version} — 先跑完 Step 3.5"; exit 1; }
 
 # Step 1: 建立 Release（不帶 assets，秒完成）
-# tag_name 用 Step 3.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不再帶 target_commitish（#42）
+# tag_name 用 Step 3.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不另外指定 commit（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   -f tag_name="v{version}" \
   -f name="v{version} - {title}" \
@@ -594,7 +606,7 @@ curl -L -X POST \
   --progress-bar -o /dev/null -w "MCPB upload: HTTP %{http_code}, %{size_upload} bytes\n"
 
 # Step 4: 驗證
-gh release view v{version} --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
+gh release view v{version} --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
 ```
 
 **為什麼不用 `gh release create` 帶 assets**：
@@ -609,6 +621,7 @@ gh release view v{version} --json assets --jq '.assets[] | "\(.name) (\(.size) b
 ```bash
 # --verify-tag：tag 不在 remote 就中止，不讓 gh 自己建 tag（#42，tag 由 Step 3.5 建）；--repo 與 Step 3.5 同一個 repo
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^.*github\.com[:/]+##')
+printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3.5"; exit 1; }
 gh release create v{version} --verify-tag --repo "$OWNER_REPO" \
   --title "v{version} - {title}" \
   --notes "{release-notes}" \
@@ -903,6 +916,7 @@ git push origin main
 
 ## GitHub Release
 - URL: https://github.com/$MCP_REPO_FULL/releases/tag/v{version}
+- **Tag**: v{version}（Step 3.5 的 `RELEASE_TAG:` 那一行：tagged 或 exists、commit）
 
 ## 本地安裝
 - [ ] 已安裝到 ~/bin（如選擇安裝）
