@@ -671,35 +671,58 @@ assert_contains "vn: …and re-reads 2.0.0" "1.2.3 → 2.0.0" "$OUT"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/vn )
 
 echo
-echo "Phase 2.7 (#42): version tag on the pushed HEAD — runs whether or not Phase 2 pushed"
-# annotated tags need a committer; a user's tag.gpgSign must not reach the fixtures
-export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+echo "Phase 2.7 (#42): version tag on the bump commit — runs whether or not Phase 2 pushed"
+# annotated tags need a committer; a user's tag.gpgSign (or init.defaultBranch) must not reach the fixtures:
+# isolate the global config for this section only (the R1 guard put -c tag.gpgSign=false on `git commit`,
+# which the helper's `git tag -a` never sees — #42 verify R1)
+export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_CONFIG_GLOBAL=/dev/null
 TAG_MARK='HELPER="${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh"'
-mk_tag_fx() {   # name version source → root-sourced (./) or ./plugins/<name> plugin, pushed
-  local d="$T/dev/fx-$1"
-  mkdir -p "$d/.claude-plugin"
-  printf '{ "name": "fx-%s", "plugins": [ { "name": "%s", "version": "%s", "source": "./" } ] }\n' "$1" "$1" "$2" > "$d/.claude-plugin/marketplace.json"
-  printf '{ "name": "%s", "version": "%s" }\n' "$1" "$2" > "$d/.claude-plugin/plugin.json"
+mk_tag_fx() {   # name version [source] → marketplace with one plugin at <source>, pushed to a bare remote
+  local d="$T/dev/fx-$1" src="${3:-./}" pdir
+  pdir="$d/${src#./}"
+  mkdir -p "$d/.claude-plugin" "$pdir/.claude-plugin"
+  printf '{ "name": "fx-%s", "plugins": [ { "name": "%s", "version": "%s", "source": "%s" } ] }\n' "$1" "$1" "$2" "$src" > "$d/.claude-plugin/marketplace.json"
+  printf '{ "name": "%s", "version": "%s" }\n' "$1" "$2" > "$pdir/.claude-plugin/plugin.json"
   git init -q --bare "$T/remote-$1.git"
-  ( cd "$d" && git init -q && git add -A && git -c user.name=t -c user.email=t@t -c tag.gpgSign=false commit -qm init \
+  ( cd "$d" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm init \
       && git remote add origin "$T/remote-$1.git" && git push -q -u origin HEAD 2>/dev/null )
 }
 remote_tags() { git -C "$T/dev/fx-$1" ls-remote --tags origin | awk '{print $2}' | grep -v '\^{}$' | sed 's#refs/tags/##' | tr '\n' ' '; }
+commit_fx() { ( cd "$T/dev/fx-$1" && git add -A && git -c user.name=t -c user.email=t@t commit -qm "$2" ); }
 
 mk_tag_fx tagfx 1.4.0
 prep01 tagfx
-run_both "tagfx: HEAD already pushed (Phase 2 had nothing to push) → tagged, then exists on the second shell" "$TAG_MARK" tagfx "→ Phase 2.7: done"
-assert_contains "tagfx: the remote now has v1.4.0" "v1.4.0" "$(remote_tags tagfx)"
-( cd "$T/dev/fx-tagfx" && printf 'x\n' > NOTES && git add -A && git -c user.name=t -c user.email=t@t commit -qm notes )
+run_both "tagfx: repo is the plugin, HEAD already pushed (Phase 2 had nothing to push) → done (tagged, then exists)" "$TAG_MARK" tagfx "→ Phase 2.7: done"
+assert_contains "tagfx: the remote has v<version> (repo is the plugin)" "v1.4.0" "$(remote_tags tagfx)"
+printf 'x\n' > "$T/dev/fx-tagfx/NOTES"; commit_fx tagfx notes
 prep01 tagfx
-run_both "tagfx: unpushed HEAD → skipped, nothing tagged" "$TAG_MARK" tagfx "→ Phase 2.7: skipped — HEAD 不等於"
+run_both "tagfx: unpushed HEAD → skipped, nothing tagged" "$TAG_MARK" tagfx "→ Phase 2.7: skipped — HEAD 還沒推到 upstream"
 ( cd "$T/dev/fx-tagfx" && git push -q origin HEAD 2>/dev/null )
 prep01 tagfx
-run_both "tagfx: pushed but version not bumped → no tag, tag not moved" "$TAG_MARK" tagfx "沒有升版號，不打 tag"
+run_both "tagfx: pushed, version not bumped → exists (the tag stays on the bump commit)" "$TAG_MARK" tagfx "done — exists name=v1.4.0"
 assert_contains "tagfx: v1.4.0 still points at the first commit" "$(git -C "$T/dev/fx-tagfx" rev-parse HEAD~1)" "$(git -C "$T/dev/fx-tagfx" ls-remote --tags origin 'refs/tags/v1.4.0^{}')"
+( cd "$T/dev/fx-tagfx" && git checkout -q -b feat && printf 'y\n' > F && git add -A && git -c user.name=t -c user.email=t@t commit -qm f && git push -q -u origin feat 2>/dev/null )
+prep01 tagfx
+run_both "tagfx: on a feature branch → skipped, not the default branch" "$TAG_MARK" tagfx "不是 origin 的預設 branch"
+( cd "$T/dev/fx-tagfx" && git checkout -q - )
+
+mk_tag_fx tagbump 2.0.0
+printf '{ "name": "tagbump", "version": "2.1.0" }\n' > "$T/dev/fx-tagbump/.claude-plugin/plugin.json"; commit_fx tagbump bump
+BUMP=$(git -C "$T/dev/fx-tagbump" rev-parse HEAD)
+printf 'w\n' > "$T/dev/fx-tagbump/W1"; commit_fx tagbump wip1; printf 'w\n' > "$T/dev/fx-tagbump/W2"; commit_fx tagbump wip2
+( cd "$T/dev/fx-tagbump" && git push -q origin HEAD 2>/dev/null )
+prep01 tagbump
+f=$(prep "$TAG_MARK" tagbump); OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "tagbump: tagged" "→ Phase 2.7: done — tagged name=v2.1.0" "$OUT"
+assert_contains "tagbump: v2.1.0 is on the bump commit, not on HEAD" "$BUMP" "$(git -C "$T/dev/fx-tagbump" ls-remote --tags origin 'refs/tags/v2.1.0^{}')"
+
+mk_tag_fx tagself 1.0.0 ./plugin
+prep01 tagself
+run_both "tagself: ./plugin inside a (binary) repo → <plugin>-v<version>, not v<version>" "$TAG_MARK" tagself "name=tagself-v1.0.0"
 
 mk_tag_fx tagmm 2.0.0
-( cd "$T/dev/fx-tagmm" && printf '[project]\nname = "m"\nversion = "2.0.1"\n' > pyproject.toml && git add -A && git -c user.name=t -c user.email=t@t commit -qm py && git push -q origin HEAD 2>/dev/null )
+printf '[project]\nname = "m"\nversion = "2.0.1"\n' > "$T/dev/fx-tagmm/pyproject.toml"; commit_fx tagmm py
+( cd "$T/dev/fx-tagmm" && git push -q origin HEAD 2>/dev/null )
 prep01 tagmm
 export IDD_ALL_UNATTENDED=1
 run_both "tagmm: sources disagree under unattended → AUDIT, no tag" "$TAG_MARK" tagmm "AUDIT: Phase 2.7 version sources disagree"
@@ -715,10 +738,13 @@ git init -q --bare "$T/remote-tagagg.git"
 prep01 a
 run_both "tagagg: several plugins in one repo → <plugin>-v<version>" "$TAG_MARK" a "name=a-v1.0.0"
 assert_contains "tagagg: the remote has a-v1.0.0" "a-v1.0.0" "$(remote_tags tagagg)"
-unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_CONFIG_GLOBAL
 
 SKILL_TEXT=$(cat "$SKILL")
 assert_contains "Phase 0.5 lists the tag push as unattended action (4)" "(4) Phase 2.7 推送版號 tag" "$SKILL_TEXT"
+assert_contains "Phase 5 report has a Phase 2.7 row" "- Phase 2.7: <tagged" "$SKILL_TEXT"
+N_TPL=$(printf '%s' "$SKILL_TEXT" | grep -c '推送後 Phase 2.7 會在升版號的 commit 推版號 tag（#42）"')
+if [ "$N_TPL" -ge 7 ]; then PASS=$((PASS+1)); echo "  ✓ every Case B–E push option names the tag ($N_TPL)"; else FAIL=$((FAIL+1)); echo "  ✗ only $N_TPL Case B–E push option(s) name the tag (expected 7)"; fi
 ORDER=$(python3 - "$SKILL" <<'PY'
 import sys
 s = open(sys.argv[1]).read()
