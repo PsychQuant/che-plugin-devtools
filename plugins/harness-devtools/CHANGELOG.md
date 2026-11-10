@@ -13,9 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **行為變動（poetry 專案）**：以前 `[tool.poetry].version` 完全沒被讀到。`mcp-deploy`／`cli-deploy` 會直接用 `--expect` 的版本打 tag，`plugin-update`／`plugin-deploy` 回 21。現在四個 skill 都會讀它，與要發的版本不一致時回 20（#48）。
-- `scripts/release-tag.sh`：讀 `pyproject.toml` 不再只看 PATH 上第一個 `python3`（#48）。helper 依序試 `python3`、`python3.14`–`python3.11`，用第一個有 `tomllib` 的；都沒有時試 `tomli`。完全沒有 TOML parser 時，文字裡沒有獨立的 `version`（不分大小寫；`target-version` 這類較長的鍵名不算）也沒有 `\u`／`\U`／`\x` 跳脫的 `pyproject.toml` 不算來源，其餘回 21。以前只要有 `pyproject.toml` 就回 21。
-- `scripts/release-tag.sh`：版本來自 git tag 的專案不算版本來源（#48）。封閉列舉三種：`[tool.setuptools_scm]` 表、`[tool.hatch.version]` 的 `source = "vcs"`、`[tool.poetry-dynamic-versioning]` 的 `enable = true`。helper 印出原因後照其他來源繼續；沒有其他來源時用 `--expect`，沒有 `--expect` 則回 21。以前一律回 21。
+- **行為變動（poetry 專案）**：以前 `[tool.poetry].version` 完全沒被讀到。`mcp-deploy`／`cli-deploy` 會直接用 `--expect` 的版本打 tag，`plugin-update`／`plugin-deploy` 回 21。現在四個 skill 都會讀它，與要發的版本不一致時回 20；值不是 `x.y.z`（例如 `1.2`、`1.0.0a1`）時回 21，和其他來源相同（#48）。別的工具把這個值當佔位值時（`poetry-dynamic-versioning` 以外的版本外掛，或用環境變數啟用它），要把 `enable = true` 寫進 `pyproject.toml`，或讓佔位值等於要發的版本。
+- `scripts/release-tag.sh`：讀 `pyproject.toml` 不再只看 PATH 上第一個 `python3`（#48）。`python3` 沒有 `tomllib` 時，helper 改用 PATH 上版本最新、有 `tomllib` 的 `python3.N`；都沒有時試 `tomli`，裝在使用者的 site-packages（`pip install --user`）也找得到。完全沒有 TOML parser 時，文字裡沒有獨立的 `version`（不分大小寫；`target-version` 這類較長的鍵名不算）也沒有 `\u`／`\U`／`\x` 跳脫的 `pyproject.toml` 不算來源，其餘回 21。以前只要有 `pyproject.toml` 就回 21。
+- `scripts/release-tag.sh`：認得版本來自 git tag 的專案（#48）。封閉列舉三種：`[tool.setuptools_scm]` 表、`[tool.hatch.version]` 的 `source = "vcs"`、`[tool.poetry-dynamic-versioning]` 的 `enable = true`。dynamic 版本在檔案裡讀不到、而檔案有這三種寫法之一時，helper 印出原因後照其他來源繼續；沒有其他來源時用 `--expect`，沒有 `--expect` 則回 21。以前一律回 21。檔案裡寫了的版本（`[project].version`、`[tool.poetry].version`、hatch 的 `path`）照讀，只有兩個例外：`poetry-dynamic-versioning` 旁邊的 `[tool.poetry].version` 是佔位值；hatch 的 `source = "vcs"` 不使用 `path`。
 - `scripts/release-tag.sh`：`[tool.setuptools.dynamic]` 的 `attr`／`file` 仍回 21，訊息改成指出這張表與替代做法（#48）。
 
 ## [2.6.0] - 2026-11-10

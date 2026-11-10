@@ -71,24 +71,37 @@
 #   A JSON source (1, 5, 7) without a "version" field is not a source. The Swift
 #   sources are read with comments removed; block comments nest.
 #
-#   pyproject.toml (2, 3, 4) needs a TOML parser (#48). The helper runs under the
-#   first of python3, python3.14, python3.13, python3.12, python3.11 that has
-#   tomllib (python 3.11+; /usr/bin/python3 on macOS is 3.9); when none has it,
-#   under python3 with the tomli package if that is installed. With no parser at
+#   pyproject.toml (2, 3, 4) needs a TOML parser (#48). The helper runs under
+#   python3 when it has tomllib (python 3.11+; /usr/bin/python3 on macOS is 3.9),
+#   else under the newest python3.N on PATH that has it. When none has it, python3
+#   uses the tomli package if that is installed — in its own site-packages or in
+#   the user's (`pip install --user`; the helper runs python3 isolated, so it adds
+#   that one directory itself, for this import only). With no parser at
 #   all, a pyproject.toml whose text has neither `version` as a token of its own
 #   (in any case; target-version or python_version is a longer key and does not
 #   count) nor a \u, \U or \x escape cannot declare a version and is not a
 #   source; any other pyproject.toml makes the run unreadable.
-#   (RELEASE_TAG_NO_TOML=1 switches the parser off; the tests use it.)
+#   (For the tests: RELEASE_TAG_NO_TOML=1 switches the parser off, and
+#   RELEASE_TAG_NO_TOML=tomllib hides tomllib only, leaving tomli.)
 #
 #   A version that comes from git tags is NOT a source — there is nothing in the
 #   tree to compare a tag with. A closed list of three ways to say so; do not add
 #   a fourth by resemblance:
 #     a. a [tool.setuptools_scm] table
 #     b. [tool.hatch.version] source = "vcs"
-#     c. [tool.poetry-dynamic-versioning] enable = true (the [tool.poetry].version
-#        next to it is a placeholder and is not read)
-#   The run goes on with the other sources, or with --expect when there are none.
+#     c. [tool.poetry-dynamic-versioning] enable = true
+#   Such a declaration only EXPLAINS a version that is not in the file: a dynamic
+#   version with nothing in the file to read becomes a note instead of a problem,
+#   and the run goes on with the other sources, or with --expect when there are
+#   none. It never hides a version that IS in the file. A static [project].version
+#   is read, [tool.poetry].version is read, and so is a [tool.hatch.version] path —
+#   with two exceptions, each tied to one backend: under (c) the
+#   [tool.poetry].version is that plugin's placeholder and is not read; under (b)
+#   hatch does not use `path`, so it is not read.
+#   A [tool.poetry].version kept as a placeholder by anything else (another
+#   versioning plugin, or poetry-dynamic-versioning switched on by an environment
+#   variable) is read as the version: it has to equal the release, or (c) has to
+#   be written in the file.
 #   Every other dynamic version — [tool.setuptools.dynamic] attr or file, another
 #   backend — makes the run unreadable, with a message that names it.
 #
@@ -180,16 +193,43 @@ MAX_WALK = int(sys.argv[5])
 
 def toml_parser():
     """The module that reads pyproject.toml, or None (#48): tomllib (python 3.11+),
-    else tomli when it is installed. RELEASE_TAG_NO_TOML=1 switches both off, so the
-    tests can run the no-parser paths on any python3."""
-    if os.environ.get("RELEASE_TAG_NO_TOML") == "1":
+    else tomli when it is installed. For the tests, RELEASE_TAG_NO_TOML=1 switches
+    both off and RELEASE_TAG_NO_TOML=tomllib hides tomllib only."""
+    off = os.environ.get("RELEASE_TAG_NO_TOML", "")
+    if off == "1":
         return None
-    for name in ("tomllib", "tomli"):
+    if off != "tomllib":
         try:
-            return __import__(name)
+            import tomllib
+            return tomllib
         except ImportError:
             pass
-    return None
+    try:
+        import tomli
+        return tomli
+    except ImportError:
+        pass
+    # This script runs isolated (-I), which leaves the user's site-packages off
+    # sys.path - and `pip install --user tomli` is how a system python3 usually gets
+    # the package (#48 verify R1). Look in that one directory too, for this import
+    # only: it goes last on sys.path and comes off again, and its .pth files are
+    # never processed. The repository under inspection has no say in where it is
+    # (-I ignores PYTHONUSERBASE).
+    try:
+        import site
+        user_site = site.getusersitepackages()
+    except Exception:
+        return None
+    if not isinstance(user_site, str) or not os.path.isdir(user_site):
+        return None
+    sys.path.append(user_site)
+    try:
+        import tomli
+        return tomli
+    except ImportError:
+        return None
+    finally:
+        sys.path.remove(user_site)
 
 TOML = toml_parser()
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?")   # used with fullmatch: no trailing newline
@@ -433,36 +473,50 @@ def read_sources(commit):
         poetry = dig(doc, "tool", "poetry")
         poetry = poetry if isinstance(poetry, dict) else {}
         scm = scm_backend(doc)
+        # A git-tag backend EXPLAINS a version that is not in the file; it never hides
+        # one that is. (#48 verify R1: a leftover [tool.setuptools_scm] table once
+        # switched off a readable hatch path and a real [tool.poetry].version, and
+        # --expect stood in for them.) Two values are not read, each because of one
+        # backend: the [tool.poetry].version next to poetry-dynamic-versioning is that
+        # plugin's placeholder, and hatch itself ignores `path` when source = "vcs".
+        placeholder = scm == "poetry-dynamic-versioning"
+        explained = False       # scm is why no version of this file is read
         if "version" in proj:
             add("pyproject", proj["version"], "pyproject.toml")
-        if scm:
-            # nothing in the tree to compare a tag with: the other sources, or --expect,
-            # decide; the placeholder [tool.poetry].version next to it is not read (#48)
-            notes.append(f"pyproject.toml: the version comes from git tags ({scm}); not a version source")
-        else:
-            if "version" in poetry:
+        if "version" in poetry:
+            if placeholder:
+                explained = True
+            else:
                 add("poetry", poetry["version"], "pyproject.toml")
-            if "version" in dynamic and "version" not in proj:
-                cfg = hatch_config(doc)
-                raw = cfg.get("path") if cfg else None
+        if "version" in dynamic and "version" not in proj:
+            cfg = hatch_config(doc)
+            if cfg and "path" in cfg and scm != "hatch-vcs":
+                raw = cfg.get("path")
                 path = hatch_path_of(cfg)
-                if isinstance(raw, str) and raw:
-                    if path is None:
-                        problems.append(f"pyproject.toml: [tool.hatch.version].path {safe(raw)!r} is not a relative path inside the repository made of [A-Za-z0-9._/-]")
-                    else:
-                        src, why = hatch_text(path)
-                        if why is None:
-                            v, why = hatch_read(src, cfg)
-                        if why:
-                            problems.append(f"hatch:{path}: {why}")
-                        else:
-                            add(f"hatch:{path}", v, path)
-                elif "version" in poetry:
-                    pass    # poetry 2: the dynamic version is [tool.poetry].version, read above
-                elif dig(doc, "tool", "setuptools", "dynamic", "version") is not None:
-                    problems.append("pyproject.toml: [tool.setuptools.dynamic] version (attr or file) is not read by this helper - state the version in [project], or use a [tool.hatch.version] path")
+                if not isinstance(raw, str) or not raw:
+                    problems.append("pyproject.toml: dynamic version is not a [tool.hatch.version] path")
+                elif path is None:
+                    problems.append(f"pyproject.toml: [tool.hatch.version].path {safe(raw)!r} is not a relative path inside the repository made of [A-Za-z0-9._/-]")
                 else:
-                    problems.append("pyproject.toml: dynamic version is not one this helper reads (a [tool.hatch.version] path, or [tool.poetry].version)")
+                    src, why = hatch_text(path)
+                    if why is None:
+                        v, why = hatch_read(src, cfg)
+                    if why:
+                        problems.append(f"hatch:{path}: {why}")
+                    else:
+                        add(f"hatch:{path}", v, path)
+            elif "version" in poetry and not placeholder:
+                pass    # poetry 2: the dynamic version is [tool.poetry].version, read above
+            elif scm:
+                explained = True
+            elif dig(doc, "tool", "setuptools", "dynamic", "version") is not None:
+                problems.append("pyproject.toml: [tool.setuptools.dynamic] version (attr or file) is not read by this helper - state the version in [project], or use a [tool.hatch.version] path")
+            else:
+                problems.append("pyproject.toml: dynamic version is not one this helper reads (a [tool.hatch.version] path, or [tool.poetry].version)")
+        elif scm and "version" not in proj and "version" not in poetry:
+            explained = True    # the file states no version at all (a setup.py project, say)
+        if explained:
+            notes.append(f"pyproject.toml: the version comes from git tags ({scm}); not a version source")
 
     json_version("package.json", "package.json")
 
@@ -574,15 +628,32 @@ if at_bump and found and not problems and len(values) == 1:
                 where = safe(prefix.rstrip("/")) if prefix else "the repository"
                 print(f"NOTE\tthe tag goes on {release[:7]}, where {safe(current)} was set; commits after the tagged one that change {where}: {safe(n)}")
 PY
-# pyproject.toml needs a TOML parser, and tomllib is python 3.11+: use the first
-# python3 of this list that has it. When none does, python3 runs the script anyway
-# and tries tomli (#48). The list is closed; a new minor version is added here.
+# pyproject.toml needs a TOML parser, and tomllib is python 3.11+ (#48). python3
+# runs the script when it has tomllib; otherwise the newest python3.N on PATH that
+# has it does. When none has it, python3 runs the script anyway and tries tomli.
+# (Looking the candidates up on PATH, not from a fixed list of minor versions: a
+# list was already one release behind the day it was written — #48 verify R1.)
 PY_BIN=python3
-for cand in python3 python3.14 python3.13 python3.12 python3.11; do
-  if command -v "$cand" >/dev/null 2>&1 && "$cand" -I -c 'import tomllib' >/dev/null 2>&1; then
-    PY_BIN=$cand; break
-  fi
-done
+if ! python3 -I -c 'import tomllib' >/dev/null 2>&1; then
+  # Absolute PATH entries only — an empty or relative entry means the current
+  # directory, which is the repository being inspected — and the candidate is run by
+  # the full path it was found at. Newest minor first; PATH order within a minor.
+  # (The case patterns open with a parenthesis: bash 3.2 cannot parse a bare `x)`
+  # pattern inside $( … ).)
+  TAB=$(printf '\t')
+  PY_CANDS=$(IFS=:; for d in $PATH; do case "$d" in (/*) ;; (*) continue ;; esac
+               for f in "$d"/python3.[0-9]*; do
+                 m=${f##*/python3.}
+                 case "$m" in (''|*[!0-9]*) continue ;; esac
+                 [ -x "$f" ] && printf '%s\t%s\n' "$m" "$f"
+               done; done 2>/dev/null | sort -s -t "$TAB" -k1,1rn)
+  while IFS=$TAB read -r _minor cand; do
+    [ -n "$cand" ] || continue
+    if "$cand" -I -c 'import tomllib' >/dev/null 2>&1; then PY_BIN=$cand; break; fi
+  done <<PY_CANDS_EOF
+$PY_CANDS
+PY_CANDS_EOF
+fi
 SOURCES_OUT=$("$PY_BIN" -I -c "$PYSRC" "$TOP" "$SHA" "$PREFIX" "$AT_BUMP" "$MAX_WALK") \
   || { echo "RELEASE_TAG: unreadable name=? commit=$(git -C "$TOP" rev-parse --short "$SHA") version=? sources=?"; echo "$PROG: python3 failed while reading versions" >&2; exit 21; }
 

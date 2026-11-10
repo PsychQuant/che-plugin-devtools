@@ -19,6 +19,7 @@ ok()   { PASS=$((PASS+1)); echo "  ✓ $1"; }
 bad()  { FAIL=$((FAIL+1)); echo "  ✗ $1"; [ -n "${2:-}" ] && printf '%s\n' "$2" | sed 's/^/      | /' | head -20; }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected [$3], got [$2])" "${OUT:-}"; fi; }
 has()   { if printf '%s' "$OUT" | grep -qF -- "$2"; then ok "$1"; else bad "$1 (missing [$2])" "$OUT"; fi; }
+hasnt() { if printf '%s' "$OUT" | grep -qF -- "$2"; then bad "$1 (found [$2])" "$OUT"; else ok "$1"; fi; }
 
 N=0
 # new_repo: fresh work repo + bare remote; sets W (not a $(…) call — the counter must persist)
@@ -771,6 +772,90 @@ path = "x.py"'; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "another hatch source is not on the list → still exit 21" "$RC" 21
 
+echo "== a git-tag declaration never hides a version that is in the file (#48 verify R1)"
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.hatch.version]
+path = "x.py"
+
+[tool.setuptools_scm]
+version_file = "x/_v.py"'; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+check "a [tool.setuptools_scm] table next to a hatch path: the path is read → exit 20" "$RC" 20
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "…and the matching release → exit 0" "$RC" 0
+has "…read from the hatch file" "sources=hatch:x.py"
+hasnt "…without a git-tag note" "comes from git tags"
+new_repo; put "$W" pyproject.toml '[tool.poetry]
+version = "1.0.0"
+
+[tool.setuptools_scm]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+check "a [tool.setuptools_scm] table next to [tool.poetry].version → exit 20" "$RC" 20
+new_repo; put "$W" pyproject.toml '[tool.poetry]
+version = "1.0.0"
+
+[tool.hatch.version]
+source = "vcs"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+check "hatch source = vcs next to [tool.poetry].version → exit 20" "$RC" 20
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+version = "1.0.0"
+
+[tool.setuptools_scm]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a static [project].version next to a [tool.setuptools_scm] table → exit 0" "$RC" 0
+has "…version 1.0.0" "name=v1.0.0"
+hasnt "…and no git-tag note contradicts it" "comes from git tags"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+check "…and --expect cannot replace it → exit 20" "$RC" 20
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.hatch.version]
+source = "vcs"
+path = "x.py"'; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "hatch source = vcs does not use path, and neither does the helper → exit 0" "$RC" 0
+has "…with the git-tag note" "comes from git tags (hatch-vcs)"
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.poetry]
+version = "0.0.0"
+
+[tool.poetry-dynamic-versioning]
+enable = true'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "the poetry 2 layout with poetry-dynamic-versioning → exit 0" "$RC" 0
+has "…with the git-tag note" "comes from git tags (poetry-dynamic-versioning)"
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.hatch.version]
+path = 5
+
+[tool.poetry]
+version = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a hatch path that is not a string is a problem even next to a poetry version → exit 21" "$RC" 21
+
+echo "== --at-bump finds the commit that set a poetry version (#48 verify R1)"
+new_repo; put "$W" pyproject.toml '[tool.poetry]
+version = "1.0.0"'; commit "$W" one
+put "$W" pyproject.toml '[tool.poetry]
+version = "1.1.0"'; commit "$W" bump; BUMP=$(git -C "$W" rev-parse --short HEAD)
+put "$W" README.md later; commit "$W" later
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "exit 0" "$RC" 0
+has "…and the tag goes on the bump commit" "name=v1.1.0 commit=$BUMP"
+
 echo "== setuptools dynamic versions stop with a message that names them (#48)"
 for SETUPTOOLS in 'attr = "x.__version__"' 'file = "VERSION"'; do
   new_repo; put "$W" pyproject.toml "[project]
@@ -820,31 +905,68 @@ new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml '[tool.poetry]
 Version = "9.9.9"'; commit "$W"
 no_toml "$W" --dir . --commit HEAD --name-style v --dry-run
 check "the word in another case is still a mention → exit 21" "$RC" 21
-new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml '[project]
-"version" = "9.9.9"'; commit "$W"
-no_toml "$W" --dir . --commit HEAD --name-style v --dry-run
-check "an escape that could spell the word → exit 21" "$RC" 21
+for ESC in u0076 U00000076 x76; do
+  # the key is "version" with its first letter written as an escape: no `version` token in the text
+  new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml "[project]
+\"\\${ESC}ersion\" = \"9.9.9\""; commit "$W"
+  if grep -q 'version' "$W/pyproject.toml"; then bad "the fixture for \\$ESC must not contain the word itself"; fi
+  no_toml "$W" --dir . --commit HEAD --name-style v --dry-run
+  check "a key spelled with a \\$ESC escape → exit 21" "$RC" 21
+done
 
-echo "== an old python3 first on PATH: the helper looks for one that has tomllib (#48)"
+echo "== an old python3 first on PATH: the helper looks for a python3.N that has tomllib (#48)"
 REAL_PY=$(command -v python3)
 if "$REAL_PY" -I -c 'import tomllib' 2>/dev/null; then
-  # oldpy/python3 stands in for an old python3 (the probe fails, and it runs without a parser);
-  # oldpy/python3.11 is a newer one further down the helper's list
-  mkdir -p "$T/oldpy" "$T/nopy"
-  printf '%s\n' '#!/bin/sh' 'case "$*" in *"import tomllib"*) exit 1 ;; esac' \
+  # oldpy/python3 stands in for an old python3: the helper's probe (-I -c 'import tomllib')
+  # fails, and everything else runs without a parser
+  mkdir -p "$T/oldpy" "$T/newpy" "$T/nopy"
+  printf '%s\n' '#!/bin/sh' '[ "$*" = "-I -c import tomllib" ] && exit 1' \
     "RELEASE_TAG_NO_TOML=1 exec \"$REAL_PY\" \"\$@\"" > "$T/oldpy/python3"
-  printf '%s\n' '#!/bin/sh' "exec \"$REAL_PY\" \"\$@\"" > "$T/oldpy/python3.11"
-  chmod +x "$T/oldpy/python3" "$T/oldpy/python3.11"
-  for v in "" .11 .12 .13 .14; do cp "$T/oldpy/python3" "$T/nopy/python3$v"; done
+  printf '%s\n' '#!/bin/sh' "exec \"$REAL_PY\" \"\$@\"" > "$T/newpy/python3.99"
+  chmod +x "$T/oldpy/python3" "$T/newpy/python3.99"
+  cp "$T/oldpy/python3" "$T/nopy/python3"
   new_repo; put "$W" pyproject.toml '[project]
 name = "x"
 version = "1.2.3"'; commit "$W"
-  OUT=$(cd "$W" && PATH="$T/oldpy:$PATH" "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
-  check "a newer python3.x on PATH is used → exit 0" "$RC" 0
+  OUT=$(cd "$W" && PATH="$T/oldpy:$T/newpy:$PATH" "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+  check "a python3.N further down PATH is used → exit 0" "$RC" 0
   has "…and the pyproject version is read" "name=v1.2.3"
-  OUT=$(cd "$W" && PATH="$T/nopy:$PATH" "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
-  check "no python3 on the list has tomllib → exit 21" "$RC" 21
-  has "…and the message says what is needed" "tomli"
+  # a python3.N in the repository itself is not a candidate, even with the current directory on PATH
+  printf '%s\n' '#!/bin/sh' "touch \"$T/ran-from-the-repo\"" "exec \"$REAL_PY\" \"\$@\"" > "$W/python3.98"; chmod +x "$W/python3.98"
+  OUT=$(cd "$W" && PATH="$T/oldpy::.:/usr/bin:/bin" "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+  if [ -e "$T/ran-from-the-repo" ]; then bad "a python3.N in the current directory was run" "$OUT"; else ok "a python3.N in the current directory is not run"; fi
+  rm -f "$W/python3.98"
+  # no candidate at all: only possible to show where the system directories hold no python3.N with tomllib
+  SYS_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+  if [ -x /usr/bin/git ] && ! (for f in /usr/bin/python3.[0-9]* /bin/python3.[0-9]* /usr/sbin/python3.[0-9]* /sbin/python3.[0-9]*; do
+         [ -x "$f" ] && "$f" -I -c 'import tomllib' 2>/dev/null && exit 0; done; exit 1); then
+    OUT=$(cd "$W" && PATH="$T/nopy:$SYS_PATH" "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+    check "no python3 on PATH has tomllib → exit 21" "$RC" 21
+    has "…and the message says what is needed" "tomli"
+  else
+    echo "  - skipped: the system directories hold a python3.N with tomllib, so 'none on PATH' cannot be shown here"
+  fi
+
+  echo "== tomli in the user's site-packages is found although python3 runs isolated (#48 verify R1)"
+  mkdir -p "$T/uhome" "$T/nohome"
+  USER_SITE=$(HOME="$T/uhome" "$REAL_PY" -I -c 'import site; print(site.getusersitepackages())')
+  case "$USER_SITE" in
+    "$T/uhome"/*)
+      mkdir -p "$USER_SITE/tomli"
+      # a stand-in for the tomli package: the two names the helper uses
+      printf '%s\n' 'from tomllib import loads, TOMLDecodeError' > "$USER_SITE/tomli/__init__.py"
+      OUT=$(cd "$W" && HOME="$T/uhome" RELEASE_TAG_NO_TOML=tomllib "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+      check "tomllib hidden, tomli installed for the user → exit 0" "$RC" 0
+      has "…and the pyproject version is read" "name=v1.2.3"
+      if "$REAL_PY" -I -c 'import tomli' 2>/dev/null; then
+        echo "  - skipped: this python3 has tomli in its own site-packages, so 'no tomli anywhere' cannot be shown"
+      else
+        OUT=$(cd "$W" && HOME="$T/nohome" RELEASE_TAG_NO_TOML=tomllib "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+        check "tomllib hidden and no tomli anywhere → exit 21" "$RC" 21
+        has "…and the message says what is needed" "tomli"
+      fi ;;
+    *) echo "  - skipped: this python3 does not place the user site under HOME ($USER_SITE)" ;;
+  esac
 else
   echo "  - skipped: this machine's python3 has no tomllib"
 fi
