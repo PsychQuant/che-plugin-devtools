@@ -680,6 +680,175 @@ run "$W" --dir . --commit HEAD --name-style v --dry-run
 check "pyproject.toml nested 5000 deep → exit 21" "$RC" 21
 if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
 
+echo "== poetry: [tool.poetry].version is a version source (#48)"
+new_repo; put "$W" pyproject.toml '[tool.poetry]
+name = "x"
+version = "1.4.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "poetry alone → exit 0" "$RC" 0
+has "…and it is the version" "name=v1.4.0"
+has "…named as the poetry source" "sources=poetry"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+check "--expect cannot stand in for the poetry version → exit 20" "$RC" 20
+new_repo; plugin_json "$W" "" 1.4.0; put "$W" pyproject.toml '[tool.poetry]
+version = "1.3.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "poetry disagrees with plugin.json → exit 20" "$RC" 20
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.poetry]
+version = "2.0.1"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "poetry 2: a dynamic version kept in [tool.poetry] → exit 0" "$RC" 0
+has "…version 2.0.1" "name=v2.0.1"
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+version = "2.0.0"
+
+[tool.poetry]
+version = "2.0.1"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "[project].version and [tool.poetry].version differ → exit 20" "$RC" 20
+new_repo; put "$W" pyproject.toml '[tool.poetry]
+version = 3'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 3.0.0
+check "a poetry version that is not a string → exit 21, --expect does not replace it" "$RC" 21
+new_repo; put "$W" pyproject.toml 'tool = { poetry = "x" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 3.0.0
+check "[tool].poetry that is not a table is not a source → --expect is used" "$RC" 0
+
+echo "== a version that comes from git tags is not a version source (#48: a closed list of three)"
+for SCM in 'setuptools_scm|[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.setuptools_scm]' 'hatch-vcs|[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.hatch.version]
+source = "vcs"' 'poetry-dynamic-versioning|[tool.poetry]
+name = "x"
+version = "0.0.0"
+
+[tool.poetry-dynamic-versioning]
+enable = true'; do
+  SCM_NAME=${SCM%%|*}
+  new_repo; put "$W" pyproject.toml "${SCM#*|}"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.2.3
+  check "$SCM_NAME with --expect → exit 0" "$RC" 0
+  has "…the tag uses --expect" "name=v1.2.3"
+  has "…and it says where the version comes from" "comes from git tags ($SCM_NAME)"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run
+  check "$SCM_NAME without --expect → exit 21" "$RC" 21
+  has "…with the same explanation" "comes from git tags ($SCM_NAME)"
+done
+new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.setuptools_scm]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "setuptools_scm next to a plugin.json → plugin.json decides, exit 0" "$RC" 0
+has "…version 1.2.3" "name=v1.2.3"
+new_repo; put "$W" pyproject.toml '[tool.poetry]
+version = "1.1.0"
+
+[tool.poetry-dynamic-versioning]
+enable = false'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "poetry-dynamic-versioning switched off → the poetry version counts" "$RC" 0
+has "…version 1.1.0" "name=v1.1.0"
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.hatch.version]
+source = "code"
+path = "x.py"'; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "another hatch source is not on the list → still exit 21" "$RC" 21
+
+echo "== setuptools dynamic versions stop with a message that names them (#48)"
+for SETUPTOOLS in 'attr = "x.__version__"' 'file = "VERSION"'; do
+  new_repo; put "$W" pyproject.toml "[project]
+name = \"x\"
+dynamic = [\"version\"]
+
+[tool.setuptools.dynamic]
+version = {$SETUPTOOLS}"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+  check "setuptools ${SETUPTOOLS%% *} → exit 21" "$RC" 21
+  has "…and the message names the table" "[tool.setuptools.dynamic]"
+done
+
+echo "== no TOML parser — a python3 older than 3.11 without tomli (#48)"
+# RELEASE_TAG_NO_TOML=1 switches the parser off inside the helper, as an old python3 would
+no_toml() { local w="$1"; shift; OUT=$(cd "$w" && RELEASE_TAG_NO_TOML=1 "${RT_BASH:-bash}" "$HELPER" "$@" 2>&1); RC=$?; }
+new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml '[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+
+[tool.setuptools_scm]
+version_file = "x/_version.py"'; commit "$W"
+no_toml "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a pyproject.toml with no version key does not stop the run → exit 0" "$RC" 0
+has "…plugin.json decides" "name=v1.2.3"
+has "…and a note says why the pyproject was left out" "has no version key"
+no_toml "$W" --dir . --commit HEAD --name-style v --dry-run --at-bump
+check "…with --at-bump too → exit 0" "$RC" 0
+for KEYLINE in 'project.version = "9.9.9"' '"version" = "9.9.9"' 'project = { version = "9.9.9" }' 'dynamic = ["version"]'; do
+  new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml "$KEYLINE"; commit "$W"
+  no_toml "$W" --dir . --commit HEAD --name-style v --dry-run
+  check "a version key written as [$KEYLINE] → exit 21" "$RC" 21
+done
+new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml '[project]
+name = "x"
+version = "1.2.3"'; commit "$W"
+no_toml "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a pyproject.toml that mentions a version cannot be read → exit 21" "$RC" 21
+has "…and the message says what is needed" "tomli"
+new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml '[tool.poetry]
+Version = "9.9.9"'; commit "$W"
+no_toml "$W" --dir . --commit HEAD --name-style v --dry-run
+check "the word in another case is still a mention → exit 21" "$RC" 21
+new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml '[project]
+"version" = "9.9.9"'; commit "$W"
+no_toml "$W" --dir . --commit HEAD --name-style v --dry-run
+check "an escape that could spell the word → exit 21" "$RC" 21
+
+echo "== an old python3 first on PATH: the helper looks for one that has tomllib (#48)"
+REAL_PY=$(command -v python3)
+if "$REAL_PY" -I -c 'import tomllib' 2>/dev/null; then
+  # oldpy/python3 stands in for an old python3 (the probe fails, and it runs without a parser);
+  # oldpy/python3.11 is a newer one further down the helper's list
+  mkdir -p "$T/oldpy" "$T/nopy"
+  printf '%s\n' '#!/bin/sh' 'case "$*" in *"import tomllib"*) exit 1 ;; esac' \
+    "RELEASE_TAG_NO_TOML=1 exec \"$REAL_PY\" \"\$@\"" > "$T/oldpy/python3"
+  printf '%s\n' '#!/bin/sh' "exec \"$REAL_PY\" \"\$@\"" > "$T/oldpy/python3.11"
+  chmod +x "$T/oldpy/python3" "$T/oldpy/python3.11"
+  for v in "" .11 .12 .13 .14; do cp "$T/oldpy/python3" "$T/nopy/python3$v"; done
+  new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+version = "1.2.3"'; commit "$W"
+  OUT=$(cd "$W" && PATH="$T/oldpy:$PATH" "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+  check "a newer python3.x on PATH is used → exit 0" "$RC" 0
+  has "…and the pyproject version is read" "name=v1.2.3"
+  OUT=$(cd "$W" && PATH="$T/nopy:$PATH" "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+  check "no python3 on the list has tomllib → exit 21" "$RC" 21
+  has "…and the message says what is needed" "tomli"
+else
+  echo "  - skipped: this machine's python3 has no tomllib"
+fi
+
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
 run "$W" --dir . --name-style v;                                   check "missing --commit" "$RC" 2

@@ -36,8 +36,8 @@
 #                 the tag will not include them.
 #   --dry-run     resolve the version and print the decision line; create nothing
 #
-# Version sources — a CLOSED list of seven, read relative to --dir. Do not add an
-# eighth by resemblance. Every source found must agree, and a source that is
+# Version sources — a CLOSED list of eight, read relative to --dir. Do not add a
+# ninth by resemblance. Every source found must agree, and a source that is
 # present but cannot be read stops the run:
 #   1. .claude-plugin/plugin.json or plugin.json         "version"
 #   2. pyproject.toml                                    [project].version (static)
@@ -46,17 +46,17 @@
 #                                                        (path normalised, strict UTF-8 with any BOM
 #                                                        kept, its default pattern or the configured
 #                                                        one, first match); another hatch source →
-#                                                        unreadable
-#      (2 and 3 need python3 >= 3.11 for tomllib: with an older python3 first on
-#      PATH — /usr/bin/python3 on macOS is 3.9 — any pyproject.toml makes the run
-#      unreadable; #48)
-#   4. package.json                                      "version"
-#   5. Sources/*/Version.swift                           static let|var version|current [: String] = "x.y.z"
+#                                                        unreadable (source = "vcs": see below)
+#   4. pyproject.toml                                    [tool.poetry].version (a string; also when
+#                                                        [project].dynamic lists "version", the
+#                                                        poetry 2 layout) (#48)
+#   5. package.json                                      "version"
+#   6. Sources/*/Version.swift                           static let|var version|current [: String] = "x.y.z"
 #                                                        (no such declaration → not a source; a
 #                                                        declaration whose value is not one whole
 #                                                        string literal → unreadable)
-#   6. mcpb/manifest.json                                "version"
-#   7. Sources/*/Server.swift                            version: "x.y.z" as a whole argument (none →
+#   7. mcpb/manifest.json                                "version"
+#   8. Sources/*/Server.swift                            version: "x.y.z" as a whole argument (none →
 #                                                        not a source; a version string that is not
 #                                                        the whole argument, or two different values
 #                                                        → unreadable). Only a string that starts
@@ -68,8 +68,29 @@
 #                                                        one, 21 when it sits next to the real
 #                                                        one. Give it a named constant or move
 #                                                        it out of Server.swift
-#   A JSON source (1, 4, 6) without a "version" field is not a source. The Swift
+#   A JSON source (1, 5, 7) without a "version" field is not a source. The Swift
 #   sources are read with comments removed; block comments nest.
+#
+#   pyproject.toml (2, 3, 4) needs a TOML parser (#48). The helper runs under the
+#   first of python3, python3.14, python3.13, python3.12, python3.11 that has
+#   tomllib (python 3.11+; /usr/bin/python3 on macOS is 3.9); when none has it,
+#   under python3 with the tomli package if that is installed. With no parser at
+#   all, a pyproject.toml whose text has neither `version` as a token of its own
+#   (in any case; target-version or python_version is a longer key and does not
+#   count) nor a \u, \U or \x escape cannot declare a version and is not a
+#   source; any other pyproject.toml makes the run unreadable.
+#   (RELEASE_TAG_NO_TOML=1 switches the parser off; the tests use it.)
+#
+#   A version that comes from git tags is NOT a source — there is nothing in the
+#   tree to compare a tag with. A closed list of three ways to say so; do not add
+#   a fourth by resemblance:
+#     a. a [tool.setuptools_scm] table
+#     b. [tool.hatch.version] source = "vcs"
+#     c. [tool.poetry-dynamic-versioning] enable = true (the [tool.poetry].version
+#        next to it is a placeholder and is not read)
+#   The run goes on with the other sources, or with --expect when there are none.
+#   Every other dynamic version — [tool.setuptools.dynamic] attr or file, another
+#   backend — makes the run unreadable, with a message that names it.
 #
 # The version must also make a valid git tag name (`git check-ref-format`), which
 # is checked before anything is created, so --dry-run and a real run agree.
@@ -89,8 +110,9 @@
 #       stopped after its tag was pushed. Nothing is created or moved.
 #   20  version sources disagree, or disagree with --expect (status mismatch)
 #   21  no version source (and no --expect), a source that cannot be read — a
-#       pyproject.toml with python3 < 3.11 included — or --at-bump cannot
-#       determine the commit that set the version (status unreadable)
+#       pyproject.toml that may declare a version when no TOML parser is
+#       available included — or --at-bump cannot determine the commit that set
+#       the version (status unreadable)
 #   30  the remote could not be queried, the push failed, or the pushed tag is
 #       not on the remote afterwards (status push-failed). A local tag is kept so
 #       the printed retry command works. Also when the remote's push URL differs
@@ -151,10 +173,25 @@ case "$MAX_WALK" in ''|*[!0-9]*|0) MAX_WALK=500 ;; esac
 # Read into a variable from a TOP-LEVEL heredoc, then run with -c: bash 3.2 cannot
 # parse a heredoc inside $( … ) when its text contains quotes (#42 verify R2).
 IFS= read -r -d '' PYSRC <<'PY' || true
-import json, posixpath, re, subprocess, sys
+import json, os, posixpath, re, subprocess, sys
 
 top, sha, prefix, at_bump = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 MAX_WALK = int(sys.argv[5])
+
+def toml_parser():
+    """The module that reads pyproject.toml, or None (#48): tomllib (python 3.11+),
+    else tomli when it is installed. RELEASE_TAG_NO_TOML=1 switches both off, so the
+    tests can run the no-parser paths on any python3."""
+    if os.environ.get("RELEASE_TAG_NO_TOML") == "1":
+        return None
+    for name in ("tomllib", "tomli"):
+        try:
+            return __import__(name)
+        except ImportError:
+            pass
+    return None
+
+TOML = toml_parser()
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?")   # used with fullmatch: no trailing newline
 # Version.swift: the declaration, and the declaration whose WHOLE initializer is one
 # string literal — no interpolation or escapes inside, nothing after it but the end of
@@ -256,11 +293,39 @@ def hatch_read(text, cfg):
 
 def hatch_path(pp_text):
     """The [tool.hatch.version].path of a pyproject.toml text, or None (--at-bump walk)."""
+    if TOML is None:
+        return None
     try:
-        import tomllib
-        return hatch_path_of(hatch_config(tomllib.loads(pp_text or "")))
+        return hatch_path_of(hatch_config(TOML.loads(pp_text or "")))
     except Exception:
         return None
+
+def scm_backend(doc):
+    """The name of the backend when a pyproject.toml says its version comes from git
+    tags, else None. A CLOSED list of three (#48) — do not add a fourth by resemblance:
+    such a version is not a source, and a backend this list does not name must stay a
+    problem rather than be waved through as "probably tags too"."""
+    if isinstance(dig(doc, "tool", "setuptools_scm"), dict):
+        return "setuptools_scm"
+    cfg = hatch_config(doc)
+    if cfg and cfg.get("source") == "vcs":
+        return "hatch-vcs"
+    if dig(doc, "tool", "poetry-dynamic-versioning", "enable") is True:
+        return "poetry-dynamic-versioning"
+    return None
+
+# `version` as a token of its own: not part of a longer bare key (target-version,
+# python_version, minversion, version_file). A TOML key named version always shows up
+# as such a token - bare, quoted, dotted (project.version) or inside an inline table -
+# unless it is spelled with escapes in a quoted key.
+VERSION_TOKEN = re.compile(r"(?i)(?<![A-Za-z0-9_-])version(?![A-Za-z0-9_-])")
+
+def cannot_declare_version(pp_text):
+    """True when a pyproject.toml text provably declares no version: it has no
+    `version` token (in any case; see VERSION_TOKEN) and no escape (\\u, \\U, \\x)
+    that could spell one in a quoted key. Used only when there is no TOML parser
+    (#48); anything less certain is a problem."""
+    return not VERSION_TOKEN.search(pp_text) and not re.search(r"\\[uUx]", pp_text)
 
 # Server.swift: `version: "x"` counts only when the string literal is the whole
 # argument, i.e. followed by `,` `)` `]` or `}` (#42 verify R5). Every `version:` whose
@@ -350,28 +415,39 @@ def read_sources(commit):
         json_version("plugin.json", "plugin.json")
 
     pp = show("pyproject.toml")
+    doc = None
     if pp is not None:
-        try:
-            import tomllib
-        except ImportError:
-            problems.append("pyproject.toml: Python 3.11+ (tomllib) is needed to read it")
+        if TOML is None:
+            if cannot_declare_version(pp):
+                notes.append("pyproject.toml: no TOML parser here, but the file has no version key; not a version source")
+            else:
+                problems.append("pyproject.toml: cannot be read without a TOML parser - python3 3.11 or newer (tomllib) on PATH, or the tomli package for this python3, is needed")
         else:
             try:
-                doc = tomllib.loads(pp)
-            except (tomllib.TOMLDecodeError, RecursionError):
-                problems.append("pyproject.toml: not valid TOML"); doc = None
-            if doc is not None:
-                proj = doc.get("project", {}) if isinstance(doc.get("project"), dict) else {}
-                dynamic = proj.get("dynamic", []) if isinstance(proj.get("dynamic", []), list) else []
-                if "version" in proj:
-                    add("pyproject", proj["version"], "pyproject.toml")
-                elif "version" in dynamic:
-                    cfg = hatch_config(doc)
-                    raw = cfg.get("path") if cfg else None
-                    path = hatch_path_of(cfg)
-                    if not isinstance(raw, str) or not raw:
-                        problems.append("pyproject.toml: dynamic version is not a [tool.hatch.version] path")
-                    elif path is None:
+                doc = TOML.loads(pp)
+            except (TOML.TOMLDecodeError, RecursionError):
+                problems.append("pyproject.toml: not valid TOML")
+    if doc is not None:
+        proj = doc.get("project", {}) if isinstance(doc.get("project"), dict) else {}
+        dynamic = proj.get("dynamic", []) if isinstance(proj.get("dynamic", []), list) else []
+        poetry = dig(doc, "tool", "poetry")
+        poetry = poetry if isinstance(poetry, dict) else {}
+        scm = scm_backend(doc)
+        if "version" in proj:
+            add("pyproject", proj["version"], "pyproject.toml")
+        if scm:
+            # nothing in the tree to compare a tag with: the other sources, or --expect,
+            # decide; the placeholder [tool.poetry].version next to it is not read (#48)
+            notes.append(f"pyproject.toml: the version comes from git tags ({scm}); not a version source")
+        else:
+            if "version" in poetry:
+                add("poetry", poetry["version"], "pyproject.toml")
+            if "version" in dynamic and "version" not in proj:
+                cfg = hatch_config(doc)
+                raw = cfg.get("path") if cfg else None
+                path = hatch_path_of(cfg)
+                if isinstance(raw, str) and raw:
+                    if path is None:
                         problems.append(f"pyproject.toml: [tool.hatch.version].path {safe(raw)!r} is not a relative path inside the repository made of [A-Za-z0-9._/-]")
                     else:
                         src, why = hatch_text(path)
@@ -381,6 +457,12 @@ def read_sources(commit):
                             problems.append(f"hatch:{path}: {why}")
                         else:
                             add(f"hatch:{path}", v, path)
+                elif "version" in poetry:
+                    pass    # poetry 2: the dynamic version is [tool.poetry].version, read above
+                elif dig(doc, "tool", "setuptools", "dynamic", "version") is not None:
+                    problems.append("pyproject.toml: [tool.setuptools.dynamic] version (attr or file) is not read by this helper - state the version in [project], or use a [tool.hatch.version] path")
+                else:
+                    problems.append("pyproject.toml: dynamic version is not one this helper reads (a [tool.hatch.version] path, or [tool.poetry].version)")
 
     json_version("package.json", "package.json")
 
@@ -492,7 +574,16 @@ if at_bump and found and not problems and len(values) == 1:
                 where = safe(prefix.rstrip("/")) if prefix else "the repository"
                 print(f"NOTE\tthe tag goes on {release[:7]}, where {safe(current)} was set; commits after the tagged one that change {where}: {safe(n)}")
 PY
-SOURCES_OUT=$(python3 -I -c "$PYSRC" "$TOP" "$SHA" "$PREFIX" "$AT_BUMP" "$MAX_WALK") \
+# pyproject.toml needs a TOML parser, and tomllib is python 3.11+: use the first
+# python3 of this list that has it. When none does, python3 runs the script anyway
+# and tries tomli (#48). The list is closed; a new minor version is added here.
+PY_BIN=python3
+for cand in python3 python3.14 python3.13 python3.12 python3.11; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -I -c 'import tomllib' >/dev/null 2>&1; then
+    PY_BIN=$cand; break
+  fi
+done
+SOURCES_OUT=$("$PY_BIN" -I -c "$PYSRC" "$TOP" "$SHA" "$PREFIX" "$AT_BUMP" "$MAX_WALK") \
   || { echo "RELEASE_TAG: unreadable name=? commit=$(git -C "$TOP" rev-parse --short "$SHA") version=? sources=?"; echo "$PROG: python3 failed while reading versions" >&2; exit 21; }
 
 field() { printf '%s\n' "$SOURCES_OUT" | awk -F'\t' -v k="$1" -v c="$2" '$1==k{print $c}'; }

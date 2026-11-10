@@ -1957,7 +1957,7 @@ rm -f "$MSGF"
 
 **tag 打在升版號的那個 commit，不是推送後的 HEAD**（#42 decision，verify 第 1 輪後由使用者決定）：helper 以 `--at-bump` 從 HEAD 往回找，取版本來源最後一次一起變成目前版本的 commit。所以沒升版號的 plugin-update 會得到 `exists`（tag 早已在那個 commit 上）；還沒有版號 tag 的舊 plugin，第一次跑時會補在它當初升版號的 commit 上，而不是當下的 HEAD。
 
-tag 的實作只有一份：`scripts/release-tag.sh`（四個發版 skill 共用）。它從 commit 的內容讀版本（不讀工作樹），七種版本來源全部一致才打，同名 tag 指向別的 commit 時不移動。本 fence 只決定**能不能打**、tag 名稱的形式，以及怎麼回報：
+tag 的實作只有一份：`scripts/release-tag.sh`（四個發版 skill 共用）。它從 commit 的內容讀版本（不讀工作樹），八種版本來源全部一致才打，同名 tag 指向別的 commit 時不移動。本 fence 只決定**能不能打**、tag 名稱的形式，以及怎麼回報：
 
 | helper 結果 | 本 fence 的處置 |
 |---|---|

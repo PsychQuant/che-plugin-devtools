@@ -73,7 +73,7 @@ echo "Binary: $BINARY_NAME"
 - `Sources/*/Version.swift` — 更新版本字串
 - 其他可能的位置由 Step 0.3 決定
 
-Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`）、`Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（或 hatch `path` 指到的檔案，照 hatch 自己的讀法）、`.claude-plugin/plugin.json` 或根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。Phase 3 Step 1 會把清單裡改過的檔案都 stage 進 release commit；改了 hatch `path` 指到的檔案時，那個檔案要自己 `git add`。
+Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`）、`Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（`[project].version`、`[tool.poetry].version`，或 hatch `path` 指到的檔案，照 hatch 自己的讀法）、`.claude-plugin/plugin.json` 或根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。Phase 3 Step 1 會把清單裡改過的檔案都 stage 進 release commit；改了 hatch `path` 指到的檔案時，那個檔案要自己 `git add`。
 
 ### Step 2: 更新 CHANGELOG.md
 
@@ -303,7 +303,7 @@ if [ "$RC" != 0 ] || [ "$TAG" != "v$VERSION" ]; then
     case "$RC" in
       10) echo "✗ Step 1.5: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止。前者要先升版號；後者確認那個 tag 該不該留（刪 remote 上的 tag 由你決定）" ;;
       20) echo "✗ Step 1.5: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 1 Step 1 改成同一個版本" ;;
-      21) echo "✗ Step 1.5: 有版本檔讀不出值（見上方的原因；pyproject.toml 需要 python3 3.11 以上，見 #48）— 修好後重跑這一步" ;;
+      21) echo "✗ Step 1.5: 有版本檔讀不出值（見上方的原因；讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）— 修好後重跑這一步" ;;
       30) echo "✗ Step 1.5: tag 沒推成（見上方的原因：push URL 指向別的 repo 時先改 remote 設定，其他情況照上方的重跑指令）" ;;
       *)  echo "✗ Step 1.5: release-tag rc=${RC}、tag=${TAG:-?}（預期 v${VERSION}）" ;;
     esac

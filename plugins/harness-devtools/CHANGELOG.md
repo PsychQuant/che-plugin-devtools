@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/release-tag.sh`：新增第 8 種版本來源，`pyproject.toml` 的 `[tool.poetry].version`（#48）。`[project].dynamic` 列了 `version`、版本寫在 `[tool.poetry]` 的寫法也讀。它和其他來源一樣要全部一致。
+
+### Changed
+
+- **行為變動（poetry 專案）**：以前 `[tool.poetry].version` 完全沒被讀到。`mcp-deploy`／`cli-deploy` 會直接用 `--expect` 的版本打 tag，`plugin-update`／`plugin-deploy` 回 21。現在四個 skill 都會讀它，與要發的版本不一致時回 20（#48）。
+- `scripts/release-tag.sh`：讀 `pyproject.toml` 不再只看 PATH 上第一個 `python3`（#48）。helper 依序試 `python3`、`python3.14`–`python3.11`，用第一個有 `tomllib` 的；都沒有時試 `tomli`。完全沒有 TOML parser 時，文字裡沒有獨立的 `version`（不分大小寫；`target-version` 這類較長的鍵名不算）也沒有 `\u`／`\U`／`\x` 跳脫的 `pyproject.toml` 不算來源，其餘回 21。以前只要有 `pyproject.toml` 就回 21。
+- `scripts/release-tag.sh`：版本來自 git tag 的專案不算版本來源（#48）。封閉列舉三種：`[tool.setuptools_scm]` 表、`[tool.hatch.version]` 的 `source = "vcs"`、`[tool.poetry-dynamic-versioning]` 的 `enable = true`。helper 印出原因後照其他來源繼續；沒有其他來源時用 `--expect`，沒有 `--expect` 則回 21。以前一律回 21。
+- `scripts/release-tag.sh`：`[tool.setuptools.dynamic]` 的 `attr`／`file` 仍回 21，訊息改成指出這張表與替代做法（#48）。
+
 ## [2.6.0] - 2026-11-10
 
 **發版摘要**：四個發版 skill 現在都會打版號 tag（#42）；`plugin-update`、`plugin-deploy` 的自動推 tag 是 opt-in，要 `git config harness-devtools.releaseTag true` 才打。之前 `plugin-update`、`plugin-deploy` 不打 tag；`mcp-deploy`、`cli-deploy` 讓 GitHub 在建 release 時，於當下的 remote main 上自動建 tag，不保證落在 release commit 上，也沒有比對版號。四個 skill 都只在預設 branch 上打。`plugin-update`、`plugin-deploy` 的 tag 打在升版號的那個 commit；`mcp-deploy`、`cli-deploy` 的 tag 打在 release commit，版本必須等於要發的版本。helper 在 macOS 內建的 bash 3.2 下也能跑。
