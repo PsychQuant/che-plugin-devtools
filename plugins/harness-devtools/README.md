@@ -153,6 +153,43 @@ list_marketplaces                          # 所有已發現的名稱
 
 **plugin 目錄從 manifest 讀，不猜佈局**（#18）：`find_plugin_marketplace` 與 `resolve_plugin_dir` 解析 `plugins[].source`；`./plugin`（單一 plugin）、`./plugins/<name>`（aggregator）、`.`（repo 即 plugin）都能命中——前提是 manifest 有這個 entry；entry 還沒寫的「新 plugin」狀態只對 `plugins/<name>` 佈局成立（Phase 2 Step 3 的範本也是 aggregator 形式）。plugin 的 manifest 可在 `.claude-plugin/plugin.json` 或根目錄 `plugin.json`，**讀它的每一處都經 `plugin_manifest_path`（`load_plugin_ctx` 給的 `$PLUGIN_MANIFEST`）**，不自己組路徑；沒有 manifest 的目錄（materialized subtree）能被解析但沒有 version 可同步，`plugin-update` Step 0.1 直接 abort 說明。manifest 給不出本地路徑時（沒 entry、git-subdir 物件、URL、JSON 壞掉、python3 跑不起來）才退回探 `plugins/<name>`——「不知道」不能變成「沒有」。兩者都失敗時 rc 分六類（1 未列 / 2 不可用 / 3 無 python3 / 4 讀不動 / 5 非本地 / 6 名稱不合法），`plugin-update` Step 0.1 據此指名真正的原因，不會一律講成「沒上架」。source 裡的引號 / `..` / `|` / 控制字元一律拒絕、目錄（含 legacy `plugins/<name>`）以實體路徑檢查仍在 root 內、持有判準只有一套：目錄若帶 plugin 的 manifest（`.claude-plugin/plugin.json` 或根目錄 `plugin.json`）就必須解析得動且 name 等於請求名；沒有 manifest 時目錄名要等於請求名且有 plugin 形狀（空目錄不算）。legacy `plugins/<name>` 只救「未列 / 無 python3 / 讀不動 / 非本地」，有 entry 但 source 寫錯是確定的錯誤不會被救回：路徑會進 git pathspec 與 python argv，不能讓第三方檔案內容變成程式碼或宣稱別人的 plugin。skill 的每個 bash block 是獨立的 Bash 呼叫，Step 0.1 以 `plugin_holders` 列舉持有該 plugin 的 checkout（解析到同一實體目錄的巢狀同名 marketplace 只算一個；真的多份時以 cwd 消歧、否則 abort 列出）、以 `write_plugin_ctx` 寫下驗證過的三元組（私有 state 目錄、純資料）、後續 block 以 `load_plugin_ctx` 逐行 parse 並重驗（失敗不設任何變數）——agent 只代入自己的引數；唯一會被貼回的第三方值是 marketplace 名，它在索引層就只保留 `[A-Za-z0-9._-]`。
 
+### 發版 tag：`scripts/release-tag.sh`（#42）
+
+四個發版 skill（`plugin-update` Phase 2.7、`plugin-deploy` Step 7.5、`mcp-deploy` Phase 3 Step 3a、`cli-deploy` Phase 3 Step 1.5）共用的 tag 實作。推送完成後，依**套件自己的版本**打 annotated tag 並推上去。`plugin-update`、`plugin-deploy` 的自動推 tag 是 **opt-in**：
+
+```bash
+git config --global harness-devtools.releaseTag true   # 所有 repo；不加 --global 則只開目前的 repo
+```
+
+開關沒開時這兩個 skill 印一行怎麼打開，不打 tag。`mcp-deploy`、`cli-deploy` 建 release 一定要先有 `v<version>` tag，不受開關影響。
+
+helper 的用法：
+
+```bash
+bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v|plugin [--plugin <name>] \
+     [--remote <remote>] [--expect <x.y.z>] [--at-bump] [--dry-run]
+# → RELEASE_TAG: <tagged|exists|not-bumped|mismatch|unreadable|push-failed|dry-run> name=… commit=… version=… sources=…
+```
+
+- **版本從 commit 讀，不讀工作樹**；七種來源（封閉列舉）全部一致才打：plugin.json、pyproject 靜態版本、hatch `path` 指到的檔案（照 hatchling 的 regex source 讀：路徑先正規化、嚴格 UTF-8、預設或設定的 pattern、第一個符合的值；tag 是 hatch 讀到的版本字串，預發行版建 wheel 時 packaging 會再正規化，例如 `1.0.0-beta` 建成 `1.0.0b0`；其他 hatch source → 21）、package.json、`Sources/*/Version.swift`（`static let|var version|current`，可帶 `: String`；初始值必須整個是一個字串常值）、`mcpb/manifest.json`、`Sources/*/Server.swift`（`version: "x"` 必須是整個引數；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）。JSON 來源沒有 `version` 欄位、`Version.swift` 沒有這種宣告時都不算來源；Swift 的值不是一整個字串常值 → 21。Swift 先去掉註解（區塊註解可巢狀）。
+- **`--at-bump` 的限制**：走訪沿 first-parent 歷史（branch 自己的 commit），用 merge commit 合併 PR 時 tag 打在 merge commit；看的是目前的路徑（hatch 版本檔改名會跟著走）；plugin 目錄整個搬家、搬家時又沒升版號的話，第一次跑會打在搬家的 commit。
+- **pyproject 需要 python3 3.11 以上**（`tomllib`）。PATH 上第一個 `python3` 比較舊時（macOS 的 `/usr/bin/python3` 是 3.9），有 `pyproject.toml` 的 repo 一律 21（#48）。
+- **bash 3.2 可用**：helper 在 macOS 內建的 `/bin/bash` 下也能跑，測試會在 `/bin/bash` 下把整套重跑一次。
+- **打在哪個 commit**：
+  - `plugin-update`、`plugin-deploy` 帶 `--at-bump`：從 HEAD 往回找（封閉列舉的路徑全部算，已刪除的來源也算），打在版本來源最後一次一起變成目前版本的那個 commit。沒升版號的發版因此得到 `exists`，tag 不會跟著每次推送往前移。找不到確定的 commit 時 → 21，不打在推測的 commit 上：往回走了 500 個 commit 還沒找到、shallow clone 的歷史在升版號之前就斷了（先 `git fetch --unshallow`）、或某個 commit 的來源讀不出值。之後若還有改動 plugin 目錄的 commit，stderr 會印出筆數：tag 不包含那些改動（squash merge 時兩者是同一個 commit）。還沒有版號 tag 的 plugin，第一次跑時會替目前版本補打；更早的版本不補。
+  - `mcp-deploy`、`cli-deploy` 打在 HEAD，並帶 `--expect <release 的版本>`：檔案裡的版本與要發的版本不同 → 20，不打也不建 release；repo 沒有任何版本來源時用 `--expect` 的值。
+- **什麼時候打**：四個 skill 都要 HEAD 已推到 upstream，而且 remote 上那個 branch 實際指向 HEAD（先比本機的 `@{u}`，再以 `git ls-remote` 問 remote；remote 被改寫或有人推了新 commit 時停下：`plugin-update`、`plugin-deploy` 可以 `git pull` 後重跑，`--at-bump` 仍會打在升版號的 commit；`mcp-deploy`、`cli-deploy` 打在 HEAD，pull 之後重跑會把 tag 打在別人的 commit，要先確認要發的是哪一個 commit），而且目前 branch 追蹤的 upstream branch 是 remote 的預設 branch（看 upstream，不看本機 branch 名）；feature branch 上 `plugin-update`、`plugin-deploy` 跳過，`mcp-deploy`、`cli-deploy` 停下不建 release。`plugin-update`、`plugin-deploy` 另外要求 plugin 目錄與 marketplace 是同一個 git repo。
+- **owner/repo**：`mcp-deploy`、`cli-deploy` 從 upstream remote 的網址推出，host 必須正好是 `github.com`；ssh host alias、GitHub Enterprise 會停下，且不印出網址（可能帶憑證）。建 release 前確認 GitHub 上的 tag 就是剛推的那一個 tag 物件。
+- **push URL**：remote 的 push URL 指向另一個 repo 時（`pushurl` 或 `pushInsteadOf`），helper 在推任何東西之前回 30；https 抓、ssh 推的同一個 repo 不算。
+- **CI**：自動推的 tag 會觸發 `on: push: tags` 的 workflow。
+- **tag 名稱**：
+  - `mcp-deploy`、`cli-deploy`：固定 `v<version>`（wrapper 從 `releases/download/v<version>/…` 下載）。
+  - `plugin-update`、`plugin-deploy`：只看佈局。plugin 目錄就是 git repo 的根目錄（repo 本身就是 plugin）→ `v<version>`；其他一律 `<plugin>-v<version>`，例如本 repo 的 `harness-devtools-v<version>`，binary repo 裡的 `./plugin` 是 `<plugin>-v<version>`（`v<version>` 留給 binary 的 release）。不看 marketplace 列了幾個 plugin，所以多加一個 plugin 不會改變既有 plugin 的 tag 名稱。
+- **結束碼**：0 已打或已存在 / 10 同名 tag 已在另一個 commit 上（這個版本以前發過，或上次發版推完 tag 就停了；不移動）/ 20 來源不一致 / 21 讀不出或判斷不了 / 30 推送失敗（印重跑指令），或 push URL 指向別的 repo（什麼都沒推，沒有重跑指令，要先改 remote 設定）/ 2 引數錯誤。
+- 不移動、不刪除 tag，不用 `--force`。
+
+`plugin-update`、`plugin-deploy` 沒打成 tag 不中止（branch 已推送）；`mcp-deploy`、`cli-deploy` 沒打成就不建 release——沒有 tag 時 GitHub 會在 main 上自動建一個，那正是 #42 要避免的情況。
+
 ## 參考資源
 
 Skill 寫法參考 Anthropic 官方 plugin 開發工具包：

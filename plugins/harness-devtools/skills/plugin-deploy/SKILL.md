@@ -36,9 +36,10 @@ TaskCreate(name="mcp_binary_check", description="Step 2.5: 若是 MCP plugin，�
 TaskCreate(name="readme_freshness_gate", description="Step 2.6: README 是否跟上 plugin.json 版本 / 新工具；minor/major bump stale → BLOCK")
 TaskCreate(name="present_checklist", description="Step 3: 顯示結果，讓使用者決定繼續或修問題")
 TaskCreate(name="fix_issues", description="Step 4: 若使用者選修問題，處理 README/LICENSE/hooks 等")
-TaskCreate(name="version_bump", description="Step 5: patch/minor/major bump plugin.json + marketplace.json")
+TaskCreate(name="version_bump", description="Step 5: patch/minor/major bump plugin.json + marketplace.json + plugin 目錄下套件自己的版本檔（封閉列舉見 Step 5）")
 TaskCreate(name="update_marketplace_json", description="Step 6: 同步 marketplace.json 確認 version / description")
 TaskCreate(name="commit_and_push", description="Step 7: git add + commit + push")
+TaskCreate(name="tag_release", description="Step 7.5 (#42): git config harness-devtools.releaseTag 為 true（opt-in）時，push 後呼叫 scripts/release-tag.sh 打版號 tag 並推送；沒開或沒打成都不中止，結果寫進 Step 9 回報")
 TaskCreate(name="sync_and_reload", description="Step 8: claude plugin marketplace update + plugin update")
 TaskCreate(name="verify", description="Step 9: claude plugin list 驗證版本")
 ```
@@ -342,9 +343,17 @@ binary 對應的獨立 repo（如 `PsychQuant/che-word-mcp`）才是使用者主
 4. 自訂版本號
 ```
 
-更新兩個地方的版本號：
+更新版本號：
 1. `plugins/{name}/.claude-plugin/plugin.json` 的 `version`
 2. `.claude-plugin/marketplace.json` 中對應 plugin 的 `version`
+3. plugin 目錄下**套件自己的版本**——plugin 目錄裡有下列任何一個檔案，就要一起改成同一個版本（封閉列舉，與 `scripts/release-tag.sh` 認得的來源同一份，#42）：
+   - `pyproject.toml` 的 `[project].version`；版本是 `dynamic` 時，改 `[tool.hatch.version].path` 指到的檔案裡的 `__version__`（helper 照 hatch 自己的讀法讀：路徑先正規化、嚴格 UTF-8、預設或設定的 pattern、第一個符合的值）
+   - `package.json` 的 `version`
+   - `Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
+   - `mcpb/manifest.json` 的 `version`
+   - `Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）
+
+   漏改任何一個，Step 7.5 會因版本不一致而不打 tag。
 
 ### Step 6: Update marketplace.json
 
@@ -361,6 +370,55 @@ git add "plugins/{plugin-name}" ".claude-plugin/marketplace.json"
 git commit -m "release: {plugin-name} v{new_version} — {簡述變更}"
 git push origin main
 ```
+
+### Step 7.5: 版號 tag（#42）
+
+開關開著時，push 成功後打版號 tag 並推上去。規則與 `plugin-update` Phase 2.7 相同，實作只有一份 `scripts/release-tag.sh`：
+
+- **opt-in**：git config `harness-devtools.releaseTag` 為 true 才打（預設不打；可設在 marketplace repo 或 `--global`，repo 的設定優先）。開關沒開時印一行怎麼打開，不打 tag（#42 使用者決定，2026-11-10）。
+- 只在預設 branch 上、而且 HEAD 已經推上去時才打。
+- tag 打在**升版號的那個 commit**（`--at-bump`），版本從 commit 的內容讀，Step 5 列的來源全部一致才打。
+- 同名 tag 已在別的 commit 時不打、不移動；推送失敗時印出重跑指令。
+- tag 名稱：這個 skill 發的 plugin 都在 `plugins/<name>`，不是 repo 根目錄，所以一律是 `{plugin-name}-v{version}`（#42 decision：只有 repo 本身就是 plugin 才用 `v{version}`）。
+
+Step 7 推送前若要向使用者確認，開關開著時同一個確認要列出這個 tag。
+
+兩個值由 agent 代入：`{marketplace-root}`（Step 1 找到的 marketplace repo 根目錄，絕對路徑）與 `{plugin-name}`。代入前先核對：路徑不含單引號，plugin 名只含 `A-Z a-z 0-9 . _ -`。值裡有單引號會先跳出字串，fence 裡的檢查就擋不到了。每個 Bash 呼叫都是新的 shell，Step 1 設的 `$MARKETPLACE_ROOT` 不會留到這裡；而 zsh 的 `cd ""` 不會失敗，所以這裡明寫路徑並先驗證（#42 verify 第 2 輪）。
+
+```bash
+MARKETPLACE_ROOT='{marketplace-root}'
+case "$MARKETPLACE_ROOT" in ''|*'{'*|*'}'*) echo "⚠ Step 7.5: MARKETPLACE_ROOT 未代入 — 沒有打 tag"; exit 0 ;; esac
+[ "$(git -C "$MARKETPLACE_ROOT" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$MARKETPLACE_ROOT" 2>/dev/null && pwd -P)" ] \
+  || { echo "⚠ Step 7.5: $MARKETPLACE_ROOT 不是 git repo 的根目錄 — 沒有打 tag"; exit 0; }
+cd "$MARKETPLACE_ROOT" || exit 0
+PLUGIN_NAME='{plugin-name}'
+case "$PLUGIN_NAME" in ''|.*|-*|*[!A-Za-z0-9._-]*) echo "⚠ Step 7.5: PLUGIN_NAME 未代入或不合法 — 沒有打 tag"; exit 0 ;; esac
+# 自動推 tag 是 opt-in，最先檢查：git config harness-devtools.releaseTag 為 true 才打（#42 使用者決定，2026-11-10）
+[ "$(git config --type=bool --get harness-devtools.releaseTag 2>/dev/null)" = true ] \
+  || { echo "→ Step 7.5: skipped — 沒有開啟自動推 tag，沒有打 tag（要開：git config harness-devtools.releaseTag true，加 --global 則所有 repo 都開）"; exit 0; }
+HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法：skill 載入時會被代換成 plugin 路徑（#39）
+[ -f "$HELPER" ] || { echo "⚠ Step 7.5: 找不到 $HELPER — 沒有打 tag"; exit 0; }
+# plugin 目錄若自己是另一個 git repo（巢狀 clone、submodule），下面的檢查看的是 marketplace repo，
+# helper 卻會在 plugin 目錄的 repo 打 tag 並推送——兩者必須是同一個 repo（#42 verify 第 2 輪）
+[ "$(git -C "plugins/$PLUGIN_NAME" rev-parse --show-toplevel 2>/dev/null)" = "$(git rev-parse --show-toplevel)" ] \
+  || { echo "⚠ Step 7.5: plugins/$PLUGIN_NAME 是另一個 git repo（或不存在），不是 marketplace repo 的一部分 — 沒有打 tag"; exit 0; }
+BRANCH=$(git branch --show-current)
+REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
+case "$REMOTE" in ''|.) echo "⚠ Step 7.5: $BRANCH 沒有指向 remote 的 upstream — 沒有打 tag"; exit 0 ;; esac
+git remote | grep -qxF -- "$REMOTE" || { echo "⚠ Step 7.5: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 沒有打 tag"; exit 0; }
+[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: HEAD 還沒推上去（Step 7 沒推成功？）— 沒有打 tag"; exit 0; }
+# 預設 branch 看的是 upstream 追蹤的 branch，不是本機 branch 名
+UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
+DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
+[ -n "$DEFAULT" ] && [ "$UPSTREAM_BRANCH" = "$DEFAULT" ] || { echo "⚠ Step 7.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是 $REMOTE 的預設 branch（${DEFAULT:-?}）— 沒有打 tag"; exit 0; }
+# @{u} 是本機記錄的位置；remote 上那個 branch 實際指向哪裡要問 remote（#42 verify 第 7 輪）
+LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
+[ -n "$LIVE" ] && [ "$LIVE" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）— git pull 後重跑這一步，--at-bump 仍會打在升版號的 commit；沒有打 tag"; exit 0; }
+bash "$HELPER" --dir "plugins/$PLUGIN_NAME" --commit HEAD --at-bump --remote "$REMOTE" --name-style plugin --plugin "$PLUGIN_NAME"
+echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 同名 tag 在別的 commit；20/21 版本不一致或讀不出；30 推送失敗或 push URL 指向別的 repo，見上方的原因）"
+```
+
+tag 沒打成（10／20／21／30）不中止，繼續 Step 8，並把結果寫進 Step 9 的回報。
 
 ### Step 8: Sync & Reload
 
@@ -385,6 +443,7 @@ claude plugin list | grep {plugin-name}
 
 - marketplace.json ✅ 已更新
 - git push ✅ 已推送
+- 版號 tag {Step 7.5 的結果：沒開啟（opt-in，harness-devtools.releaseTag 不是 true）/ 已打 / 已存在 / 沒升版號 / 版本不一致 / 推送失敗（附重跑指令）}
 - plugin cache ✅ 已同步
 - 安裝版本 ✅ 已更新
 

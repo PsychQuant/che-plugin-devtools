@@ -671,6 +671,167 @@ assert_contains "vn: …and re-reads 2.0.0" "1.2.3 → 2.0.0" "$OUT"
 ( cd "$T/dev/fx-mp" && git checkout -q -- plugins/vn )
 
 echo
+echo "Phase 2.7 (#42): version tag on the bump commit — runs whether or not Phase 2 pushed"
+# annotated tags need a committer; a user's tag.gpgSign (or init.defaultBranch) must not reach the fixtures:
+# isolate the global config for this section only (the R1 guard put -c tag.gpgSign=false on `git commit`,
+# which the helper's `git tag -a` never sees — #42 verify R1)
+# release tags are opt-in (harness-devtools.releaseTag, #42 user decision 2026-11-10): this section's
+# global config turns them on, and the tagoff cases below turn it off again
+printf '[harness-devtools]\n\treleaseTag = true\n' > "$T/gitconfig-tags-on"
+export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_CONFIG_GLOBAL="$T/gitconfig-tags-on"
+TAG_MARK='HELPER="${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh"'
+mk_tag_fx() {   # name version [source] → marketplace with one plugin at <source>, pushed to a bare remote
+  local d="$T/dev/fx-$1" src="${3:-./}" pdir
+  pdir="$d/${src#./}"
+  mkdir -p "$d/.claude-plugin" "$pdir/.claude-plugin"
+  printf '{ "name": "fx-%s", "plugins": [ { "name": "%s", "version": "%s", "source": "%s" } ] }\n' "$1" "$1" "$2" "$src" > "$d/.claude-plugin/marketplace.json"
+  printf '{ "name": "%s", "version": "%s" }\n' "$1" "$2" > "$pdir/.claude-plugin/plugin.json"
+  git init -q --bare "$T/remote-$1.git"
+  ( cd "$d" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm init \
+      && git remote add origin "$T/remote-$1.git" && git push -q -u origin HEAD 2>/dev/null )
+}
+remote_tags() { git -C "$T/dev/fx-$1" ls-remote --tags origin | awk '{print $2}' | grep -v '\^{}$' | sed 's#refs/tags/##' | tr '\n' ' '; }
+commit_fx() { ( cd "$T/dev/fx-$1" && git add -A && git -c user.name=t -c user.email=t@t commit -qm "$2" ); }
+
+mk_tag_fx tagfx 1.4.0
+prep01 tagfx
+run_both "tagfx: repo is the plugin, HEAD already pushed (Phase 2 had nothing to push) → done (tagged, then exists)" "$TAG_MARK" tagfx "→ Phase 2.7: done"
+assert_contains "tagfx: the remote has v<version> (repo is the plugin)" "v1.4.0" "$(remote_tags tagfx)"
+printf 'x\n' > "$T/dev/fx-tagfx/NOTES"; commit_fx tagfx notes
+prep01 tagfx
+run_both "tagfx: unpushed HEAD → skipped, nothing tagged" "$TAG_MARK" tagfx "→ Phase 2.7: skipped — HEAD 還沒推到 upstream"
+( cd "$T/dev/fx-tagfx" && git push -q origin HEAD 2>/dev/null )
+prep01 tagfx
+run_both "tagfx: pushed, version not bumped → exists (the tag stays on the bump commit)" "$TAG_MARK" tagfx "done — exists name=v1.4.0"
+assert_contains "tagfx: v1.4.0 still points at the first commit" "$(git -C "$T/dev/fx-tagfx" rev-parse HEAD~1)" "$(git -C "$T/dev/fx-tagfx" ls-remote --tags origin 'refs/tags/v1.4.0^{}')"
+( cd "$T/dev/fx-tagfx" && git checkout -q -b feat && printf 'y\n' > F && git add -A && git -c user.name=t -c user.email=t@t commit -qm f && git push -q -u origin feat 2>/dev/null )
+prep01 tagfx
+run_both "tagfx: on a feature branch → skipped, not the default branch" "$TAG_MARK" tagfx "不是 origin 的預設 branch"
+( cd "$T/dev/fx-tagfx" && git checkout -q - )
+
+mk_tag_fx tagbump 2.0.0
+printf '{ "name": "tagbump", "version": "2.1.0" }\n' > "$T/dev/fx-tagbump/.claude-plugin/plugin.json"; commit_fx tagbump bump
+BUMP=$(git -C "$T/dev/fx-tagbump" rev-parse HEAD)
+printf 'w\n' > "$T/dev/fx-tagbump/W1"; commit_fx tagbump wip1; printf 'w\n' > "$T/dev/fx-tagbump/W2"; commit_fx tagbump wip2
+( cd "$T/dev/fx-tagbump" && git push -q origin HEAD 2>/dev/null )
+prep01 tagbump
+f=$(prep "$TAG_MARK" tagbump); OUT=$(cd "$T" && bash "$f" 2>&1)
+assert_contains "tagbump: tagged" "→ Phase 2.7: done — tagged name=v2.1.0" "$OUT"
+assert_contains "tagbump: v2.1.0 is on the bump commit, not on HEAD" "$BUMP" "$(git -C "$T/dev/fx-tagbump" ls-remote --tags origin 'refs/tags/v2.1.0^{}')"
+
+# verify R2: the default-branch check reads the upstream branch, not the local branch name
+mk_tag_fx tagwork 1.2.0
+( cd "$T/dev/fx-tagwork" && git branch -m work )
+prep01 tagwork
+run_both "tagwork: local 'work' tracking the remote's default branch → tagged" "$TAG_MARK" tagwork "→ Phase 2.7: done"
+
+# verify R7: @{u} is a local cache — the remote's branch itself must be at HEAD
+mk_tag_fx tagstale 1.0.0
+( cd "$T/dev/fx-tagstale" && B=$(git branch --show-current) && git checkout -q -b side && printf 's\n' > S && git add -A \
+    && git -c user.name=t -c user.email=t@t commit -qm side && git push -q origin side 2>/dev/null && git checkout -q "$B" \
+    && git --git-dir="$T/remote-tagstale.git" update-ref "refs/heads/$B" "$(git rev-parse side)" )
+prep01 tagstale
+run_both "tagstale: the remote's default branch was rewritten, the local @{u} still says HEAD → skipped" "$TAG_MARK" tagstale "不是 HEAD"
+if [ -z "$(remote_tags tagstale | tr -d ' ')" ]; then PASS=$((PASS+1)); echo "  ✓ tagstale: nothing tagged"; else FAIL=$((FAIL+1)); echo "  ✗ tagstale: tags reached the remote: $(remote_tags tagstale)"; fi
+
+# opt-in (#42, 2026-11-10): without harness-devtools.releaseTag = true nothing is tagged
+mk_tag_fx tagoff 1.0.0
+export GIT_CONFIG_GLOBAL=/dev/null
+prep01 tagoff
+run_both "tagoff: release tags not enabled → skipped" "$TAG_MARK" tagoff "→ Phase 2.7: skipped — 沒有開啟自動推 tag"
+export IDD_ALL_UNATTENDED=1
+run_both "tagoff: unattended → AUDIT" "$TAG_MARK" tagoff "AUDIT: Phase 2.7 skipped (release tags not enabled)"
+unset IDD_ALL_UNATTENDED
+if [ -z "$(remote_tags tagoff | tr -d ' ')" ]; then PASS=$((PASS+1)); echo "  ✓ tagoff: nothing tagged"; else FAIL=$((FAIL+1)); echo "  ✗ tagoff: tags reached the remote: $(remote_tags tagoff)"; fi
+( cd "$T/dev/fx-tagoff" && git config harness-devtools.releaseTag true )
+prep01 tagoff
+run_both "tagoff: enabled in the repo's own config → tagged" "$TAG_MARK" tagoff "→ Phase 2.7: done"
+export GIT_CONFIG_GLOBAL="$T/gitconfig-tags-on"
+mk_tag_fx tagno 1.0.0
+( cd "$T/dev/fx-tagno" && git config harness-devtools.releaseTag false )
+prep01 tagno
+run_both "tagno: the repo says false while the global config says true → skipped" "$TAG_MARK" tagno "沒有開啟自動推 tag"
+( cd "$T/dev/fx-tagno" && git config harness-devtools.releaseTag maybe )
+prep01 tagno
+run_both "tagno: a value that is not a boolean counts as off" "$TAG_MARK" tagno "沒有開啟自動推 tag"
+( cd "$T/dev/fx-tagno" && git config harness-devtools.releaseTag false )
+# the switch is checked first, before the helper (verify R10). The preamble also sources a script from
+# CLAUDE_PLUGIN_ROOT, so a missing helper cannot be simulated here: check the order in the block itself.
+ORDER27=$(python3 -I -c 'import re,sys; b=[x for x in re.findall(r"```bash\n(.*?)```", open(sys.argv[1]).read(), re.S) if "Phase 2.7" in x and "release-tag.sh" in x][0]; print("switch-first" if b.find("harness-devtools.releaseTag") < b.find("[ -f \"$HELPER\" ]") else "helper-first")' "$SKILL")
+assert_contains "Phase 2.7 checks the switch before the helper" "switch-first" "$ORDER27"
+
+# verify R2: rc 10 is a no-tag case too, so unattended prints AUDIT for it
+mk_tag_fx tagten 3.0.0
+printf 'w\n' > "$T/dev/fx-tagten/W"; commit_fx tagten wip
+( cd "$T/dev/fx-tagten" && git push -q origin HEAD 2>/dev/null && git tag -a v3.0.0 -m x HEAD && git push -q origin v3.0.0 2>/dev/null )
+prep01 tagten
+export IDD_ALL_UNATTENDED=1
+run_both "tagten: same-name tag already on another commit, unattended → AUDIT" "$TAG_MARK" tagten "AUDIT: Phase 2.7 same-name tag"
+unset IDD_ALL_UNATTENDED
+
+# verify R3: a marketplace inside a subdirectory of a larger repo, plugin source '.', is NOT the
+# repo root — v<version> would be a repo-wide name
+SAVED_SEARCH_ROOT=$MARKETPLACE_SEARCH_ROOT
+mkdir -p "$T/big/dev/fx-tagsub/.claude-plugin"
+printf '{ "name": "fx-tagsub", "plugins": [ { "name": "tagsub", "version": "1.0.0", "source": "./" } ] }\n' > "$T/big/dev/fx-tagsub/.claude-plugin/marketplace.json"
+printf '{ "name": "tagsub", "version": "1.0.0" }\n' > "$T/big/dev/fx-tagsub/.claude-plugin/plugin.json"
+git init -q --bare "$T/remote-tagsub.git"
+( cd "$T/big" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm init && git remote add origin "$T/remote-tagsub.git" && git push -q -u origin HEAD 2>/dev/null )
+export MARKETPLACE_SEARCH_ROOT="$T/big/dev"
+prep01 tagsub
+run_both "tagsub: marketplace in a subdirectory, source '.' → <plugin>-v<version>" "$TAG_MARK" tagsub "name=tagsub-v1.0.0"
+export MARKETPLACE_SEARCH_ROOT="$SAVED_SEARCH_ROOT"
+
+# verify R3 / #39: skill loading may replace $0, $1, … with the invocation's arguments
+P27=$(python3 -I -c 'import re,sys; print("\n".join(b for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1]).read(), re.S) if "Phase 2.7" in b and "release-tag.sh" in b))' "$SKILL")
+if printf '%s' "$P27" | grep -qE '\$[0-9]'; then FAIL=$((FAIL+1)); echo "  ✗ Phase 2.7 fence has a bare \$<digit>: $(printf '%s' "$P27" | grep -nE '\$[0-9]' | head -3)"; else PASS=$((PASS+1)); echo "  ✓ Phase 2.7 fence has no bare \$<digit> (#39)"; fi
+
+# verify R2: a plugin dir that is its own git repo would be tagged and pushed in THAT repo
+mk_tag_fx tagnest 1.0.0 ./plugins/tagnest
+( cd "$T/dev/fx-tagnest/plugins/tagnest" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm inner )
+prep01 tagnest
+run_both "tagnest: plugin dir is its own git repo → skipped" "$TAG_MARK" tagnest "是另一個 git repo"
+
+mk_tag_fx tagself 1.0.0 ./plugin
+prep01 tagself
+run_both "tagself: ./plugin inside a (binary) repo → <plugin>-v<version>, not v<version>" "$TAG_MARK" tagself "name=tagself-v1.0.0"
+
+mk_tag_fx tagmm 2.0.0
+printf '[project]\nname = "m"\nversion = "2.0.1"\n' > "$T/dev/fx-tagmm/pyproject.toml"; commit_fx tagmm py
+( cd "$T/dev/fx-tagmm" && git push -q origin HEAD 2>/dev/null )
+prep01 tagmm
+export IDD_ALL_UNATTENDED=1
+run_both "tagmm: sources disagree under unattended → AUDIT, no tag" "$TAG_MARK" tagmm "AUDIT: Phase 2.7 version sources disagree"
+unset IDD_ALL_UNATTENDED
+if [ -z "$(remote_tags tagmm)" ]; then PASS=$((PASS+1)); echo "  ✓ tagmm: remote tag list is empty"; else FAIL=$((FAIL+1)); echo "  ✗ tagmm: a tag was pushed despite the mismatch: $(remote_tags tagmm)"; fi
+
+d="$T/dev/fx-tagagg"; mkdir -p "$d/.claude-plugin" "$d/plugins/a/.claude-plugin" "$d/plugins/b/.claude-plugin"
+printf '{ "name": "fx-tagagg", "plugins": [ { "name": "a", "version": "1.0.0", "source": "./plugins/a" }, { "name": "b", "version": "3.0.0", "source": "./plugins/b" } ] }\n' > "$d/.claude-plugin/marketplace.json"
+printf '{ "name": "a", "version": "1.0.0" }\n' > "$d/plugins/a/.claude-plugin/plugin.json"
+printf '{ "name": "b", "version": "3.0.0" }\n' > "$d/plugins/b/.claude-plugin/plugin.json"
+git init -q --bare "$T/remote-tagagg.git"
+( cd "$d" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm init && git remote add origin "$T/remote-tagagg.git" && git push -q -u origin HEAD 2>/dev/null )
+prep01 a
+run_both "tagagg: several plugins in one repo → <plugin>-v<version>" "$TAG_MARK" a "name=a-v1.0.0"
+assert_contains "tagagg: the remote has a-v1.0.0" "a-v1.0.0" "$(remote_tags tagagg)"
+unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_CONFIG_GLOBAL
+
+SKILL_TEXT=$(cat "$SKILL")
+assert_contains "Phase 0.5 lists the tag push as unattended action (4)" "(4) Phase 2.7 推送版號 tag" "$SKILL_TEXT"
+assert_contains "Phase 0.5 (4) says the tag push is opt-in" "harness-devtools.releaseTag" "$(printf '%s' "$SKILL_TEXT" | grep '(4) Phase 2.7 推送版號 tag')"
+assert_contains "Phase 5 report has a Phase 2.7 row" "- Phase 2.7: <tagged" "$SKILL_TEXT"
+N_TPL=$(printf '%s' "$SKILL_TEXT" | grep -c '推送後 Phase 2.7 會在升版號的 commit 推版號 tag（#42，harness-devtools.releaseTag 開啟時）"')
+if [ "$N_TPL" -ge 7 ]; then PASS=$((PASS+1)); echo "  ✓ every Case B–E push option names the tag ($N_TPL)"; else FAIL=$((FAIL+1)); echo "  ✗ only $N_TPL Case B–E push option(s) name the tag (expected 7)"; fi
+ORDER=$(python3 - "$SKILL" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+a, b, c = s.find("## Phase 2.5: README Freshness Check"), s.find("## Phase 2.7: 版號 tag"), s.find("## Phase 3: 同步 Marketplace Cache")
+print("ordered" if -1 not in (a, b, c) and a < b < c else f"misplaced {a} {b} {c}")
+PY
+)
+assert_contains "Phase 2.7 sits after Phase 2.5 (which may push a README commit) and before Phase 3" "ordered" "$ORDER"
+
+echo
 echo "plugin-debug version query (root-level manifest lookup):"
 SKILL="$PLUGIN_ROOT/skills/plugin-debug/SKILL.md"
 run_both "plugin-debug reads the version through plugin_manifest_path" 'plugin_manifest_path "$SRC"' nobin "1.0.0"
