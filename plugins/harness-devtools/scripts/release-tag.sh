@@ -76,7 +76,8 @@
 #   else under the newest python3.N on PATH that has it. When none has it, python3
 #   uses the tomli package if that is installed — in its own site-packages or in
 #   the user's (`pip install --user`; the helper runs python3 isolated, so it adds
-#   that one directory itself, for this import only). With no parser at
+#   that one directory itself, for this import only, and only when its path is
+#   absolute: a relative one would be the repository). With no parser at
 #   all, a pyproject.toml whose text has neither `version` as a token of its own
 #   (in any case; target-version or python_version is a longer key and does not
 #   count) nor a \u, \U or \x escape cannot declare a version and is not a
@@ -95,15 +96,17 @@
 #   and the run goes on with the other sources, or with --expect when there are
 #   none. It never hides a version that IS in the file. A static [project].version
 #   is read, [tool.poetry].version is read, and so is a [tool.hatch.version] path —
-#   with two exceptions, each tied to one backend: under (c) the
-#   [tool.poetry].version is that plugin's placeholder and is not read; under (b)
-#   hatch does not use `path`, so it is not read.
+#   with two exceptions, each decided by that backend's own table whatever else the
+#   file declares: under (c) the [tool.poetry].version is that plugin's placeholder
+#   and is not read; under (b) hatch does not use `path`, so it is not read.
 #   A [tool.poetry].version kept as a placeholder by anything else (another
 #   versioning plugin, or poetry-dynamic-versioning switched on by an environment
 #   variable) is read as the version: it has to equal the release, or (c) has to
 #   be written in the file.
 #   Every other dynamic version — [tool.setuptools.dynamic] attr or file, another
-#   backend — makes the run unreadable, with a message that names it.
+#   hatch source, another backend — makes the run unreadable, with a message that
+#   names it. That holds next to (a)-(c) too: those explain a version nothing in
+#   the file declares, not one the helper cannot read.
 #
 # The version must also make a valid git tag name (`git check-ref-format`), which
 # is checked before anything is created, so --dry-run and a real run agree.
@@ -213,14 +216,16 @@ def toml_parser():
     # sys.path - and `pip install --user tomli` is how a system python3 usually gets
     # the package (#48 verify R1). Look in that one directory too, for this import
     # only: it goes last on sys.path and comes off again, and its .pth files are
-    # never processed. The repository under inspection has no say in where it is
-    # (-I ignores PYTHONUSERBASE).
+    # never processed. Where it is comes from the caller's environment (HOME, or
+    # PYTHONUSERBASE - site.py reads that one even under -I), which is trusted the way
+    # PATH is. A RELATIVE directory is refused: it would resolve against the current
+    # directory, and that is the repository under inspection (#48 verify R2).
     try:
         import site
         user_site = site.getusersitepackages()
     except Exception:
         return None
-    if not isinstance(user_site, str) or not os.path.isdir(user_site):
+    if not isinstance(user_site, str) or not os.path.isabs(user_site) or not os.path.isdir(user_site):
         return None
     sys.path.append(user_site)
     try:
@@ -340,19 +345,21 @@ def hatch_path(pp_text):
     except Exception:
         return None
 
-def scm_backend(doc):
-    """The name of the backend when a pyproject.toml says its version comes from git
-    tags, else None. A CLOSED list of three (#48) — do not add a fourth by resemblance:
-    such a version is not a source, and a backend this list does not name must stay a
-    problem rather than be waved through as "probably tags too"."""
+def scm_backends(doc):
+    """The backends through which a pyproject.toml says its version comes from git
+    tags: a list of names, empty when there is none. A CLOSED list of three (#48) — do
+    not add a fourth by resemblance: such a version is not a source, and a backend this
+    list does not name must stay a problem rather than be waved through as "probably
+    tags too". Each is judged by its own table; a file can declare more than one."""
+    names = []
     if isinstance(dig(doc, "tool", "setuptools_scm"), dict):
-        return "setuptools_scm"
+        names.append("setuptools_scm")
     cfg = hatch_config(doc)
     if cfg and cfg.get("source") == "vcs":
-        return "hatch-vcs"
+        names.append("hatch-vcs")
     if dig(doc, "tool", "poetry-dynamic-versioning", "enable") is True:
-        return "poetry-dynamic-versioning"
-    return None
+        names.append("poetry-dynamic-versioning")
+    return names
 
 # `version` as a token of its own: not part of a longer bare key (target-version,
 # python_version, minversion, version_file). A TOML key named version always shows up
@@ -472,25 +479,34 @@ def read_sources(commit):
         dynamic = proj.get("dynamic", []) if isinstance(proj.get("dynamic", []), list) else []
         poetry = dig(doc, "tool", "poetry")
         poetry = poetry if isinstance(poetry, dict) else {}
-        scm = scm_backend(doc)
+        cfg = hatch_config(doc)
+        scm = scm_backends(doc)
         # A git-tag backend EXPLAINS a version that is not in the file; it never hides
         # one that is. (#48 verify R1: a leftover [tool.setuptools_scm] table once
         # switched off a readable hatch path and a real [tool.poetry].version, and
-        # --expect stood in for them.) Two values are not read, each because of one
-        # backend: the [tool.poetry].version next to poetry-dynamic-versioning is that
-        # plugin's placeholder, and hatch itself ignores `path` when source = "vcs".
-        placeholder = scm == "poetry-dynamic-versioning"
-        explained = False       # scm is why no version of this file is read
+        # --expect stood in for them.) Two values are not read, each decided by that
+        # backend's OWN table and by nothing else (verify R2: one backend's table once
+        # switched the other's exception off): the [tool.poetry].version next to
+        # poetry-dynamic-versioning is that plugin's placeholder, and hatch itself
+        # ignores `path` when source = "vcs".
+        placeholder = "poetry-dynamic-versioning" in scm
+        hatch_vcs = "hatch-vcs" in scm
+        before = (len(found), len(problems))
+        explained = False       # a git-tag backend is why the dynamic version is not read
+        skipped = False         # the poetry placeholder was left out
         if "version" in proj:
             add("pyproject", proj["version"], "pyproject.toml")
         if "version" in poetry:
             if placeholder:
-                explained = True
+                skipped = True
             else:
                 add("poetry", poetry["version"], "pyproject.toml")
         if "version" in dynamic and "version" not in proj:
-            cfg = hatch_config(doc)
-            if cfg and "path" in cfg and scm != "hatch-vcs":
+            # In this order. Every declaration that names a version the helper could
+            # read, or cannot read, is settled BEFORE a git-tag backend may explain the
+            # version away (verify R2: a [tool.setuptools_scm] table once turned a
+            # setuptools attr, and another hatch source, into a note).
+            if cfg and "path" in cfg and not hatch_vcs:
                 raw = cfg.get("path")
                 path = hatch_path_of(cfg)
                 if not isinstance(raw, str) or not raw:
@@ -507,16 +523,21 @@ def read_sources(commit):
                         add(f"hatch:{path}", v, path)
             elif "version" in poetry and not placeholder:
                 pass    # poetry 2: the dynamic version is [tool.poetry].version, read above
-            elif scm:
-                explained = True
             elif dig(doc, "tool", "setuptools", "dynamic", "version") is not None:
                 problems.append("pyproject.toml: [tool.setuptools.dynamic] version (attr or file) is not read by this helper - state the version in [project], or use a [tool.hatch.version] path")
+            elif cfg and not hatch_vcs and cfg.get("source", "regex") != "regex":
+                problems.append(f"pyproject.toml: hatch version source {safe(cfg.get('source'))!r} is not one this helper reads (a [tool.hatch.version] path with the regex source, or [tool.poetry].version)")
+            elif scm:
+                explained = True
             else:
                 problems.append("pyproject.toml: dynamic version is not one this helper reads (a [tool.hatch.version] path, or [tool.poetry].version)")
         elif scm and "version" not in proj and "version" not in poetry:
             explained = True    # the file states no version at all (a setup.py project, say)
-        if explained:
-            notes.append(f"pyproject.toml: the version comes from git tags ({scm}); not a version source")
+        used = (len(found), len(problems)) != before    # this file gave a source or a problem
+        if explained or (skipped and not used):
+            notes.append(f"pyproject.toml: the version comes from git tags ({', '.join(scm)}); not a version source")
+        elif skipped:
+            notes.append("pyproject.toml: [tool.poetry].version is the placeholder of poetry-dynamic-versioning (enable = true); not read")
 
     json_version("package.json", "package.json")
 

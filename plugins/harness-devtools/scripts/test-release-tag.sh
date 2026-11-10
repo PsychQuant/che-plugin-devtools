@@ -846,6 +846,76 @@ version = "1.0.0"'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "a hatch path that is not a string is a problem even next to a poetry version → exit 21" "$RC" 21
 
+echo "== each git-tag backend is judged by its own table, and none hides another declaration (#48 verify R2)"
+new_repo; put "$W" pyproject.toml '[tool.poetry]
+version = "0.0.0"
+
+[tool.poetry-dynamic-versioning]
+enable = true
+
+[tool.setuptools_scm]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.2.3
+check "poetry-dynamic-versioning next to a [tool.setuptools_scm] table: the placeholder is still not read → exit 0" "$RC" 0
+has "…and both backends are named" "comes from git tags (setuptools_scm, poetry-dynamic-versioning)"
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.hatch.version]
+source = "vcs"
+path = "x.py"
+
+[tool.setuptools_scm]'; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "hatch source = vcs next to a [tool.setuptools_scm] table: path is still not read → exit 0" "$RC" 0
+has "…and both backends are named" "comes from git tags (setuptools_scm, hatch-vcs)"
+for SETUPTOOLS in 'attr = "x.__version__"' 'file = "VERSION"'; do
+  new_repo; put "$W" pyproject.toml "[project]
+name = \"x\"
+dynamic = [\"version\"]
+
+[tool.setuptools.dynamic]
+version = {$SETUPTOOLS}
+
+[tool.setuptools_scm]"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+  check "setuptools ${SETUPTOOLS%% *} next to a [tool.setuptools_scm] table is still unreadable → exit 21" "$RC" 21
+  has "…and the message names the table" "[tool.setuptools.dynamic]"
+done
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.hatch.version]
+source = "env"
+
+[tool.setuptools_scm]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+check "another hatch source next to a [tool.setuptools_scm] table is still unreadable → exit 21" "$RC" 21
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.hatch.version]
+
+[tool.setuptools_scm]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+check "an empty [tool.hatch.version] table next to setuptools_scm: nothing in the file to read → exit 0" "$RC" 0
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+version = "1.2.3"
+
+[tool.poetry]
+version = "0.0.0"
+
+[tool.poetry-dynamic-versioning]
+enable = true'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a static version next to a poetry-dynamic-versioning placeholder → exit 0" "$RC" 0
+has "…version 1.2.3" "name=v1.2.3"
+hasnt "…and the note does not say the version comes from git tags" "comes from git tags"
+has "…it says the placeholder was not read" "placeholder"
+
 echo "== --at-bump finds the commit that set a poetry version (#48 verify R1)"
 new_repo; put "$W" pyproject.toml '[tool.poetry]
 version = "1.0.0"'; commit "$W" one
@@ -964,6 +1034,16 @@ version = "1.2.3"'; commit "$W"
         OUT=$(cd "$W" && HOME="$T/nohome" RELEASE_TAG_NO_TOML=tomllib "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
         check "tomllib hidden and no tomli anywhere → exit 21" "$RC" 21
         has "…and the message says what is needed" "tomli"
+        # a relative user base is the current directory, i.e. the repository under inspection (#48 verify R2)
+        REL_SITE=$(cd "$W" && PYTHONUSERBASE=. "$REAL_PY" -I -c 'import site; print(site.getusersitepackages())')
+        case "$REL_SITE" in
+          /*) echo "  - skipped: this python3 makes the user site absolute ($REL_SITE)" ;;
+          *)  mkdir -p "$W/$REL_SITE/tomli"
+              printf '%s\n' 'import os' "open(os.environ['RT_MARK'], 'w').close()" 'from tomllib import loads, TOMLDecodeError' > "$W/$REL_SITE/tomli/__init__.py"
+              OUT=$(cd "$W" && RT_MARK="$T/tomli-from-repo" HOME="$T/nohome" PYTHONUSERBASE=. RELEASE_TAG_NO_TOML=tomllib "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+              if [ -e "$T/tomli-from-repo" ]; then bad "a tomli inside the repository was imported through a relative user base" "$OUT"; else ok "a relative user base is refused: the repository cannot supply tomli"; fi
+              check "…and the run is unreadable → exit 21" "$RC" 21 ;;
+        esac
       fi ;;
     *) echo "  - skipped: this python3 does not place the user site under HOME ($USER_SITE)" ;;
   esac
