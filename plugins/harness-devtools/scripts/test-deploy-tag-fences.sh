@@ -322,6 +322,20 @@ for sh in $SHELLS; do
   has "release tags not enabled → no tag, says how to enable ($sh)" "$OUT" "git config harness-devtools.releaseTag true"
 done
 same "…and nothing tagged" "$(rtag "$T/pdo.git" foo-v1.0.0)" ""
+# the switch is checked before the helper (verify R10)
+OUT=$(cd "$T" && CLAUDE_PLUGIN_ROOT=/nonexistent PATH="$T/bin:$PATH" bash "$T/po.sh" 2>&1)
+has "switch off and helper missing → the switch is reported, not the helper" "$OUT" "沒有開啟自動推 tag"
+printf '[harness-devtools]\n\treleaseTag = true\n' > "$T/gitconfig-on"
+git -C "$W" config harness-devtools.releaseTag false
+OUT=$(cd "$T" && GIT_CONFIG_GLOBAL="$T/gitconfig-on" PATH="$T/bin:$PATH" bash "$T/po.sh" 2>&1)
+has "repo false over global true → no tag" "$OUT" "沒有開啟自動推 tag"
+git -C "$W" config harness-devtools.releaseTag maybe
+OUT=$(cd "$T" && PATH="$T/bin:$PATH" bash "$T/po.sh" 2>&1)
+has "a value that is not a boolean counts as off" "$OUT" "沒有開啟自動推 tag"
+git -C "$W" config --unset harness-devtools.releaseTag
+OUT=$(cd "$T" && GIT_CONFIG_GLOBAL="$T/gitconfig-on" PATH="$T/bin:$PATH" bash "$T/po.sh" 2>&1)
+has "global true alone → tagged" "$OUT" "→ Step 7.5: release-tag rc=0"
+same "…foo-v1.0.0 on the remote" "$(rtag "$T/pdo.git" foo-v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
 # mcp-deploy and cli-deploy need the tag to build the release, so the switch does not apply to them
 for s in mcp-deploy cli-deploy; do
   hasnt "$s: the release tag does not depend on harness-devtools.releaseTag" "$(bash_blocks "$s")" 'harness-devtools.releaseTag'

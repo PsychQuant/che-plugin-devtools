@@ -751,6 +751,14 @@ mk_tag_fx tagno 1.0.0
 ( cd "$T/dev/fx-tagno" && git config harness-devtools.releaseTag false )
 prep01 tagno
 run_both "tagno: the repo says false while the global config says true → skipped" "$TAG_MARK" tagno "沒有開啟自動推 tag"
+( cd "$T/dev/fx-tagno" && git config harness-devtools.releaseTag maybe )
+prep01 tagno
+run_both "tagno: a value that is not a boolean counts as off" "$TAG_MARK" tagno "沒有開啟自動推 tag"
+( cd "$T/dev/fx-tagno" && git config harness-devtools.releaseTag false )
+# the switch is checked first, before the helper (verify R10). The preamble also sources a script from
+# CLAUDE_PLUGIN_ROOT, so a missing helper cannot be simulated here: check the order in the block itself.
+ORDER27=$(python3 -I -c 'import re,sys; b=[x for x in re.findall(r"```bash\n(.*?)```", open(sys.argv[1]).read(), re.S) if "Phase 2.7" in x and "release-tag.sh" in x][0]; print("switch-first" if b.find("harness-devtools.releaseTag") < b.find("[ -f \"$HELPER\" ]") else "helper-first")' "$SKILL")
+assert_contains "Phase 2.7 checks the switch before the helper" "switch-first" "$ORDER27"
 
 # verify R2: rc 10 is a no-tag case too, so unattended prints AUDIT for it
 mk_tag_fx tagten 3.0.0

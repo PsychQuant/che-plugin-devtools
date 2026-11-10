@@ -958,7 +958,7 @@ echo "(left = origin behind us; right = we ahead of origin; '0 0' = synced; '0 N
 
 **任何 push 選項在執行 push fence 之前，先跑 Step 5 的 cross-plugin 檢查**（push 之後 `$UPSTREAM..HEAD` 就是空集合，Step 5 會誤報「沒碰任何 plugin」，#18 R9）。Case A 路徑上唯一的 push 是 Phase 2 Step 4 自己的：它的 fence 在有混進來的 commit 時做同一段 `plugin_names_for_paths` 歸屬分析後才 push（#19 R2）。
 
-**推送之後 Phase 2.7 會推版號 tag（#42）**：tag 打在升版號的那個 commit（預設 branch 上）。下面 Case B–E 每個 push 選項的 description 都寫了這一點，同一次確認就涵蓋 tag，不另外問一次。Case A（clean start）本來就不問推送，tag 比照辦理，見本 phase 開頭封閉列舉的第 (4) 項。
+**推送之後 Phase 2.7 會推版號 tag（#42；只在 git config `harness-devtools.releaseTag` 為 true 時，預設不打）**：tag 打在升版號的那個 commit（預設 branch 上）。下面 Case B–E 每個 push 選項的 description 都寫了這一點；開關開著時，同一次確認就涵蓋 tag，不另外問一次，開關沒開時確認裡不列 tag。Case A（clean start）本來就不問推送，tag 比照辦理，見本 phase 開頭封閉列舉的第 (4) 項。
 
 **選項裡的 commit / push 動作一律用下面兩個 fence 執行，不在對話裡現組 `git push`**：Step 1 的
 `cd "$MP_ROOT"` 到這個 Bash 呼叫已經失效，現組的 git 會跑在 session 的 cwd——那正是 Step 0.1
@@ -1953,7 +1953,7 @@ rm -f "$MSGF"
 
 ## Phase 2.7: 版號 tag（#42）
 
-推送完成後打版號 tag 並推上去。**Phase 2 有沒有推送都要跑**：release commit 常常在 Phase 0.5 就推出去了（Case B「push N as-is」），這時 Phase 2 走的是「無需 push」那一支——若 tag 只接在 Phase 2 的推送分支後面，正是這種最常見的發版不會被打 tag（#42 的起因）。放在 Phase 2.5 之後，是因為「更新 README」那個選項會再推一個 commit。
+推送完成後打版號 tag 並推上去——opt-in，git config `harness-devtools.releaseTag` 為 true 才打，預設不打（#42 使用者決定，2026-11-10）。**Phase 2 有沒有推送都要跑**：release commit 常常在 Phase 0.5 就推出去了（Case B「push N as-is」），這時 Phase 2 走的是「無需 push」那一支——若 tag 只接在 Phase 2 的推送分支後面，正是這種最常見的發版不會被打 tag（#42 的起因）。放在 Phase 2.5 之後，是因為「更新 README」那個選項會再推一個 commit。
 
 **tag 打在升版號的那個 commit，不是推送後的 HEAD**（#42 decision，verify 第 1 輪後由使用者決定）：helper 以 `--at-bump` 從 HEAD 往回找，取版本來源最後一次一起變成目前版本的 commit。所以沒升版號的 plugin-update 會得到 `exists`（tag 早已在那個 commit 上）；還沒有版號 tag 的舊 plugin，第一次跑時會補在它當初升版號的 commit 上，而不是當下的 HEAD。
 
@@ -1985,12 +1985,12 @@ load_plugin_ctx "$(plugin_ctx_path "$PLUGIN_NAME")" "$PLUGIN_NAME" || exit 1
 cd "$MP_ROOT" || exit 1
 UNATTENDED=""; [ "${IDD_ALL_UNATTENDED:-}" = 1 ] && UNATTENDED=1
 audit() { [ -n "$UNATTENDED" ] && echo "AUDIT: Phase 2.7 $*"; }   # 用 $*：skill 載入時「錢號加數字」可能被換成呼叫引數（#39）
-HELPER="${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh"
-[ -f "$HELPER" ] || { echo "✗ Phase 2.7: 找不到 scripts/release-tag.sh（plugin cache 不完整）— 沒有打 tag"; audit "helper missing — no tag"; exit 0; }
-# (0) 自動推 tag 是 opt-in：git config harness-devtools.releaseTag 為 true 才打（#42 使用者決定，2026-11-10）
+# (0) 自動推 tag 是 opt-in，最先檢查：git config harness-devtools.releaseTag 為 true 才打（#42 使用者決定，2026-11-10）
 if [ "$(git config --type=bool --get harness-devtools.releaseTag 2>/dev/null)" != true ]; then
     echo "→ Phase 2.7: skipped — 沒有開啟自動推 tag（要開：git config harness-devtools.releaseTag true，加 --global 則所有 repo 都開）"; audit "skipped (release tags not enabled)"; exit 0
 fi
+HELPER="${CLAUDE_PLUGIN_ROOT:?}/scripts/release-tag.sh"
+[ -f "$HELPER" ] || { echo "✗ Phase 2.7: 找不到 scripts/release-tag.sh（plugin cache 不完整）— 沒有打 tag"; audit "helper missing — no tag"; exit 0; }
 # (1) upstream 指向 remote，且 HEAD 已推送
 BRANCH=$(git branch --show-current)
 REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)

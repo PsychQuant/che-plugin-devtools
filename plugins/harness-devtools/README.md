@@ -163,7 +163,7 @@ git config --global harness-devtools.releaseTag true   # 所有 repo；不加 --
 
 開關沒開時這兩個 skill 印一行怎麼打開，不打 tag。`mcp-deploy`、`cli-deploy` 建 release 一定要先有 `v<version>` tag，不受開關影響。
 
-
+helper 的用法：
 
 ```bash
 bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v|plugin [--plugin <name>] \

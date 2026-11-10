@@ -39,7 +39,7 @@ TaskCreate(name="fix_issues", description="Step 4: 若使用者選修問題，�
 TaskCreate(name="version_bump", description="Step 5: patch/minor/major bump plugin.json + marketplace.json + plugin 目錄下套件自己的版本檔（封閉列舉見 Step 5）")
 TaskCreate(name="update_marketplace_json", description="Step 6: 同步 marketplace.json 確認 version / description")
 TaskCreate(name="commit_and_push", description="Step 7: git add + commit + push")
-TaskCreate(name="tag_release", description="Step 7.5 (#42): push 後呼叫 scripts/release-tag.sh 打版號 tag 並推送；沒打成不中止，結果寫進 Step 9 回報")
+TaskCreate(name="tag_release", description="Step 7.5 (#42): git config harness-devtools.releaseTag 為 true（opt-in）時，push 後呼叫 scripts/release-tag.sh 打版號 tag 並推送；沒開或沒打成都不中止，結果寫進 Step 9 回報")
 TaskCreate(name="sync_and_reload", description="Step 8: claude plugin marketplace update + plugin update")
 TaskCreate(name="verify", description="Step 9: claude plugin list 驗證版本")
 ```
@@ -373,7 +373,7 @@ git push origin main
 
 ### Step 7.5: 版號 tag（#42）
 
-push 成功後打版號 tag 並推上去。規則與 `plugin-update` Phase 2.7 相同，實作只有一份 `scripts/release-tag.sh`：
+開關開著時，push 成功後打版號 tag 並推上去。規則與 `plugin-update` Phase 2.7 相同，實作只有一份 `scripts/release-tag.sh`：
 
 - **opt-in**：git config `harness-devtools.releaseTag` 為 true 才打（預設不打；可設在 marketplace repo 或 `--global`，repo 的設定優先）。開關沒開時印一行怎麼打開，不打 tag（#42 使用者決定，2026-11-10）。
 - 只在預設 branch 上、而且 HEAD 已經推上去時才打。
@@ -393,11 +393,11 @@ case "$MARKETPLACE_ROOT" in ''|*'{'*|*'}'*) echo "⚠ Step 7.5: MARKETPLACE_ROOT
 cd "$MARKETPLACE_ROOT" || exit 0
 PLUGIN_NAME='{plugin-name}'
 case "$PLUGIN_NAME" in ''|.*|-*|*[!A-Za-z0-9._-]*) echo "⚠ Step 7.5: PLUGIN_NAME 未代入或不合法 — 沒有打 tag"; exit 0 ;; esac
+# 自動推 tag 是 opt-in，最先檢查：git config harness-devtools.releaseTag 為 true 才打（#42 使用者決定，2026-11-10）
+[ "$(git config --type=bool --get harness-devtools.releaseTag 2>/dev/null)" = true ] \
+  || { echo "→ Step 7.5: skipped — 沒有開啟自動推 tag，沒有打 tag（要開：git config harness-devtools.releaseTag true，加 --global 則所有 repo 都開）"; exit 0; }
 HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法：skill 載入時會被代換成 plugin 路徑（#39）
 [ -f "$HELPER" ] || { echo "⚠ Step 7.5: 找不到 $HELPER — 沒有打 tag"; exit 0; }
-# 自動推 tag 是 opt-in：git config harness-devtools.releaseTag 為 true 才打（#42 使用者決定，2026-11-10）
-[ "$(git config --type=bool --get harness-devtools.releaseTag 2>/dev/null)" = true ] \
-  || { echo "⚠ Step 7.5: 沒有開啟自動推 tag — 沒有打 tag（要開：git config harness-devtools.releaseTag true，加 --global 則所有 repo 都開）"; exit 0; }
 # plugin 目錄若自己是另一個 git repo（巢狀 clone、submodule），下面的檢查看的是 marketplace repo，
 # helper 卻會在 plugin 目錄的 repo 打 tag 並推送——兩者必須是同一個 repo（#42 verify 第 2 輪）
 [ "$(git -C "plugins/$PLUGIN_NAME" rev-parse --show-toplevel 2>/dev/null)" = "$(git rev-parse --show-toplevel)" ] \
@@ -443,7 +443,7 @@ claude plugin list | grep {plugin-name}
 
 - marketplace.json ✅ 已更新
 - git push ✅ 已推送
-- 版號 tag {Step 7.5 的結果：已打 / 已存在 / 沒升版號 / 版本不一致 / 推送失敗（附重跑指令）}
+- 版號 tag {Step 7.5 的結果：沒開啟（opt-in，harness-devtools.releaseTag 不是 true）/ 已打 / 已存在 / 沒升版號 / 版本不一致 / 推送失敗（附重跑指令）}
 - plugin cache ✅ 已同步
 - 安裝版本 ✅ 已更新
 
