@@ -468,8 +468,11 @@ echo "== push URL: the same repository written another way is not a different re
 new_repo; plugin_json "$W" "" 1.0.0; commit "$W"
 git -C "$W" remote set-url origin https://github.com/o/r.git
 git -C "$W" config url.git@github.com:.pushInsteadOf https://github.com/
-run "$W" --dir . --commit HEAD --name-style v --dry-run
-check "https fetch + ssh push to github.com/o/r → passes the check (dry-run exit 0)" "$RC" 0
+# a dry run now looks the tag up on the remote (#51). A test must not reach github.com:
+# GIT_ALLOW_PROTOCOL=file makes that lookup fail at once, offline, AFTER the push-URL check
+OUT=$(cd "$W" && GIT_ALLOW_PROTOCOL=file "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+hasnt "https fetch + ssh push to github.com/o/r → passes the push-URL check" "push URL"
+has "…and goes on to the tag lookup" "cannot query remote"
 git -C "$W" config --unset url.git@github.com:.pushInsteadOf
 git -C "$W" remote set-url --push origin git@github.com:o/other.git
 run "$W" --dir . --commit HEAD --name-style v --dry-run
@@ -1328,6 +1331,34 @@ version = "1.2.3"'; commit "$W"
 else
   echo "  - skipped: this machine's python3 has no tomllib"
 fi
+
+echo "== --dry-run makes the lookups a real run makes, and creates nothing (#51)"
+new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "nothing in the way → exit 0" "$RC" 0
+has "…dry-run" "RELEASE_TAG: dry-run name=v1.2.3"
+check "…no tag locally" "$(git -C "$W" tag -l)" ""
+check "…no tag on the remote" "$(git -C "$W" ls-remote --tags origin)" ""
+run "$W" --dir . --commit HEAD --name-style v          # the real tag, on this commit
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "the tag is already on this commit → exit 0" "$RC" 0
+has "…exists, as the real run would say" "RELEASE_TAG: exists name=v1.2.3"
+put "$W" README.md x; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "the tag is on another commit on the remote → exit 10, as the real run would" "$RC" 10
+has "…not-bumped" "RELEASE_TAG: not-bumped name=v1.2.3"
+new_repo; plugin_json "$W" "" 1.2.3; commit "$W"; git -C "$W" tag v1.2.3 HEAD; put "$W" README.md x; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a local tag on another commit → exit 10" "$RC" 10
+has "…not-bumped" "RELEASE_TAG: not-bumped name=v1.2.3"
+check "…and nothing reached the remote" "$(git -C "$W" ls-remote --tags origin)" ""
+new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
+git -C "$W" remote set-url origin "$T/no-such-remote.git"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "the remote cannot be queried → exit 30" "$RC" 30
+has "…and says so" "cannot query remote"
+hasnt "…without a retry command for a tag that was never created" "retry with"
+check "…and no local tag is created" "$(git -C "$W" tag -l)" ""
 
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"

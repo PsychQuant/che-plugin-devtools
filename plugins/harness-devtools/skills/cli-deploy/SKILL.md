@@ -234,7 +234,7 @@ lipo -info .release/$BINARY_NAME
 
 ## Phase 3: 發布到 GitHub
 
-### Step 1: Commit + Push
+### Step 1: Commit，推送前檢查，然後 Push
 
 **只 stage 本次 deploy 實際動過的檔案** — `git add -A` 會把使用者 working tree 裡無關的 modified files（例如 session-start hook 改的 `.claude/*`、`CLAUDE.md`）全部塞進 release commit，污染歷史。
 
@@ -281,10 +281,47 @@ git diff --cached --stat
 
 # --cleanup=whitespace：commit.cleanup 設成 strip 的人，訊息裡 # 開頭的行會被刪掉；這裡固定成只整理空白
 git commit --cleanup=whitespace -F "$MSG_FILE" && rm -f "$MSG_FILE"
-git push origin main
 ```
 
 如果 `git diff --cached --stat` 顯示了非預期的檔案，停下來檢查 — 可能是 working tree 本來就髒。
+
+**推送前檢查，然後推送。** release commit 推出去就收不回。Step 1.5 會停下的情況裡，推送前就看得出來的先在這裡檢查（#51）：版本來源彼此不一致或讀不出、同名 tag 已在別的 commit、沒有 upstream、追蹤的不是預設 branch、remote 不在 github.com。版本與 tag 用 `release-tag.sh --dry-run` 查，它不建立任何東西。全部通過才推送，推到這個 branch 追蹤的 upstream。
+
+```bash
+VERSION='{version}'   # Phase 0 Step 4 決定的版本；代入前核對只含 0-9 A-Z a-z . + -
+case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ Step 1 推送: VERSION 未代入或不合法"; exit 1 ;; esac
+# Step 1 推送: 推送前檢查（#51）——Step 1.5 會停下的情況裡，推送前就看得出來的先在這裡擋；這時 release commit 還沒離開本機
+HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法：skill 載入時會被代換成 plugin 路徑（#39）
+[ -f "$HELPER" ] || { echo "✗ Step 1 推送: 找不到 ${HELPER}（plugin 路徑沒有代換，或 cache 不完整）— 停止，不推送"; exit 1; }
+BRANCH=$(git branch --show-current)
+REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
+case "$REMOTE" in ''|.) echo "✗ Step 1 推送: $BRANCH 沒有指向 remote 的 upstream — 停止，不推送。這個 branch 第一次推送時用 git push -u <remote> ${BRANCH}（那一次不經過這裡的檢查），再從 Step 1.5 繼續"; exit 1 ;; esac
+git remote | grep -qxF -- "$REMOTE" || { echo "✗ Step 1 推送: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 停止，不推送"; exit 1; }
+UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
+DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
+if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
+    echo "✗ Step 1 推送: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT:-讀不到}）— 合併到預設 branch 後再發版；停止，不推送"; exit 1
+fi
+OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
+printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
+  || { echo "✗ Step 1 推送: 從 remote $REMOTE 的網址推不出 github.com 的 owner/repo（ssh host alias、GitHub Enterprise 不支援）— 停止，不推送"; exit 1; }
+# --dry-run：讀 HEAD 這個 commit 的版本、查同名 tag，不建立任何東西；結束碼與真的打 tag 時相同
+LINE=$(bash "$HELPER" --dir . --commit HEAD --name-style v --remote "$REMOTE" --expect "$VERSION" --dry-run); RC=$?
+echo "$LINE"
+if [ "$RC" != 0 ]; then
+    case "$RC" in
+      10) echo "✗ Step 1 推送: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止。前者要先升版號；後者確認那個 tag 該不該留（刪 remote 上的 tag 由你決定）" ;;
+      20) echo "✗ Step 1 推送: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 1 Step 1 改成同一個版本；改到會編進 binary 的檔案（例如 Version.swift）時，Phase 2 要重新 build" ;;
+      21) echo "✗ Step 1 推送: 有版本檔讀不出值（見上方的原因；讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）" ;;
+      30) echo "✗ Step 1 推送: 查不到 $REMOTE 上的 tag，或 push URL 指向別的 repo（見上方的原因）" ;;
+      *)  echo "✗ Step 1 推送: release-tag --dry-run rc=${RC}" ;;
+    esac
+    echo "  停止，不推送：release commit 還在本機。修好後補一個 commit（或 git commit --amend），再重跑這一步。"; exit 1
+fi
+# --no-follow-tags：push.followTags 開著時，推 branch 會連帶推出本機的 annotated tag；這一步只推 release commit
+git push --no-follow-tags "$REMOTE" "HEAD:refs/heads/$UPSTREAM_BRANCH" || { echo "✗ Step 1 推送: 推送失敗（$REMOTE 上有別人的新 commit 時，先確認要發的是哪一個 commit）— 停止"; exit 1; }
+echo "→ Step 1 推送: release commit 已推到 $REMOTE 的 ${UPSTREAM_BRANCH}；Step 1.5 接著打 tag"
+```
 
 ### Step 1.5: 在 release commit 打版號 tag（#42）
 

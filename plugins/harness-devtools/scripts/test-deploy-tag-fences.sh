@@ -391,6 +391,9 @@ same "Version.swift committed" "$(git -C "$W" show HEAD:Sources/S/Version.swift)
 same "mcpb/manifest.json committed" "$(git -C "$W" show HEAD:mcpb/manifest.json)" '{ "version": "1.1.0" }'
 same "an unrelated modified file is not committed" "$(git -C "$W" show HEAD:notes.txt)" keep
 same "a deeper Sources/*/*/Version.swift is not a version source and is not committed (verify R8)" "$(git -C "$W" show HEAD:Sources/S/Deep/Version.swift)" deep
+fence cli-deploy "推送前檢查（#51）" "$T/cpush.sh" "VERSION='{version}' ==> VERSION='1.1.0'"
+run bash "$W" "$T/cpush.sh"
+has "the push block then pushes the release commit" "$OUT" "→ Step 1 推送: release commit 已推到"
 fence cli-deploy "Step 1.5: VERSION" "$T/c15.sh" "VERSION='{version}' ==> VERSION='1.1.0'"
 run bash "$W" "$T/c15.sh"
 has "Step 1.5 then tags v1.1.0" "$OUT" "→ Step 1.5: v1.1.0 已在 o/r"
@@ -906,6 +909,90 @@ W="$T/cli-rel"; D=$(deploy_dir "$W"); mkdir -p "$D"
 release_texts; rm -f "$D/release-title.txt"; export GH50_ASSETS="Bin.sha256"; run50 bash "$W" "$T/relC.sh"; unset GH50_ASSETS
 has "cli-deploy: a name that only starts like the binary → stops" "$OUT" "release 上沒有 Bin"
 same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
+
+echo "the release commit is checked before it is pushed (#51)"
+rmain() { git --git-dir="$1" rev-parse -q --verify "refs/heads/${2:-main}" 2>/dev/null; }
+for SM in "mcp-deploy:Step 3:3a" "cli-deploy:Step 1 推送:1.5"; do
+  S=${SM%%:*}; REST=${SM#*:}; STEP=${REST%%:*}; NEXT=${REST#*:}
+  mk "$S-pre"; W="$T/$S-pre"; B="$T/$S-pre.git"
+  put "$W" mcpb/manifest.json '{ "version": "1.4.0" }'; ci "$W"; push "$W"
+  BASE=$(git -C "$W" rev-parse HEAD)
+  put "$W" mcpb/manifest.json '{ "version": "1.4.1" }'; ci "$W" release
+
+  # the version files disagree with the release → nothing is pushed
+  fence "$S" "推送前檢查（#51）" "$T/pre150.sh" "VERSION='{version}' ==> VERSION='1.5.0'"
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/pre150.sh"
+    has "$S: the files say 1.4.1, the release is 1.5.0 → stops ($sh)" "$OUT" "✗ $STEP: 版本檔與 1.5.0 不一致"
+    same "$S: …and the release commit stays local ($sh)" "$(rmain "$B")" "$BASE"
+  done
+  if [ "$S" = mcp-deploy ]; then has "$S: …and it says the .mcpb has to be packed again" "$OUT" "重新打包"; fi
+
+  # the tag name is taken by another commit → nothing is pushed
+  git -C "$W" tag -a v1.4.1 -m x "$BASE"; git -C "$W" push -q origin refs/tags/v1.4.1
+  fence "$S" "推送前檢查（#51）" "$T/pre141.sh" "VERSION='{version}' ==> VERSION='1.4.1'"
+  run bash "$W" "$T/pre141.sh"
+  has "$S: v1.4.1 already sits on another commit → stops" "$OUT" "✗ $STEP: v1.4.1 已在別的 commit 上"
+  same "$S: …and the release commit stays local" "$(rmain "$B")" "$BASE"
+  git -C "$W" push -q origin :refs/tags/v1.4.1; git -C "$W" tag -d v1.4.1 >/dev/null
+
+  # the helper cannot be found → nothing is pushed
+  OUT=$(cd "$W" && PATH="$T/bin:$PATH" CLAUDE_PLUGIN_ROOT="$T/no-plugin" bash "$T/pre141.sh" 2>&1)
+  has "$S: helper not found → stops" "$OUT" "✗ $STEP: 找不到"
+  same "$S: …and the release commit stays local" "$(rmain "$B")" "$BASE"
+
+  # someone else pushed first → the push is refused, and the block says so
+  git -C "$W" checkout -q --detach "$BASE"; put "$W" other.txt x; ci "$W" theirs
+  THEIRS=$(git -C "$W" rev-parse HEAD); git -C "$W" push -q origin "$THEIRS:refs/heads/main"; git -C "$W" checkout -q main
+  run bash "$W" "$T/pre141.sh"
+  has "$S: the remote moved on → the push is refused and the block stops" "$OUT" "✗ $STEP: 推送失敗"
+  same "$S: …and the remote keeps the other commit" "$(rmain "$B")" "$THEIRS"
+  git -C "$W" push -q -f origin "$BASE:refs/heads/main"; git -C "$W" fetch -q origin
+
+  # nothing in the way → pushed, and the tag step takes over. push.followTags is on and an
+  # annotated tag that the remote does not have sits on an earlier commit: the push of the
+  # release commit must not take it along
+  git -C "$W" config push.followTags true; git -C "$W" tag -a unrelated -m x "$BASE"
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/pre141.sh"
+    has "$S: nothing in the way → pushed ($sh)" "$OUT" "→ $STEP: release commit 已推到"
+  done
+  same "$S: the remote branch is the release commit" "$(rmain "$B")" "$(git -C "$W" rev-parse HEAD)"
+  same "$S: the push took no tag along, and the check created none" "$(git --git-dir="$B" tag -l)" ""
+  git -C "$W" tag -d unrelated >/dev/null; git -C "$W" config --unset push.followTags
+  fence "$S" "Step $NEXT: VERSION" "$T/tag141.sh" "VERSION='{version}' ==> VERSION='1.4.1'"
+  run bash "$W" "$T/tag141.sh"
+  has "$S: Step $NEXT then tags the pushed commit" "$OUT" "→ Step $NEXT: v1.4.1 已在 o/r"
+
+  # a branch with no upstream, and one that tracks a branch other than the default → nothing is pushed
+  git -C "$W" checkout -q -b feature; put "$W" mcpb/manifest.json '{ "version": "1.4.2" }'; ci "$W" next
+  fence "$S" "推送前檢查（#51）" "$T/pre142.sh" "VERSION='{version}' ==> VERSION='1.4.2'"
+  run bash "$W" "$T/pre142.sh"
+  has "$S: a branch without an upstream → stops" "$OUT" "沒有指向 remote 的 upstream"
+  same "$S: …and nothing reaches the remote" "$(rmain "$B" feature)" ""
+  git -C "$W" push -q -u origin feature 2>/dev/null; FEAT=$(rmain "$B" feature)
+  put "$W" mcpb/manifest.json '{ "version": "1.4.3" }'; ci "$W" next2
+  fence "$S" "推送前檢查（#51）" "$T/pre143.sh" "VERSION='{version}' ==> VERSION='1.4.3'"
+  run bash "$W" "$T/pre143.sh"
+  has "$S: a branch that tracks a non-default branch → stops" "$OUT" "不是預設 branch"
+  same "$S: …and nothing new reaches the remote" "$(rmain "$B" feature)" "$FEAT"
+
+  # a remote that is not on github.com → nothing is pushed
+  mk "$S-ghe" https://ghe.example.com/o/r.git; W="$T/$S-ghe"; B="$T/$S-ghe.git"
+  put "$W" mcpb/manifest.json '{ "version": "1.4.0" }'; ci "$W"; push "$W"; BASE=$(git -C "$W" rev-parse HEAD)
+  put "$W" mcpb/manifest.json '{ "version": "1.4.1" }'; ci "$W" release
+  run bash "$W" "$T/pre141.sh"
+  has "$S: a remote outside github.com → stops" "$OUT" "推不出 github.com 的 owner/repo"
+  same "$S: …and the release commit stays local" "$(rmain "$B")" "$BASE"
+done
+fence mcp-deploy "Step 2: VERSION" "$T/blk.sh"
+hasnt "mcp-deploy: the commit block does not push" "$(cat "$T/blk.sh")" 'git push'
+fence cli-deploy "Phase 3 Step 1: stage" "$T/blk.sh"
+hasnt "cli-deploy: the commit block does not push" "$(cat "$T/blk.sh")" 'git push'
+for s in mcp-deploy cli-deploy; do
+  fence "$s" "推送前檢查（#51）" "$T/blk.sh"
+  hasnt "$s: the push goes to the checked upstream, not to a hard-coded origin main" "$(cat "$T/blk.sh")" 'origin main'
+done
 
 echo
 echo "deploy tag fences: $PASS passed, $FAIL failed"

@@ -34,7 +34,9 @@
 #                 the run is unreadable (21): a guessed commit is never tagged.
 #                 Later commits that change --dir are counted in a note, since
 #                 the tag will not include them.
-#   --dry-run     resolve the version and print the decision line; create nothing
+#   --dry-run     resolve the version, look the tag up on the remote and locally the
+#                 way a real run does, and print the decision line; create nothing.
+#                 It ends as the real run would: 10, 20, 21, 30, or 0 (#51)
 #
 # Version sources — a CLOSED list of eight, read relative to --dir. Do not add a
 # ninth by resemblance. Every source found must agree, and a source that is
@@ -162,7 +164,8 @@
 #
 # Exit codes:
 #   0   tagged and pushed (status tagged), the remote already has this tag on
-#       this commit (status exists), or --dry-run (status dry-run)
+#       this commit (status exists), or --dry-run with nothing in the way
+#       (status dry-run)
 #   10  a tag with this name already points at another commit (status
 #       not-bumped): this version was released before, or an earlier release
 #       stopped after its tag was pushed. Nothing is created or moved.
@@ -912,16 +915,12 @@ if FETCH_URL=$(git -C "$TOP" remote get-url "$REMOTE" 2>/dev/null); then
   fi
 fi
 
-if [ "$DRY" = 1 ]; then
-  echo "RELEASE_TAG: dry-run $LINE_TAIL"
-  exit 0
-fi
-
 RETRY="git -C $(printf '%q' "$TOP") push --no-follow-tags $REMOTE refs/tags/$NAME"
 push_failed() {
   echo "RELEASE_TAG: push-failed $LINE_TAIL"
   echo "$PROG: $1" >&2
-  echo "$PROG: retry with: $RETRY" >&2
+  # a dry run created no tag, so there is nothing to retry
+  [ "$DRY" = 1 ] || echo "$PROG: retry with: $RETRY" >&2
   exit 30
 }
 # the commit a remote tag points at (peeled for annotated tags); empty when absent
@@ -934,6 +933,9 @@ remote_target() {
 }
 
 # ---- 2. does the tag already exist? remote first, then local ----
+# A dry run makes these lookups too, so that it ends the way the real run would (#51):
+# a caller that checks before pushing a release commit must learn here that the tag
+# name is taken, not after the push.
 REMOTE_AT=$(remote_target) || push_failed "cannot query remote '$REMOTE'"
 if [ -n "$REMOTE_AT" ]; then
   if [ "$REMOTE_AT" = "$TARGET" ]; then
@@ -949,6 +951,11 @@ if [ -n "$LOCAL_AT" ] && [ "$LOCAL_AT" != "$TARGET" ]; then
   echo "RELEASE_TAG: not-bumped $LINE_TAIL"
   echo "$PROG: a local tag $NAME already points at $(git -C "$TOP" rev-parse --short "$LOCAL_AT") — not moving it; nothing tagged" >&2
   exit 10
+fi
+
+if [ "$DRY" = 1 ]; then
+  echo "RELEASE_TAG: dry-run $LINE_TAIL"
+  exit 0
 fi
 
 # ---- 3. create (unless a local tag on this commit is waiting to be pushed), push, read back ----
