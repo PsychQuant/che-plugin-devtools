@@ -26,8 +26,15 @@ Starting v{{NEXT_VERSION}}, release binaries are signed with a Developer ID Appl
 
 ```bash
 make release-signed     # builds → signs + notarizes → packages
-gh release create vX.Y.Z <path-to-binary> [<path-to-mcpb>] --notes "..."
+# Tag the release commit first and push only that tag. X.Y.Z must be the version
+# in your manifest / Version.swift, and HEAD must be the commit you built from.
+git tag -a vX.Y.Z -m "X.Y.Z"
+git push origin refs/tags/vX.Y.Z
+# --verify-tag: fail when the tag is not on the remote, instead of letting gh create one
+gh release create vX.Y.Z --verify-tag <path-to-binary> [<path-to-mcpb>] --notes "..."
 ```
+
+Without `--verify-tag`, gh creates a missing tag itself, on whatever the default branch points at then — not necessarily your release commit. `/harness-devtools:mcp-deploy` and `cli-deploy` do the tagging and the version check for you.
 
 `make release-signed` runs `scripts/build-mcpb.sh` (or `build-cli.sh`) with `REQUIRE_CODESIGN=1` so missing prerequisites fail-fast. After universal binary creation, `scripts/sign-and-notarize.sh` performs codesign + notarization. Notarization typically takes 1–15 minutes (`notarytool submit --wait` blocks until Apple finishes).
 

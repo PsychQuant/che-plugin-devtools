@@ -103,6 +103,18 @@ for s in mcp-deploy cli-deploy; do
   has "$s: the completion report has a tag line" "$(cat "$PLUGIN_ROOT/skills/$s/SKILL.md")" '- **Tag**: '
 done
 has "mcp-deploy: gh release create checks the tag exists" "$(grep 'gh release create' "$PLUGIN_ROOT/skills/mcp-deploy/SKILL.md")" '--verify-tag'
+# #49: the hand-release examples outside the skills — rules/ and the templates that get copied
+# into other repos — tag first too: gh never creates the tag, and no example pushes every tag
+N_EXAMPLES=0
+while IFS= read -r f; do
+  rel=${f#"$PLUGIN_ROOT"/}
+  CREATES=$(grep -c 'gh release create' "$f")
+  N_EXAMPLES=$((N_EXAMPLES + CREATES))
+  VERIFIED=$(grep 'gh release create' "$f" | grep -c -- '--verify-tag')
+  same "$rel: every gh release create ($CREATES) has --verify-tag" "$VERIFIED" "$CREATES"
+  hasnt "$rel: no example pushes every tag" "$(grep -E 'push( [^ ]+)? --tags' "$f")" 'push'
+done < <(find "$PLUGIN_ROOT/rules" "$PLUGIN_ROOT"/skills/*/templates -type f -name '*.md' | sort)
+if [ "$N_EXAMPLES" -ge 2 ]; then ok "rules and templates: the release examples were found ($N_EXAMPLES)"; else bad "rules and templates: expected at least 2 gh release create examples, found $N_EXAMPLES"; fi
 # verify R3: the release steps use the VERSION checked at the top of their block, not a raw {version}
 release_blocks() { python3 -I -c 'import re,sys; print("\n".join(b for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1]).read(), re.S) if "releases --method POST" in b or "gh release create" in b))' "$PLUGIN_ROOT/skills/$1/SKILL.md"; }
 for s in mcp-deploy cli-deploy; do
