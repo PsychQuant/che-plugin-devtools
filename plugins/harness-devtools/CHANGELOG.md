@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **行為變動（留著別的 build backend 設定的專案）**：`[project].dynamic` 列了 `version`、`[project]` 沒有靜態版本時，讀不了的 dynamic 版本宣告一律回 21，檔案裡還有什麼都一樣（#48）。每個宣告各自判定，可讀的來源不能代替它。比 2.6.0 多擋的有兩種情況。第一種：`[tool.setuptools.dynamic]` 的 `version` 旁邊有可讀的 hatch `path`。2.6.0 讀 hatch 的檔案、不看那張表；現在回 21，訊息指出那張表。專案不用 setuptools 建置時，刪掉留下來的那張表即可。第二種：`[build-system]` 的 `build-backend` 寫的不是 `hatchling.build`，檔案裡卻有可讀的 hatch `path`。2.6.0 不看 `build-backend`，照 hatch 的檔案放行；現在那個檔案仍會讀、會比對，但不再代表 dynamic 版本，回 21。`[tool.setuptools.dynamic]` 的 `version` 或 hatch 的其他 source 旁邊有 `[tool.poetry].version` 時也回 21；2.6.0 不讀 poetry，當時同樣回 21。`[project]` 有靜態版本、或 `dynamic` 沒列 `version` 時，helper 不看這些表，和 2.6.0 相同。
 - `rules/mcp-binary-distribution.md` 與 `mcp-sign-pipeline` 的 README 範本：手動發版的範例改成先打 tag、只推那一個 tag（`git push --no-follow-tags origin refs/tags/<tag>`），再 `gh release create --verify-tag`，各步驟用 `&&` 串起來，前一步失敗就不建 release（#49）。以前的範例會讓 gh 在預設 branch 當下的 HEAD 自動建 tag；rule 裡的 `git push --tags` 也拿掉了。範本的 `git tag -a` 寫明打在哪個 commit，並要求從乾淨、已 commit 的工作樹建置。範例的區塊裡不放註解：互動式 zsh（macOS 的預設 shell）預設不把 `#` 當註解，貼上去時註解行會把 `&&` 串起來的指令切斷。已經複製到各 repo 的舊範本不會自動更新。
 
+### Fixed
+
+- `mcp-deploy`、`cli-deploy`：commit 訊息、release 標題、release notes、repo 描述不再代入 bash 區塊的雙引號（#50）。以前 CHANGELOG 裡的反引號或 `$( )` 會在發版者的機器上被 shell 執行，雙引號會把內容截斷。現在這些文字由 Write 工具寫成檔案（放在 git 目錄的 `harness-deploy/`，不會被 stage），區塊用 `git commit -F`、`-F body=@檔案`、`--notes-file` 讀，用完刪掉。commit 訊息的第一行必須是 `v<version>: 摘要`，否則不 commit。commit 用 `--cleanup=whitespace`，`commit.cleanup` 設成 `strip` 時訊息裡 `#` 開頭的行也不會被刪掉。
+- `mcp-deploy` Phase 4：`.mcp.json` 與 `plugin.json` 改由 Write 工具建立，不再用 heredoc（#50）。裡面的 `{description}`、`{keywords}` 是自由文字；帶引號的 heredoc 不會被 shell 解析，但內容裡出現結束標記那一行時會跳出 heredoc。
+- `mcp-deploy`：release 標題改成選填，沒有標題時 release 的名稱是 `v<version>`（以前照預設值會變成 `v<version> - v<version>`）。
+
 ## [2.6.0] - 2026-11-10
 
 **發版摘要**：四個發版 skill 現在都會打版號 tag（#42）；`plugin-update`、`plugin-deploy` 的自動推 tag 是 opt-in，要 `git config harness-devtools.releaseTag true` 才打。之前 `plugin-update`、`plugin-deploy` 不打 tag；`mcp-deploy`、`cli-deploy` 讓 GitHub 在建 release 時，於當下的 remote main 上自動建 tag，不保證落在 release commit 上，也沒有比對版號。四個 skill 都只在預設 branch 上打。`plugin-update`、`plugin-deploy` 的 tag 打在升版號的那個 commit；`mcp-deploy`、`cli-deploy` 的 tag 打在 release commit，版本必須等於要發的版本。helper 在 macOS 內建的 bash 3.2 下也能跑。

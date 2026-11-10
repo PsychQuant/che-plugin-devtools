@@ -458,11 +458,43 @@ git status
 
 ### Step 2: 提交變更
 
-```bash
-git add -A
-git commit -m "v{version}: {change-summary}
+commit 訊息、release 標題、release notes、repo 描述都是自由文字，內容常來自 CHANGELOG，可能有反引號、`$( )`、引號。**這些文字不寫進 bash 區塊**：shell 會執行雙引號裡的反引號與 `$( )`，引號會把字串截斷（#50）。做法是用 Write 工具把文字寫成檔案，區塊只從檔案讀。
 
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+先準備放檔案的目錄：
+
+```bash
+# Step 2: DEPLOY_TMP — 放在 git 目錄底下：不會被 stage，worktree 也適用。先清掉上一次留下的檔案
+DEPLOY_TMP="$(git rev-parse --absolute-git-dir)/harness-deploy" || { echo "✗ Step 2: 不在 git repo 裡"; exit 1; }
+mkdir -p "$DEPLOY_TMP" || exit 1
+rm -f "$DEPLOY_TMP/commit-message.txt" "$DEPLOY_TMP/release-title.txt" "$DEPLOY_TMP/release-notes.md" "$DEPLOY_TMP/repo-description.txt"
+echo "→ Step 2: 用 Write 工具把文字檔寫到 $DEPLOY_TMP"
+```
+
+用 Write 工具把 commit 訊息寫到上面印出的目錄，檔名 `commit-message.txt`。第一行必須是 `v{version}: {change-summary}`：
+
+```text
+v{version}: {change-summary}
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+```
+
+再提交：
+
+```bash
+VERSION='{version}'   # Phase 0 Step 4 決定的版本；代入前核對只含 0-9 A-Z a-z . + -
+case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ Step 2: VERSION 未代入或不合法"; exit 1 ;; esac
+# commit 訊息從檔案讀，不經過 shell 解析（#50）
+MSG_FILE="$(git rev-parse --absolute-git-dir)/harness-deploy/commit-message.txt"
+[ -s "$MSG_FILE" ] || { echo "✗ Step 2: 找不到 commit 訊息檔（或是空的）：${MSG_FILE} — 先用 Write 工具寫好"; exit 1; }
+IFS= read -r SUBJECT < "$MSG_FILE"
+case "$SUBJECT" in
+  *'{'change-summary'}'*) echo "✗ Step 2: commit 訊息裡的摘要還沒代入"; exit 1 ;;
+  "v$VERSION: "?*) ;;
+  *) echo "✗ Step 2: commit 訊息的第一行要是「v$VERSION: 摘要」— 檔案可能是上一次留下的，或版本還沒代入"; exit 1 ;;
+esac
+git add -A
+# --cleanup=whitespace：commit.cleanup 設成 strip 的人，訊息裡 # 開頭的行會被刪掉；這裡固定成只整理空白
+git commit --cleanup=whitespace -F "$MSG_FILE" && rm -f "$MSG_FILE"
 ```
 
 ### Step 3: 推送到 GitHub
@@ -539,8 +571,13 @@ echo "→ Step 3a: $TAG 已在 ${OWNER_REPO}；Step 4 在同一個 repo 用這�
 ### Step 4: 建立 GitHub Release
 
 使用 AskUserQuestion 詢問：
-1. Release 標題（預設：`v{version}`）
+1. Release 標題（選填；release 的名稱是 `v{version} - 標題`，沒有標題時就是 `v{version}`）
 2. Release 說明（可從 CHANGELOG.md 複製）
+
+用 Write 工具把這兩段文字寫到 Step 2 印出的目錄。下面兩個方法的區塊都從檔案讀，**不要把文字貼進區塊**（#50）：
+
+- `release-title.txt`：標題，一行，只寫 `v{version} - ` 後面那一段。沒有標題就不要建這個檔案。
+- `release-notes.md`：release notes 全文，照下面的模板。
 
 **Release Notes 模板**：
 
@@ -582,18 +619,27 @@ MCPB_FILE=$(ls mcpb/*.mcpb | head -1)
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3a"; exit 1; }
 gh api "repos/$OWNER_REPO/git/ref/tags/v$VERSION" --jq .object.sha >/dev/null || { echo "✗ $OWNER_REPO 上沒有 v$VERSION — 先跑完 Step 3a"; exit 1; }
+# release 的標題與 notes 從檔案讀，不經過 shell 解析（#50）；檔案由 Write 工具寫在 Step 2 印出的目錄
+DEPLOY_TMP="$(git rev-parse --absolute-git-dir)/harness-deploy"
+TITLE_FILE="$DEPLOY_TMP/release-title.txt"; NOTES_FILE="$DEPLOY_TMP/release-notes.md"
+[ -s "$NOTES_FILE" ] || { echo "✗ 找不到 release notes 檔（或是空的）：${NOTES_FILE} — 先用 Write 工具寫好"; exit 1; }
+if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
+TITLE=""; [ -s "$TITLE_FILE" ] && IFS= read -r TITLE < "$TITLE_FILE"
+case "$TITLE" in *'{'title'}'*) echo "✗ release 標題還沒代入"; exit 1 ;; esac
+NAME="v$VERSION"; [ -n "$TITLE" ] && NAME="v$VERSION - $TITLE"
 
 # Step 1: 建立 Release（不帶 assets，秒完成）
 # tag_name 用 Step 3a 已推上去的 tag；tag 已存在時 GitHub 直接用它，不另外指定 commit（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   -f tag_name="v$VERSION" \
-  -f name="v$VERSION - {title}" \
-  -f body="{release-notes}" \
+  -f name="$NAME" \
+  -F body=@"$NOTES_FILE" \
   -F draft=false \
   -F prerelease=false \
   --jq '.id')
 
 echo "Release created: ID=$RELEASE_ID"
+[ -n "$RELEASE_ID" ] && rm -f "$TITLE_FILE" "$NOTES_FILE"   # 建成了就刪掉，不留給下一次發版
 
 # Step 2: 用 curl 上傳 Binary（支援進度條，不會 timeout）
 TOKEN=$(gh auth token)
@@ -635,21 +681,33 @@ case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法
 # --verify-tag：tag 不在 remote 就中止，不讓 gh 自己建 tag（#42，tag 由 Step 3a 建）；--repo 與 Step 3a 同一個 repo
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3a"; exit 1; }
+# release 的標題與 notes 從檔案讀，不經過 shell 解析（#50）；檔案由 Write 工具寫在 Step 2 印出的目錄
+DEPLOY_TMP="$(git rev-parse --absolute-git-dir)/harness-deploy"
+TITLE_FILE="$DEPLOY_TMP/release-title.txt"; NOTES_FILE="$DEPLOY_TMP/release-notes.md"
+[ -s "$NOTES_FILE" ] || { echo "✗ 找不到 release notes 檔（或是空的）：${NOTES_FILE} — 先用 Write 工具寫好"; exit 1; }
+if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
+TITLE=""; [ -s "$TITLE_FILE" ] && IFS= read -r TITLE < "$TITLE_FILE"
+case "$TITLE" in *'{'title'}'*) echo "✗ release 標題還沒代入"; exit 1 ;; esac
+NAME="v$VERSION"; [ -n "$TITLE" ] && NAME="v$VERSION - $TITLE"
 gh release create "v$VERSION" --verify-tag --repo "$OWNER_REPO" \
-  --title "v$VERSION - {title}" \
-  --notes "{release-notes}" \
+  --title "$NAME" \
+  --notes-file "$NOTES_FILE" \
   mcpb/server/$BINARY_NAME \
-  $MCPB_FILE
+  $MCPB_FILE && rm -f "$TITLE_FILE" "$NOTES_FILE"
 ```
 
 **注意**：如果遇到 `workflow scope may be required` 錯誤，必須改用方法 A。
 
 ### Step 4.5: 更新 GitHub Repo About 描述
 
-如果工具數量、主要功能、或支援範圍有變更，更新 repo 的 About 描述：
+如果工具數量、主要功能、或支援範圍有變更，更新 repo 的 About 描述。描述也是自由文字：用 Write 工具寫到 Step 2 印出的目錄，檔名 `repo-description.txt`（一行），再執行（#50）：
 
 ```bash
-gh repo edit {owner}/{repo} --description "{updated-description}"
+DESC_FILE="$(git rev-parse --absolute-git-dir)/harness-deploy/repo-description.txt"
+[ -s "$DESC_FILE" ] || { echo "✗ Step 4.5: 找不到 repo 描述檔（或是空的）：${DESC_FILE} — 先用 Write 工具寫好"; exit 1; }
+IFS= read -r DESCRIPTION < "$DESC_FILE"
+case "$DESCRIPTION" in ''|*'{'updated-description'}'*) echo "✗ Step 4.5: repo 描述是空的，或還沒代入"; exit 1 ;; esac
+gh repo edit {owner}/{repo} --description "$DESCRIPTION" && rm -f "$DESC_FILE"
 ```
 
 **常見需更新的情況**：
@@ -755,8 +813,9 @@ mkdir -p "$PLUGIN_DIR/bin"
 
 ### Step 2: 建立 .mcp.json
 
-```bash
-cat > "$PLUGIN_DIR/.mcp.json" << 'EOF'
+用 Write 工具建立 `$PLUGIN_DIR/.mcp.json`（`$PLUGIN_DIR` 是 Step 0 得到的路徑），內容如下。`{description}` 是自由文字，不放進 bash 區塊，heredoc 也不行（#50）；寫進 JSON 字串時，雙引號與反斜線照 JSON 的規則跳脫。`${CLAUDE_PLUGIN_ROOT}` 照字面寫，不要代換：
+
+```json
 {
   "{project-name}": {
     "type": "stdio",
@@ -764,13 +823,13 @@ cat > "$PLUGIN_DIR/.mcp.json" << 'EOF'
     "description": "{description}"
   }
 }
-EOF
 ```
 
 ### Step 3: 建立 plugin.json
 
-```bash
-cat > "$PLUGIN_DIR/.claude-plugin/plugin.json" << 'EOF'
+同樣用 Write 工具建立 `$PLUGIN_DIR/.claude-plugin/plugin.json`（`{description}`、`{keywords}` 是自由文字，#50）：
+
+```json
 {
   "name": "{project-name}",
   "version": "{version}",
@@ -779,7 +838,6 @@ cat > "$PLUGIN_DIR/.claude-plugin/plugin.json" << 'EOF'
   "license": "MIT",
   "keywords": ["mcp", "{keywords}"]
 }
-EOF
 ```
 
 ### Step 4: 建立 wrapper script

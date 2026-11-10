@@ -82,6 +82,8 @@ put() { mkdir -p "$(dirname "$1/$2")"; printf '%s\n' "$3" > "$1/$2"; }
 ci() { git -C "$1" add -A && git -C "$1" commit -qm "${2:-c}"; }
 push() { git -C "$1" push -q -u origin "$(git -C "$1" branch --show-current)" 2>/dev/null; }
 rtag() { git --git-dir="$1" rev-parse -q --verify "refs/tags/$2^{commit}" 2>/dev/null; }
+# msgfile <work> <text> — the commit message file the deploy skills read (#50)
+msgfile() { local d; d="$(git -C "$1" rev-parse --absolute-git-dir)/harness-deploy"; mkdir -p "$d"; printf '%s\n' "$2" > "$d/commit-message.txt"; }
 
 echo "SKILL text (#42)"
 for s in mcp-deploy cli-deploy plugin-deploy; do
@@ -382,7 +384,8 @@ ci "$W"; push "$W"
 put "$W" Sources/S/Version.swift 'enum V { static let version = "1.1.0" }'
 put "$W" mcpb/manifest.json '{ "version": "1.1.0" }'; put "$W" CHANGELOG.md y; put "$W" notes.txt unrelated
 put "$W" Sources/S/Deep/Version.swift unrelated
-fence cli-deploy "Phase 3 Step 1: stage" "$T/stage.sh" '{version}: {change-summary} ==> 1.1.0: test'
+fence cli-deploy "Phase 3 Step 1: stage" "$T/stage.sh" "VERSION='{version}' ==> VERSION='1.1.0'"
+msgfile "$W" 'v1.1.0: test'
 run bash "$W" "$T/stage.sh"
 same "Version.swift committed" "$(git -C "$W" show HEAD:Sources/S/Version.swift)" 'enum V { static let version = "1.1.0" }'
 same "mcpb/manifest.json committed" "$(git -C "$W" show HEAD:mcpb/manifest.json)" '{ "version": "1.1.0" }'
@@ -397,6 +400,7 @@ mk cli-new; W="$T/cli-new"
 put "$W" Sources/S/Version.swift 'enum V { static let version = "1.0.0" }'; ci "$W"; push "$W"
 put "$W" Sources/S/Version.swift 'enum V { static let version = "1.1.0" }'; put "$W" CHANGELOG.md first; put "$W" scratch.txt junk
 put "$W" package.json '{ "private": true }'
+msgfile "$W" 'v1.1.0: test'
 run bash "$W" "$T/stage.sh"
 same "a newly created CHANGELOG.md is committed" "$(git -C "$W" show HEAD:CHANGELOG.md 2>/dev/null)" first
 same "an unrelated new file is not committed" "$(git -C "$W" ls-tree --name-only HEAD scratch.txt)" ""
@@ -479,6 +483,198 @@ same "…foo-v1.0.0 on the remote" "$(rtag "$T/pdo.git" foo-v1.0.0)" "$(git -C "
 # mcp-deploy and cli-deploy need the tag to build the release, so the switch does not apply to them
 for s in mcp-deploy cli-deploy; do
   hasnt "$s: the release tag does not depend on harness-devtools.releaseTag" "$(bash_blocks "$s")" 'harness-devtools.releaseTag'
+done
+
+echo "free text never reaches a shell: commit message, release title, release notes, repo description, plugin description and keywords (#50)"
+for s in mcp-deploy cli-deploy; do
+  CODE=$(bash_blocks "$s")
+  for ph in '{title}' '{release-notes}' '{change-summary}' '{updated-description}' '{description}' '{keywords}'; do
+    hasnt "$s: no bash block holds the free-text placeholder $ph" "$CODE" "$ph"
+  done
+done
+# gh and curl stand-ins that record what they were given, one value per file, and play
+# the release endpoints of "the GitHub repo o/r"
+mkdir -p "$T/bin50"
+cat > "$T/bin50/gh" <<'SH'
+#!/bin/sh
+REC="$GH50_REC"
+printf '%s\n' "$1 $2" >> "$REC/calls"
+case "$1 $2" in
+  "api repos/o/r/git/ref/tags/"*)
+    git --git-dir="$GH_STUB_REMOTE" rev-parse -q --verify "refs/tags/${2#repos/o/r/git/ref/tags/}" || exit 1
+    exit 0 ;;
+  "auth token") echo tok; exit 0 ;;
+esac
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    --title)       printf '%s' "$a" > "$REC/title" ;;
+    --notes)       printf '%s' "$a" > "$REC/notes-inline" ;;
+    --notes-file)  cp "$a" "$REC/notes-file" ;;
+    --description) printf '%s' "$a" > "$REC/description" ;;
+  esac
+  case "$a" in
+    name=*)  printf '%s' "${a#name=}" > "$REC/name" ;;
+    body=@*) cp "${a#body=@}" "$REC/body-file" ;;
+    body=*)  printf '%s' "${a#body=}" > "$REC/body-inline" ;;
+  esac
+  prev=$a
+done
+[ -n "${GH50_FAIL:-}" ] && exit 1
+case "$1 $2" in "api repos/o/r/releases") echo 42 ;; esac
+exit 0
+SH
+printf '%s\n' '#!/bin/sh' 'printf "%s\n" curl >> "$GH50_REC/calls"' 'exit 0' > "$T/bin50/curl"
+chmod +x "$T/bin50/gh" "$T/bin50/curl"
+# run50 <shell> <dir> <script> — like run, with the recording gh and curl; $T/rec starts empty
+run50() {
+  local sh=$1 dir=$2 f=$3
+  rm -rf "$T/rec"; mkdir -p "$T/rec"
+  case "$sh" in
+    zsh) OUT=$(cd "$dir" && GH50_REC="$T/rec" PATH="$T/bin50:$PATH" zsh -f -c "$(cat "$f")" 2>&1); RC=$? ;;
+    *)   OUT=$(cd "$dir" && GH50_REC="$T/rec" PATH="$T/bin50:$PATH" "$sh" "$f" 2>&1); RC=$? ;;
+  esac
+}
+# hostile <word> — one line that runs commands and breaks out of quotes if a shell ever parses it
+hostile() { printf '%s' "$1 \`touch $T/pwned\` \$(touch $T/pwned) \"dq\" 'sq' \\ \$HOME ; touch $T/pwned #"; }
+pwned() { if [ -e "$T/pwned" ]; then bad "$1: text from a file was executed"; rm -f "$T/pwned"; else ok "$1: nothing in the text was executed"; fi; }
+deploy_dir() { printf '%s/harness-deploy' "$(git -C "$1" rev-parse --absolute-git-dir)"; }
+left() { ls "$1" 2>/dev/null | tr '\n' ' '; }
+
+for SM in "mcp-deploy:Step 2" "cli-deploy:Step 1"; do
+  S=${SM%%:*}; STEP=${SM#*:}
+  mk "$S-50"; W="$T/$S-50"; put "$W" README.md x; put "$W" CHANGELOG.md x; ci "$W"; push "$W"
+  # a user setting that drops the lines of a message that start with #; the block must not depend on it
+  git -C "$W" config commit.cleanup strip
+  D=$(deploy_dir "$W"); mkdir -p "$D"; echo stale > "$D/commit-message.txt"; echo stale > "$D/release-notes.md"
+  fence "$S" "$STEP: DEPLOY_TMP" "$T/prep.sh"
+  for sh in $SHELLS; do
+    run50 "$sh" "$W" "$T/prep.sh"
+    has "$S: the prepare block prints the directory ($sh)" "$OUT" "$D"
+  done
+  same "$S: …and removes what an earlier run left there" "$(left "$D")" ""
+
+  if [ "$S" = mcp-deploy ]; then MARK="Step 2: VERSION"; else MARK="Phase 3 Step 1: stage"; fi
+  fence "$S" "$MARK" "$T/commit.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
+  BEFORE=$(git -C "$W" rev-parse HEAD)
+  put "$W" CHANGELOG.md changed
+  run50 bash "$W" "$T/commit.sh"
+  has "$S: no message file → stops" "$OUT" "找不到 commit 訊息檔"
+  same "$S: …and nothing is committed" "$(git -C "$W" rev-parse HEAD)" "$BEFORE"
+  printf '%s\n' 'v1.3.0: an older release' > "$D/commit-message.txt"
+  run50 bash "$W" "$T/commit.sh"
+  has "$S: a message left from another version → stops" "$OUT" "第一行要是"
+  same "$S: …and nothing is committed" "$(git -C "$W" rev-parse HEAD)" "$BEFORE"
+  printf '%s\n' 'v1.4.0: {change-summary}' > "$D/commit-message.txt"
+  run50 bash "$W" "$T/commit.sh"
+  has "$S: a summary that was never filled in → stops" "$OUT" "還沒代入"
+  same "$S: …and nothing is committed" "$(git -C "$W" rev-parse HEAD)" "$BEFORE"
+  for sh in $SHELLS; do
+    put "$W" CHANGELOG.md "changed for $sh"
+    { printf 'v1.4.0: '; hostile subject; printf '\n\n'; hostile body; printf '\n# not a comment\n'; } > "$D/commit-message.txt"
+    cp "$D/commit-message.txt" "$T/expected-msg"
+    BEFORE=$(git -C "$W" rev-parse HEAD)
+    run50 "$sh" "$W" "$T/commit.sh"
+    if [ "$(git -C "$W" rev-parse HEAD)" = "$BEFORE" ]; then bad "$S: no commit was made ($sh)" "$OUT"; else ok "$S: a commit is made ($sh)"; fi
+    same "$S: the commit message is the file, character for character ($sh)" "$(git -C "$W" log -1 --format=%B)" "$(cat "$T/expected-msg")"
+    pwned "$S commit ($sh)"
+    same "$S: the message file is removed after the commit ($sh)" "$(left "$D")" ""
+  done
+done
+
+# release texts for mcp-deploy: a title line and notes with a heredoc terminator and a code fence in them
+mk mcp-rel; W="$T/mcp-rel"
+put "$W" mcpb/manifest.json '{
+  "name": "proj",
+  "version": "1.4.0"
+}'
+put "$W" mcpb/server/Bin x; put "$W" mcpb/proj.mcpb x
+ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+D=$(deploy_dir "$W"); mkdir -p "$D"
+release_texts() {
+  { hostile title; printf '\n'; } > "$D/release-title.txt"
+  { hostile notes; printf '\nEOF\n```bash\necho hi\n```\n'; } > "$D/release-notes.md"
+  cp "$D/release-notes.md" "$T/expected-notes"
+}
+
+echo "mcp-deploy Step 4, method A (#50)"
+fence mcp-deploy "releases --method POST" "$T/relA.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
+run50 bash "$W" "$T/relA.sh"
+has "no notes file → stops" "$OUT" "找不到 release notes 檔"
+hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+printf '%s\n' '{CHANGELOG 內容}' > "$D/release-notes.md"
+run50 bash "$W" "$T/relA.sh"
+has "notes that are still the template → stops" "$OUT" "還有沒代入的 placeholder"
+hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+release_texts; printf '%s\n' '{title}' > "$D/release-title.txt"
+run50 bash "$W" "$T/relA.sh"
+has "a title that was never filled in → stops" "$OUT" "標題還沒代入"
+for sh in $SHELLS; do
+  release_texts
+  run50 "$sh" "$W" "$T/relA.sh"
+  same "the release name is v<version> - <title>, character for character ($sh)" "$(cat "$T/rec/name" 2>/dev/null)" "v1.4.0 - $(hostile title)"
+  if cmp -s "$T/rec/body-file" "$T/expected-notes"; then ok "the body is the notes file, byte for byte ($sh)"; else bad "the body is not the notes file ($sh)" "$OUT"; fi
+  if [ -e "$T/rec/body-inline" ]; then bad "the notes were put on the command line ($sh)"; else ok "the notes are not on the command line ($sh)"; fi
+  pwned "method A ($sh)"
+  same "both text files are removed once the release exists ($sh)" "$(left "$D")" ""
+done
+release_texts; rm -f "$D/release-title.txt"
+run50 bash "$W" "$T/relA.sh"
+same "without a title file the release is named v<version>" "$(cat "$T/rec/name" 2>/dev/null)" "v1.4.0"
+printf 'true\n' > "$D/release-notes.md"
+run50 bash "$W" "$T/relA.sh"
+same "notes that read true are sent from the file, not as a typed value" "$(cat "$T/rec/body-file" 2>/dev/null)" "true"
+release_texts; export GH50_FAIL=1; run50 bash "$W" "$T/relA.sh"; unset GH50_FAIL
+same "a release that was not created keeps the text files for the retry" "$(left "$D")" "release-notes.md release-title.txt "
+
+echo "mcp-deploy Step 4, method B (#50)"
+fence mcp-deploy 'gh release create "v$VERSION"' "$T/relB.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
+rm -f "$D"/*
+run50 bash "$W" "$T/relB.sh"
+has "no notes file → stops" "$OUT" "找不到 release notes 檔"
+hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+for sh in $SHELLS; do
+  release_texts
+  run50 "$sh" "$W" "$T/relB.sh"
+  same "--title is v<version> - <title>, character for character ($sh)" "$(cat "$T/rec/title" 2>/dev/null)" "v1.4.0 - $(hostile title)"
+  if cmp -s "$T/rec/notes-file" "$T/expected-notes"; then ok "--notes-file is the notes file ($sh)"; else bad "--notes-file is not the notes file ($sh)" "$OUT"; fi
+  if [ -e "$T/rec/notes-inline" ]; then bad "the notes were put on the command line ($sh)"; else ok "the notes are not on the command line ($sh)"; fi
+  pwned "method B ($sh)"
+  same "both text files are removed once the release exists ($sh)" "$(left "$D")" ""
+done
+release_texts; export GH50_FAIL=1; run50 bash "$W" "$T/relB.sh"; unset GH50_FAIL
+same "a failed gh release create keeps the text files for the retry" "$(left "$D")" "release-notes.md release-title.txt "
+
+echo "mcp-deploy Step 4.5: repo description (#50)"
+fence mcp-deploy "Step 4.5: 找不到 repo 描述檔" "$T/desc.sh" "gh repo edit {owner}/{repo} ==> gh repo edit o/r"
+rm -f "$D"/*
+run50 bash "$W" "$T/desc.sh"
+has "no description file → stops" "$OUT" "找不到 repo 描述檔"
+hasnt "…before gh repo edit" "$(cat "$T/rec/calls" 2>/dev/null)" "repo edit"
+for sh in $SHELLS; do
+  { hostile description; printf '\n'; } > "$D/repo-description.txt"
+  run50 "$sh" "$W" "$T/desc.sh"
+  same "the description is passed character for character ($sh)" "$(cat "$T/rec/description" 2>/dev/null)" "$(hostile description)"
+  pwned "repo description ($sh)"
+  same "the description file is removed afterwards ($sh)" "$(left "$D")" ""
+done
+
+echo "cli-deploy Step 2: release (#50)"
+mk cli-rel; W="$T/cli-rel"; put "$W" README.md x; ci "$W"; push "$W"
+git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+D=$(deploy_dir "$W"); mkdir -p "$D"
+fence cli-deploy "releases --method POST" "$T/relC.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
+run50 bash "$W" "$T/relC.sh"
+has "no notes file → stops" "$OUT" "找不到 release notes 檔"
+hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+for sh in $SHELLS; do
+  release_texts; rm -f "$D/release-title.txt"
+  run50 "$sh" "$W" "$T/relC.sh"
+  same "the release is named v<version> ($sh)" "$(cat "$T/rec/name" 2>/dev/null)" "v1.4.0"
+  if cmp -s "$T/rec/body-file" "$T/expected-notes"; then ok "the body is the notes file, byte for byte ($sh)"; else bad "the body is not the notes file ($sh)" "$OUT"; fi
+  if [ -e "$T/rec/body-inline" ]; then bad "the notes were put on the command line ($sh)"; else ok "the notes are not on the command line ($sh)"; fi
+  pwned "cli-deploy release ($sh)"
+  same "the notes file is removed once the release exists ($sh)" "$(left "$D")" ""
 done
 
 echo

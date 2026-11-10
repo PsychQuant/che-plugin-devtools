@@ -238,7 +238,32 @@ lipo -info .release/$BINARY_NAME
 
 **只 stage 本次 deploy 實際動過的檔案** — `git add -A` 會把使用者 working tree 裡無關的 modified files（例如 session-start hook 改的 `.claude/*`、`CLAUDE.md`）全部塞進 release commit，污染歷史。
 
+commit 訊息、release 標題、release notes、repo 描述都是自由文字，內容常來自 CHANGELOG，可能有反引號、`$( )`、引號。**這些文字不寫進 bash 區塊**：shell 會執行雙引號裡的反引號與 `$( )`，引號會把字串截斷（#50）。做法是用 Write 工具把文字寫成檔案，區塊只從檔案讀。
+
+先準備放檔案的目錄：
+
 ```bash
+# Step 1: DEPLOY_TMP — 放在 git 目錄底下：不會被 stage，worktree 也適用。先清掉上一次留下的檔案
+DEPLOY_TMP="$(git rev-parse --absolute-git-dir)/harness-deploy" || { echo "✗ Step 1: 不在 git repo 裡"; exit 1; }
+mkdir -p "$DEPLOY_TMP" || exit 1
+rm -f "$DEPLOY_TMP/commit-message.txt" "$DEPLOY_TMP/release-notes.md"
+echo "→ Step 1: 用 Write 工具把文字檔寫到 $DEPLOY_TMP"
+```
+
+用 Write 工具把 commit 訊息寫到上面印出的目錄，檔名 `commit-message.txt`。第一行必須是 `v{version}: {change-summary}`。再執行：
+
+```bash
+VERSION='{version}'   # Phase 0 Step 4 決定的版本；代入前核對只含 0-9 A-Z a-z . + -
+case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ Step 1: VERSION 未代入或不合法"; exit 1 ;; esac
+# commit 訊息從檔案讀，不經過 shell 解析（#50）
+MSG_FILE="$(git rev-parse --absolute-git-dir)/harness-deploy/commit-message.txt"
+[ -s "$MSG_FILE" ] || { echo "✗ Step 1: 找不到 commit 訊息檔（或是空的）：${MSG_FILE} — 先用 Write 工具寫好"; exit 1; }
+IFS= read -r SUBJECT < "$MSG_FILE"
+case "$SUBJECT" in
+  *'{'change-summary'}'*) echo "✗ Step 1: commit 訊息裡的摘要還沒代入"; exit 1 ;;
+  "v$VERSION: "?*) ;;
+  *) echo "✗ Step 1: commit 訊息的第一行要是「v$VERSION: 摘要」— 檔案可能是上一次留下的，或版本還沒代入"; exit 1 ;;
+esac
 # Phase 3 Step 1: stage Phase 1 改過的檔案——CHANGELOG、README，以及 Step 1.5 會讀的版本來源（封閉列舉，
 # 與 Phase 1 Step 1 同一份），只限已追蹤且有修改的；untracked 的只收 CHANGELOG.md（Phase 1 Step 2 可能新建它）。
 # 原本就存在、與這次無關的 untracked package.json 之類不會被收進來。不存在的路徑不會報錯
@@ -252,7 +277,8 @@ lipo -info .release/$BINARY_NAME
 # 檢查 staging 內容，確認沒混進無關檔案
 git diff --cached --stat
 
-git commit -m "v{version}: {change-summary}"
+# --cleanup=whitespace：commit.cleanup 設成 strip 的人，訊息裡 # 開頭的行會被刪掉；這裡固定成只整理空白
+git commit --cleanup=whitespace -F "$MSG_FILE" && rm -f "$MSG_FILE"
 git push origin main
 ```
 
@@ -322,6 +348,8 @@ echo "→ Step 1.5: $TAG 已在 ${OWNER_REPO}；Step 2 在同一個 repo 用這�
 
 ### Step 2: 建立 GitHub Release
 
+先用 Write 工具把 release notes 寫到 Step 1 印出的目錄，檔名 `release-notes.md`（模板在本節最後）。區塊從檔案讀，**不要把文字貼進區塊**（#50）。
+
 ```bash
 VERSION='{version}'   # 與 Step 1.5 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
 case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
@@ -329,17 +357,22 @@ case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' || { echo "✗ 推不出 owner/repo — 先跑完 Step 1.5"; exit 1; }
 gh api "repos/$OWNER_REPO/git/ref/tags/v$VERSION" --jq .object.sha >/dev/null || { echo "✗ $OWNER_REPO 上沒有 v$VERSION — 先跑完 Step 1.5"; exit 1; }
+# release notes 從檔案讀，不經過 shell 解析（#50）；檔案由 Write 工具寫在 Step 1 印出的目錄
+NOTES_FILE="$(git rev-parse --absolute-git-dir)/harness-deploy/release-notes.md"
+[ -s "$NOTES_FILE" ] || { echo "✗ 找不到 release notes 檔（或是空的）：${NOTES_FILE} — 先用 Write 工具寫好"; exit 1; }
+if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
 
 # 建立 Release：tag_name 用 Step 1.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不另外指定 commit（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   -f tag_name="v$VERSION" \
   -f name="v$VERSION" \
-  -f body="{release-notes}" \
+  -F body=@"$NOTES_FILE" \
   -F draft=false \
   -F prerelease=false \
   --jq '.id')
 
 echo "Release created: ID=$RELEASE_ID"
+[ -n "$RELEASE_ID" ] && rm -f "$NOTES_FILE"   # 建成了就刪掉，不留給下一次發版
 
 # 上傳 Binary（用 curl，支援進度條）
 TOKEN=$(gh auth token)
