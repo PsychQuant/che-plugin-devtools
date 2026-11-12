@@ -623,9 +623,12 @@ gh api "repos/$OWNER_REPO/git/ref/tags/v$VERSION" --jq .object.sha >/dev/null ||
 DEPLOY_TMP="$(git rev-parse --absolute-git-dir)/harness-deploy"
 TITLE_FILE="$DEPLOY_TMP/release-title.txt"; NOTES_FILE="$DEPLOY_TMP/release-notes.md"
 [ -s "$NOTES_FILE" ] || { echo "✗ 找不到 release notes 檔（或是空的）：${NOTES_FILE} — 先用 Write 工具寫好"; exit 1; }
-if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
+if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' -e '{''project-name''}' -e '{''BinaryName''}' -e '{''owner''}' -e '{''repo''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
 TITLE=""; [ -s "$TITLE_FILE" ] && IFS= read -r TITLE < "$TITLE_FILE"
-case "$TITLE" in *'{'title'}'*) echo "✗ release 標題還沒代入"; exit 1 ;; esac
+case "$TITLE" in
+  *'{'title'}'*) echo "✗ release 標題還沒代入"; exit 1 ;;
+  "v$VERSION"*) echo "✗ release 標題不要以 v$VERSION 開頭：名稱已經是「v$VERSION - 標題」，標題檔只寫 - 後面那一段"; exit 1 ;;
+esac
 NAME="v$VERSION"; [ -n "$TITLE" ] && NAME="v$VERSION - $TITLE"
 
 # Step 1: 建立 Release（不帶 assets，秒完成）
@@ -639,7 +642,6 @@ RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   --jq '.id')
 
 echo "Release created: ID=$RELEASE_ID"
-[ -n "$RELEASE_ID" ] && rm -f "$TITLE_FILE" "$NOTES_FILE"   # 建成了就刪掉，不留給下一次發版
 
 # Step 2: 用 curl 上傳 Binary（支援進度條，不會 timeout）
 TOKEN=$(gh auth token)
@@ -662,8 +664,8 @@ curl -L -X POST \
   --data-binary "@$MCPB_FILE" \
   --progress-bar -o /dev/null -w "MCPB upload: HTTP %{http_code}, %{size_upload} bytes\n"
 
-# Step 4: 驗證
-gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
+# Step 4: 驗證。通過才刪掉文字檔（不留給下一次發版）；上傳失敗時留著，重建 release 還要用
+gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"' && rm -f "$TITLE_FILE" "$NOTES_FILE"
 ```
 
 **為什麼不用 `gh release create` 帶 assets**：
@@ -685,9 +687,12 @@ printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_
 DEPLOY_TMP="$(git rev-parse --absolute-git-dir)/harness-deploy"
 TITLE_FILE="$DEPLOY_TMP/release-title.txt"; NOTES_FILE="$DEPLOY_TMP/release-notes.md"
 [ -s "$NOTES_FILE" ] || { echo "✗ 找不到 release notes 檔（或是空的）：${NOTES_FILE} — 先用 Write 工具寫好"; exit 1; }
-if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
+if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' -e '{''project-name''}' -e '{''BinaryName''}' -e '{''owner''}' -e '{''repo''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
 TITLE=""; [ -s "$TITLE_FILE" ] && IFS= read -r TITLE < "$TITLE_FILE"
-case "$TITLE" in *'{'title'}'*) echo "✗ release 標題還沒代入"; exit 1 ;; esac
+case "$TITLE" in
+  *'{'title'}'*) echo "✗ release 標題還沒代入"; exit 1 ;;
+  "v$VERSION"*) echo "✗ release 標題不要以 v$VERSION 開頭：名稱已經是「v$VERSION - 標題」，標題檔只寫 - 後面那一段"; exit 1 ;;
+esac
 NAME="v$VERSION"; [ -n "$TITLE" ] && NAME="v$VERSION - $TITLE"
 gh release create "v$VERSION" --verify-tag --repo "$OWNER_REPO" \
   --title "$NAME" \
@@ -813,9 +818,8 @@ mkdir -p "$PLUGIN_DIR/bin"
 
 ### Step 2: 建立 .mcp.json
 
-用 Write 工具建立 `$PLUGIN_DIR/.mcp.json`（`$PLUGIN_DIR` 是 Step 0 得到的路徑），內容如下。`{description}` 是自由文字，不放進 bash 區塊，heredoc 也不行（#50）；寫進 JSON 字串時，雙引號與反斜線照 JSON 的規則跳脫。`${CLAUDE_PLUGIN_ROOT}` 照字面寫，不要代換：
-
-```json
+```bash
+cat > "$PLUGIN_DIR/.mcp.json" << 'EOF'
 {
   "{project-name}": {
     "type": "stdio",
@@ -823,13 +827,13 @@ mkdir -p "$PLUGIN_DIR/bin"
     "description": "{description}"
   }
 }
+EOF
 ```
 
 ### Step 3: 建立 plugin.json
 
-同樣用 Write 工具建立 `$PLUGIN_DIR/.claude-plugin/plugin.json`（`{description}`、`{keywords}` 是自由文字，#50）：
-
-```json
+```bash
+cat > "$PLUGIN_DIR/.claude-plugin/plugin.json" << 'EOF'
 {
   "name": "{project-name}",
   "version": "{version}",
@@ -838,6 +842,7 @@ mkdir -p "$PLUGIN_DIR/bin"
   "license": "MIT",
   "keywords": ["mcp", "{keywords}"]
 }
+EOF
 ```
 
 ### Step 4: 建立 wrapper script

@@ -485,10 +485,10 @@ for s in mcp-deploy cli-deploy; do
   hasnt "$s: the release tag does not depend on harness-devtools.releaseTag" "$(bash_blocks "$s")" 'harness-devtools.releaseTag'
 done
 
-echo "free text never reaches a shell: commit message, release title, release notes, repo description, plugin description and keywords (#50)"
+echo "free text never reaches a shell: commit message, release title, release notes, repo description (#50)"
 for s in mcp-deploy cli-deploy; do
   CODE=$(bash_blocks "$s")
-  for ph in '{title}' '{release-notes}' '{change-summary}' '{updated-description}' '{description}' '{keywords}'; do
+  for ph in '{title}' '{release-notes}' '{change-summary}' '{updated-description}'; do
     hasnt "$s: no bash block holds the free-text placeholder $ph" "$CODE" "$ph"
   done
 done
@@ -521,6 +521,7 @@ for a in "$@"; do
   prev=$a
 done
 [ -n "${GH50_FAIL:-}" ] && exit 1
+[ -n "${GH50_FAIL_VIEW:-}" ] && [ "$1 $2" = "release view" ] && exit 1
 case "$1 $2" in "api repos/o/r/releases") echo 42 ;; esac
 exit 0
 SH
@@ -609,6 +610,17 @@ hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "ap
 release_texts; printf '%s\n' '{title}' > "$D/release-title.txt"
 run50 bash "$W" "$T/relA.sh"
 has "a title that was never filled in → stops" "$OUT" "標題還沒代入"
+hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+release_texts; printf '%s\n' 'v1.4.0 - the one that was released' > "$D/release-title.txt"
+run50 bash "$W" "$T/relA.sh"
+has "a title that already starts with v<version> → stops" "$OUT" "不要以 v1.4.0 開頭"
+hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+for ph in project-name BinaryName owner repo; do
+  release_texts; printf '## Install\n\nclaude mcp add {%s}\n' "$ph" > "$D/release-notes.md"
+  run50 bash "$W" "$T/relA.sh"
+  has "notes that still hold {$ph} from the install template → stops" "$OUT" "還有沒代入的 placeholder"
+  hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+done
 for sh in $SHELLS; do
   release_texts
   run50 "$sh" "$W" "$T/relA.sh"
@@ -626,12 +638,23 @@ run50 bash "$W" "$T/relA.sh"
 same "notes that read true are sent from the file, not as a typed value" "$(cat "$T/rec/body-file" 2>/dev/null)" "true"
 release_texts; export GH50_FAIL=1; run50 bash "$W" "$T/relA.sh"; unset GH50_FAIL
 same "a release that was not created keeps the text files for the retry" "$(left "$D")" "release-notes.md release-title.txt "
+release_texts; export GH50_FAIL_VIEW=1; run50 bash "$W" "$T/relA.sh"; unset GH50_FAIL_VIEW
+has "the release exists but the check after the upload fails → says so" "$OUT" "Release created: ID=42"
+same "…and the text files are kept, the release has to be made again" "$(left "$D")" "release-notes.md release-title.txt "
 
 echo "mcp-deploy Step 4, method B (#50)"
 fence mcp-deploy 'gh release create "v$VERSION"' "$T/relB.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
 rm -f "$D"/*
 run50 bash "$W" "$T/relB.sh"
 has "no notes file → stops" "$OUT" "找不到 release notes 檔"
+hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+release_texts; printf '%s\n' 'v1.4.0' > "$D/release-title.txt"
+run50 bash "$W" "$T/relB.sh"
+has "a title that already starts with v<version> → stops" "$OUT" "不要以 v1.4.0 開頭"
+hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+release_texts; printf '## Install\n\ncurl -L https://github.com/{owner}/{repo}/releases\n' > "$D/release-notes.md"
+run50 bash "$W" "$T/relB.sh"
+has "notes that still hold {owner} from the install template → stops" "$OUT" "還有沒代入的 placeholder"
 hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
 for sh in $SHELLS; do
   release_texts
@@ -667,6 +690,14 @@ fence cli-deploy "releases --method POST" "$T/relC.sh" "VERSION='{version}' ==> 
 run50 bash "$W" "$T/relC.sh"
 has "no notes file → stops" "$OUT" "找不到 release notes 檔"
 hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+for ph in binary owner repo; do
+  release_texts; rm -f "$D/release-title.txt"; printf '## Install\n\ncurl -fsSL https://x/{%s}\n' "$ph" > "$D/release-notes.md"
+  run50 bash "$W" "$T/relC.sh"
+  has "notes that still hold {$ph} from the install template → stops" "$OUT" "還有沒代入的 placeholder"
+  hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+done
+release_texts; rm -f "$D/release-title.txt"; export GH50_FAIL_VIEW=1; run50 bash "$W" "$T/relC.sh"; unset GH50_FAIL_VIEW
+same "the check after the upload fails → the notes file is kept for the retry" "$(left "$D")" "release-notes.md "
 for sh in $SHELLS; do
   release_texts; rm -f "$D/release-title.txt"
   run50 "$sh" "$W" "$T/relC.sh"

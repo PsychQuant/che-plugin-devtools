@@ -360,7 +360,7 @@ gh api "repos/$OWNER_REPO/git/ref/tags/v$VERSION" --jq .object.sha >/dev/null ||
 # release notes 從檔案讀，不經過 shell 解析（#50）；檔案由 Write 工具寫在 Step 1 印出的目錄
 NOTES_FILE="$(git rev-parse --absolute-git-dir)/harness-deploy/release-notes.md"
 [ -s "$NOTES_FILE" ] || { echo "✗ 找不到 release notes 檔（或是空的）：${NOTES_FILE} — 先用 Write 工具寫好"; exit 1; }
-if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
+if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' -e '{''binary''}' -e '{''owner''}' -e '{''repo''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
 
 # 建立 Release：tag_name 用 Step 1.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不另外指定 commit（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
@@ -372,7 +372,6 @@ RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   --jq '.id')
 
 echo "Release created: ID=$RELEASE_ID"
-[ -n "$RELEASE_ID" ] && rm -f "$NOTES_FILE"   # 建成了就刪掉，不留給下一次發版
 
 # 上傳 Binary（用 curl，支援進度條）
 TOKEN=$(gh auth token)
@@ -384,8 +383,8 @@ curl -L -X POST \
   --data-binary "@.release/$BINARY_NAME" \
   --progress-bar -o /dev/null -w "Upload: HTTP %{http_code}, %{size_upload} bytes\n"
 
-# 驗證
-gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
+# 驗證。通過才刪掉文字檔（不留給下一次發版）；上傳失敗時留著，重建 release 還要用
+gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"' && rm -f "$NOTES_FILE"
 ```
 
 Release Notes 模板：
