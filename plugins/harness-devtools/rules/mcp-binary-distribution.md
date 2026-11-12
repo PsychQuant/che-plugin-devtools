@@ -38,25 +38,27 @@ jobs:
           files: .build/release/MyMCPBinary
 ```
 
-**觸發條件**：push `v*` tag。只推那一個 tag（`git push --no-follow-tags origin refs/tags/v0.5.0`），不要用 `--tags`：它會把本機所有 tag 一起推上去。`--no-follow-tags` 也要寫：`push.followTags` 開著時，只寫 refspec 仍會連帶推出其他 annotated tag（從這個 commit 走得到、remote 還沒有的）。tag 怎麼打見下一節。
+**觸發條件**：push `v*` tag。只推那一個 tag（`git push --no-follow-tags origin refs/tags/v0.5.0`），不要用 `--tags`：它會把本機所有 tag 一起推上去。`--no-follow-tags` 也要寫：`push.followTags` 開著時，只寫 refspec 仍會連帶推出其他 annotated tag（從這個 commit 走得到、remote 還沒有的）。tag 用 `release-tag.sh` 打，寫法是下一節範例的第一個指令（不含結尾的 `&&`）；CI 設好之後 release 由 CI 建，範例的第二個指令不必跑。
 
 ### 2. GitHub Release — binary 當 asset
 
 Binary 必須是 release asset 而非 git-committed（太大、會撐爆 repo）。命名用 **純檔名**（`CheTelegramAllMCP`），不要加版本字尾——wrapper 下載後就是這個名字。
 
+手動發 release（CI 尚未設好時）是兩個指令，用 `&&` 串成一串：
+
+1. `release-tag.sh` 在 release commit 打 tag 並推上去。它會確認每個版本來源都等於 `--expect` 的版本，只推這一個 tag。binary 要從乾淨、已 commit 的工作樹 build，HEAD 就是 build 用的那個 commit；build 失敗就不要跑這個區塊，`.build/release/` 裡可能還留著上一次的 binary。在 repo 根目錄執行（`--dir .` 指的是版本檔所在的目錄）。`<harness-devtools>` 是這個 plugin 的安裝目錄。
+2. helper 成功才建 release。`--verify-tag`：tag 不在 remote 上就失敗，不讓 gh 自己建。
+
 ```bash
-# 手動發 release（CI 尚未設好時）
-# 1. 先在 release commit 打 tag 並推上去（HEAD 要是 build 這個 binary 用的 commit）。
-#    helper 會確認每個版本來源都等於 --expect 的版本，只推這一個 tag
-#    （<harness-devtools> 是這個 plugin 的安裝目錄）
 bash <harness-devtools>/scripts/release-tag.sh --dir . --commit HEAD --name-style v --expect 0.4.1 &&
-# 2. helper 成功才建 release（上一行結尾的 &&）。--verify-tag：tag 不在 remote 上就失敗，不讓 gh 自己建
 gh release create v0.4.1 --verify-tag \
   --repo owner/repo \
   --title "v0.4.1 — get_chat_history fixes" \
   --notes "See CHANGELOG.md" \
   .build/release/MyMCPBinary
 ```
+
+區塊裡不放註解。互動式 zsh（macOS 的預設 shell）預設不把 `#` 當註解：整段貼上去時，註解行會被當成指令，`&&` 串起來的指令在那裡斷開，前一步失敗之後下一步照樣執行。
 
 少了 `--verify-tag`，tag 不存在時 gh 會在預設 branch 當下的 HEAD 自動建一個：不保證落在 release commit，也沒有比對版號（#42、#49）。兩步要用 `&&` 串起來：`--verify-tag` 只確認 tag 在 remote 上，不看它指到哪個 commit，所以 helper 沒成功（版號不符、同名的 tag 已經在別的 commit 上）時不能接著建 release。平常發版用 `/harness-devtools:mcp-deploy`，它已經照這個順序做。
 

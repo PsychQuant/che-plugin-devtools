@@ -107,46 +107,73 @@ has "mcp-deploy: gh release create checks the tag exists" "$(grep 'gh release cr
 # into other repos — tag first too: gh never creates the tag, an example pushes one tag only, and
 # a failed step stops the example before the release is created.
 #
-# These are text checks against a forgotten step. They do not parse shell: a flag that only
-# appears in a comment at the end of a command line satisfies them, a tag pushed by its short
-# name (`git push origin v1`) is not recognised as a tag push, and only ``` fences are read.
-# The one way of stopping on failure they know is &&: an example that uses `set -e` or
-# `|| exit` instead is reported as unchained.
+# Two kinds of check. The text checks guard against a forgotten step. They do not parse shell
+# and look only for the commands and flags named below: a tag pushed by its short name
+# (`git push origin v1`) is not recognised as a tag push; the tag name is not compared with the
+# release name; a forced push, a + refspec or a dry run of the helper goes unnoticed; ~~~ fences
+# are not read; and the one way of stopping on failure they know is a line that ends in &&
+# (`set -e` or `|| exit` is reported as unchained). The behaviour check after them runs the two
+# examples with stand-in commands; it is the one that shows a failed step stops the release.
 #
 # doc_commands prints the commands of a document, one per line: every line of a fenced block
-# (comment lines too; backslash-continued lines joined, so a flag on a continuation line counts)
-# and every inline code span of the prose around the blocks. Prose outside code spans is not
-# printed, so a sentence that names a flag in a span of its own ("do not use `--tags`") is not
-# taken for a command. With a second argument it counts release commands instead, looking at
-# the lines of each fenced block that are not comments:
-#   untagged   gh release create lines with no tagging step (release-tag.sh, git tag -a/-s)
-#              above them in the block since the previous release command
-#   unchained  command lines above a gh release create in the same block that do not end
-#              in && (a comment may follow the &&)
-# A release command that follows && on the same line counts as a line of its own.
+# (backslash-continued lines joined, so a flag on a continuation line counts) and every inline
+# code span of the prose around the blocks. Prose outside code spans is not printed, so a
+# sentence that names a flag in a span of its own ("do not use `--tags`") is not taken for a
+# command. With a second argument it counts instead, in the fenced blocks that hold a
+# gh release create (text inside quotes is not looked at):
+#   commented  lines with a # comment. An interactive zsh does not treat # as a comment (the
+#              macOS default), so a comment line inside an && chain ends the chain there and
+#              the next command runs whatever happened before it (#49 verify R3)
+#   untagged   gh release create lines with no tagging step (release-tag.sh, or git tag with
+#              -a, -s, --annotate or --sign) above them in the block since the previous
+#              release command
+#   unchained  lines above a gh release create that do not end in &&, and lines up to it that
+#              hold ; or | (a release command that follows && on the same line counts as a
+#              line of its own)
 doc_commands() { python3 -I -c '
 import re, sys
 text = open(sys.argv[1], encoding="utf-8").read().replace("\r\n", "\n").replace("\\\n", " ")
 parts = re.split(r"^[ \t]*```[^\n]*\n(.*?)^[ \t]*```[ \t]*$", text, flags=re.S | re.M)
 blocks, prose = parts[1::2], parts[0::2]
 mode = sys.argv[2] if len(sys.argv) > 2 else ""
+def bare(line):
+    # the line with the text inside quotes blanked out
+    out, quote = [], ""
+    for ch in line:
+        if quote:
+            out.append(ch if ch == quote else " ")
+            if ch == quote:
+                quote = ""
+        else:
+            out.append(ch)
+            if ch in "\"\x27":
+                quote = ch
+    return "".join(out)
 if mode:
-    untagged = unchained = 0
+    count = {"commented": 0, "untagged": 0, "unchained": 0}
     for block in blocks:
+        if "gh release create" not in block:
+            continue
         block = re.sub(r"&&[ \t]*(?=gh release create)", "&&\n", block)
-        cmds = [l for l in block.split("\n") if l.strip() and not l.lstrip().startswith("#")]
         tagged, pending = False, 0
-        for cmd in cmds:
-            if "gh release create" in cmd:
-                untagged += not tagged
-                unchained += pending
+        for line in block.split("\n"):
+            code = bare(line)
+            if not code.strip():
+                continue
+            if re.search(r"(^|[ \t])#", code):
+                count["commented"] += 1
+            if code.lstrip().startswith("#"):
+                continue
+            separators = 1 if re.search(r"[;|]", code) else 0
+            if "gh release create" in code:
+                count["untagged"] += not tagged
+                count["unchained"] += pending + separators
                 tagged, pending = False, 0
                 continue
-            if re.search(r"release-tag\.sh|git tag -[as] ", cmd):
+            if re.search(r"release-tag\.sh|git tag (-[A-Za-z]*[as][A-Za-z]*|--annotate|--sign)( |$)", line):
                 tagged = True
-            if not re.search(r"&&[ \t]*(#.*)?$", cmd):
-                pending += 1
-    print(untagged if mode == "untagged" else unchained)
+            pending += 1 if separators or not re.search(r"&&[ \t]*$", code) else 0
+    print(count[mode])
 else:
     lines = [line for block in blocks for line in block.split("\n")]
     lines += [span for part in prose for span in re.findall(r"`([^`\n]+)`", part)]
@@ -157,8 +184,9 @@ while IFS= read -r f; do
   CMDS=$(doc_commands "$f")
   CREATES=$(printf '%s\n' "$CMDS" | grep -c 'gh release create')
   N_EXAMPLES=$((N_EXAMPLES + CREATES))
-  VERIFIED=$(printf '%s\n' "$CMDS" | grep 'gh release create' | grep -cE -- '(^|[[:space:]])--verify-tag([[:space:]]|$)')
+  VERIFIED=$(printf '%s\n' "$CMDS" | grep 'gh release create' | grep -cE -- '(^|[[:space:]])--verify-tag(=true)?([[:space:]]|$)')
   same "$rel: every gh release create ($CREATES) has --verify-tag" "$VERIFIED" "$CREATES"
+  same "$rel: no # comment in a block with gh release create" "$(doc_commands "$f" commented)" "0"
   same "$rel: every gh release create has a tagging step above it in its block" "$(doc_commands "$f" untagged)" "0"
   same "$rel: every step above a gh release create ends in &&" "$(doc_commands "$f" unchained)" "0"
   hasnt "$rel: no example pushes more than one tag" "$(printf '%s\n' "$CMDS" | grep -E '(^|[^a-z-])push .*((--tags|--follow-tags|--mirror|--all)([^a-z-]|$)|refs/tags/[^[:space:]]*[*])')" 'push'
@@ -167,6 +195,54 @@ while IFS= read -r f; do
   same "$rel: every push of a tag ($TAG_PUSHES) has --no-follow-tags" "$QUIET_PUSHES" "$TAG_PUSHES"
 done < <(find "$PLUGIN_ROOT/rules" "$PLUGIN_ROOT"/skills/*/templates -type f -name '*.md' | sort)
 if [ "$N_EXAMPLES" -ge 2 ]; then ok "rules and templates: the release examples were found ($N_EXAMPLES)"; else bad "rules and templates: expected at least 2 gh release create examples, found $N_EXAMPLES"; fi
+
+# #49, behaviour: each of the two example blocks, placeholders filled in, is read by a shell
+# with stand-ins for the helper, make, git and gh. A stand-in logs its name and fails when it is
+# the step named in PASTE_FAIL. After a failed step the release must not be created; when every
+# step succeeds it must be. `zsh -f -i` reads the block from standard input the way an
+# interactive zsh reads a paste: # is not a comment there. The other shells read it as a script.
+mkdir -p "$T/bin49" "$T/hd49/scripts" "$T/paste49"
+for n in make git gh; do
+  printf '%s\n' '#!/bin/sh' 'n=${0##*/}' '[ "$n" = git ] && n="git-$1"' '[ "$n" = gh ] && n=release-created' \
+    'echo "$n" >> "$PASTE_LOG"' '[ "$PASTE_FAIL" != "$n" ]' > "$T/bin49/$n"
+  chmod +x "$T/bin49/$n"
+done
+printf '%s\n' '#!/bin/sh' 'echo helper >> "$PASTE_LOG"' '[ "$PASTE_FAIL" != helper ]' > "$T/hd49/scripts/release-tag.sh"
+# release_block <file> ['old ==> new' ...] — the first fenced block with a gh release create
+release_block() { python3 -I -c '
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+blocks = [b for b in re.findall(r"^[ \t]*```[^\n]*\n(.*?)^[ \t]*```[ \t]*$", text, re.S | re.M) if "gh release create" in b]
+out = blocks[0] if blocks else ""
+for pair in sys.argv[2:]:
+    old, new = pair.split(" ==> ", 1)
+    out = out.replace(old, new)
+sys.stdout.write(out)' "$@"; }
+# pasted <step that fails, or none> <shell and its arguments> — what ran, in order
+pasted() {
+  local fail=$1; shift
+  rm -f "$T/paste.log"
+  ( cd "$T/paste49" && env -i PATH="$T/bin49:/usr/bin:/bin" HOME="$T/paste49" PASTE_LOG="$T/paste.log" PASTE_FAIL="$fail" "$@" < "$T/paste.in" >/dev/null 2>&1 )
+  tr '\n' ' ' < "$T/paste.log" 2>/dev/null
+}
+for EX in "rules/mcp-binary-distribution.md|helper" "skills/mcp-sign-pipeline/templates/README-signing-section.md|make git-tag git-push"; do
+  doc=${EX%%|*}; steps=${EX#*|}
+  release_block "$PLUGIN_ROOT/$doc" "<harness-devtools> ==> $T/hd49" "<release-commit> ==> HEAD" "<path-to-binary> ==> bin/x" \
+    "[<path-to-mcpb>] ==> x.mcpb" "{{TARGET_NAME}} ==> MyMCP" > "$T/paste.in"
+  if [ -s "$T/paste.in" ]; then ok "$doc: the release example block was found"; else bad "$doc: no fenced block with gh release create"; fi
+  for sh in $SHELLS zsh-paste; do
+    case "$sh" in
+      zsh-paste) command -v zsh >/dev/null 2>&1 || { echo "  - $doc: zsh is not installed; the interactive-zsh case was NOT run"; continue; }
+                 SH_CMD=("$(command -v zsh)" -f -i); label="pasted into an interactive zsh" ;;
+      zsh)       SH_CMD=("$(command -v zsh)" -f); label="zsh" ;;
+      *)         SH_CMD=("$(command -v "$sh")"); label=$sh ;;
+    esac
+    for fail in $steps; do
+      hasnt "$doc: $fail fails → no release ($label)" "$(pasted "$fail" "${SH_CMD[@]}")" 'release-created'
+    done
+    has "$doc: every step succeeds → the release is created ($label)" "$(pasted none "${SH_CMD[@]}")" 'release-created'
+  done
+done
 # verify R3: the release steps use the VERSION checked at the top of their block, not a raw {version}
 release_blocks() { python3 -I -c 'import re,sys; print("\n".join(b for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1]).read(), re.S) if "releases --method POST" in b or "gh release create" in b))' "$PLUGIN_ROOT/skills/$1/SKILL.md"; }
 for s in mcp-deploy cli-deploy; do

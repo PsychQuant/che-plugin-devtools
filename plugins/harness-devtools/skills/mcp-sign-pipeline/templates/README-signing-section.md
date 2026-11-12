@@ -24,21 +24,25 @@ Starting v{{NEXT_VERSION}}, release binaries are signed with a Developer ID Appl
 
 **Per-release flow**:
 
+Build from a clean, committed tree: `git status --porcelain` must print nothing. In the commands below, `<release-commit>` is that commit (`git rev-parse HEAD`), `X.Y.Z` is the version in your manifest / `Version.swift`, and `origin` is the remote you release from.
+
 ```bash
-# Build from a clean, committed tree: `git status --porcelain` must print nothing. <release-commit>
-# below is that commit (`git rev-parse HEAD` before you build), and X.Y.Z must be the version in
-# your manifest / Version.swift.
-make release-signed &&     # builds → signs + notarizes → packages
-# Tag the commit you built from, then push only that tag. The steps are chained with &&: when the
-# build, the tag or the push fails, nothing after it runs and no release is created.
+make release-signed &&
 git tag -a vX.Y.Z -m '{{TARGET_NAME}} X.Y.Z' <release-commit> &&
-# --no-follow-tags: with push.followTags set, a bare refspec would push other annotated tags too
 git push --no-follow-tags origin refs/tags/vX.Y.Z &&
-# --verify-tag: fail when the tag is not on the remote, instead of letting gh create one
 gh release create vX.Y.Z --verify-tag <path-to-binary> [<path-to-mcpb>] --notes "..."
 ```
 
-Keep the `&&`: `--verify-tag` only checks that the tag exists on the remote, not which commit it points at. A tag of that name that already exists makes `git tag` or the push fail, and the chain stops there.
+1. `make release-signed` builds, signs, notarizes and packages.
+2. `git tag -a` tags the commit you built from.
+3. The push sends that one tag. `--no-follow-tags`: with `push.followTags` set, a bare refspec would push other annotated tags too.
+4. `--verify-tag` makes gh fail when the tag is not on the remote, instead of creating one itself.
+
+Keep the `&&` at the end of each line: when the build, the tag or the push fails, nothing after it runs and no release is created. `--verify-tag` only checks that the tag exists on the remote, not which commit it points at; a tag of that name that already exists makes `git tag` or the push fail, and the chain stops there.
+
+Keep comments out of the block. An interactive zsh (the macOS default shell) does not treat `#` as a comment at the prompt: pasted there, a comment line inside the chain is run as a command, the chain ends at it, and the commands after it run even when an earlier one failed.
+
+After a failure, do not run the whole block again once `git tag` has succeeded: it would stop at `git tag`, because the tag now exists. Fix the cause and run the commands that are left, still chained with `&&`.
 
 Without `--verify-tag`, gh creates a missing tag itself, on whatever the default branch points at then — not necessarily your release commit. If you release with the harness-devtools plugin for Claude Code, its `mcp-deploy` and `cli-deploy` skills do the tagging and the version check for you.
 
