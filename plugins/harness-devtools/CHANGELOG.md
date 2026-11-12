@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `mcp-deploy`、`cli-deploy`：commit 訊息、release 標題、release notes、repo 描述不再代入 bash 區塊的雙引號（#50）。以前 CHANGELOG 裡的反引號或 `$( )` 會在發版者的機器上被 shell 執行，雙引號會把內容截斷。現在這些文字由 Write 工具寫成檔案（放在 git 目錄的 `harness-deploy/`，不會被 stage），區塊用 `git commit -F`、`-F body=@檔案`、`--notes-file` 讀，用完刪掉。commit 訊息的第一行必須是 `v<version>: 摘要`，否則不 commit。commit 用 `--cleanup=whitespace`，`commit.cleanup` 設成 `strip` 時訊息裡 `#` 開頭的行也不會被刪掉。release notes 與標題檔在上傳與驗證都通過之後才刪，上傳失敗時留著，重建 release 還要用。標題不能以 `v<version>` 開頭；notes 裡還有安裝段落的 `{owner}`、`{repo}`、`{project-name}`、`{BinaryName}`、`{binary}` 沒代入時也不建 release。
+- `mcp-deploy`、`cli-deploy`：commit 訊息、release 標題、release notes、repo 描述不再代入 bash 區塊的雙引號（#50）。以前 CHANGELOG 裡的反引號或 `$( )` 會在發版者的機器上被 shell 執行，雙引號會把內容截斷。現在這些文字由 Write 工具寫成檔案（放在 git 目錄的 `harness-deploy/`，不會被 stage），區塊用 `git commit -F`、`-F body=@檔案`、`--notes-file` 讀，用完刪掉。commit 訊息的第一行必須是 `v<version>: 摘要`，否則不 commit。commit 用 `--cleanup=whitespace`，`commit.cleanup` 設成 `strip` 時訊息裡 `#` 開頭的行也不會被刪掉。release 沒建成（拿不到 release id）時停下，不去上傳；兩個 asset 都在 release 上（`gh release view` 查得到）才刪 release notes 與標題檔，缺 asset 時留著，只重傳缺的那一個（`curl` 沒有 `--fail`，HTTP 錯誤時結束碼仍是 0，所以不能看 `curl` 的結果）。標題不能以 `v<version>` 開頭；notes 裡還有安裝段落的 `{owner}`、`{repo}`、`{project-name}`、`{BinaryName}`、`{binary}`、`download/v{version}` 沒代入時也不建 release，訊息會指出是哪一個。文字檔放在 `.git/harness-deploy/`：Claude Code 把 `.git` 列為受保護目錄，Write 會被詢問（default、acceptEdits）、交給分類器（auto）或拒絕（dontAsk），`permissions.allow` 規則不能預先核准；skill 寫明被拒時要停下來告訴使用者，不要退回貼進 bash 區塊。
 - `mcp-deploy`：release 標題改成選填，沒有標題時 release 的名稱是 `v<version>`（以前照預設值會變成 `v<version> - v<version>`）。
 
 ## [2.6.0] - 2026-11-10

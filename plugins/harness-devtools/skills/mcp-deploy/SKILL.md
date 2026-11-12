@@ -460,6 +460,8 @@ git status
 
 commit 訊息、release 標題、release notes、repo 描述都是自由文字，內容常來自 CHANGELOG，可能有反引號、`$( )`、引號。**這些文字不寫進 bash 區塊**：shell 會執行雙引號裡的反引號與 `$( )`，引號會把字串截斷（#50）。做法是用 Write 工具把文字寫成檔案，區塊只從檔案讀。
 
+這個目錄在 `.git` 底下。Claude Code 把 `.git` 列為受保護目錄（官方文件 permission-modes 的 Protected paths）：default、acceptEdits 模式每寫一個檔案都會問一次；auto 模式交給分類器；dontAsk 模式直接拒絕；`permissions.allow` 規則與 skill 的 `allowed-tools` 都不能預先核准它。所以發版時最多會有 四 次寫檔的確認（commit 訊息、標題、notes、repo 描述）。Write 被拒絕時：**停下來告訴使用者**，請他在提示按允許，或改用 default、acceptEdits、auto、bypassPermissions 模式重跑；**不要改回把文字貼進 bash 區塊**，那正是 #50 修掉的缺陷。
+
 先準備放檔案的目錄：
 
 ```bash
@@ -579,6 +581,8 @@ echo "→ Step 3a: $TAG 已在 ${OWNER_REPO}；Step 4 在同一個 repo 用這�
 - `release-title.txt`：標題，一行，只寫 `v{version} - ` 後面那一段。沒有標題就不要建這個檔案。
 - `release-notes.md`：release notes 全文，照下面的模板。
 
+重做 release 時，這兩個文字檔是上一次失敗時留下的：先確認內容還是這一次要發的；不要標題就把 `release-title.txt` 刪掉（區塊看到檔案就會用）。
+
 **Release Notes 模板**：
 
 在 CHANGELOG 內容之前加入安裝指引（用 `---` 分隔）：
@@ -623,7 +627,8 @@ gh api "repos/$OWNER_REPO/git/ref/tags/v$VERSION" --jq .object.sha >/dev/null ||
 DEPLOY_TMP="$(git rev-parse --absolute-git-dir)/harness-deploy"
 TITLE_FILE="$DEPLOY_TMP/release-title.txt"; NOTES_FILE="$DEPLOY_TMP/release-notes.md"
 [ -s "$NOTES_FILE" ] || { echo "✗ 找不到 release notes 檔（或是空的）：${NOTES_FILE} — 先用 Write 工具寫好"; exit 1; }
-if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' -e '{''project-name''}' -e '{''BinaryName''}' -e '{''owner''}' -e '{''repo''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
+MATCH=$(grep -oF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' -e '{''project-name''}' -e '{''BinaryName''}' -e '{''owner''}' -e '{''repo''}' -e 'download/v{''version''}' "$NOTES_FILE" | head -n 1)
+[ -z "$MATCH" ] || { echo "✗ release notes 裡還有沒代入的 placeholder：${MATCH}（模板的字樣；changelog 真的要寫這個字時，改寫成別的寫法）"; exit 1; }
 TITLE=""; [ -s "$TITLE_FILE" ] && IFS= read -r TITLE < "$TITLE_FILE"
 case "$TITLE" in
   *'{'title'}'*) echo "✗ release 標題還沒代入"; exit 1 ;;
@@ -640,7 +645,7 @@ RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   -F draft=false \
   -F prerelease=false \
   --jq '.id')
-
+case "$RELEASE_ID" in ''|*[!0-9]*) echo "✗ release 沒建成（RELEASE_ID=${RELEASE_ID:-空}）：文字檔保留。$OWNER_REPO 上 v$VERSION 若已經有 release，先處理掉再重跑這個區塊"; exit 1 ;; esac
 echo "Release created: ID=$RELEASE_ID"
 
 # Step 2: 用 curl 上傳 Binary（支援進度條，不會 timeout）
@@ -664,8 +669,14 @@ curl -L -X POST \
   --data-binary "@$MCPB_FILE" \
   --progress-bar -o /dev/null -w "MCPB upload: HTTP %{http_code}, %{size_upload} bytes\n"
 
-# Step 4: 驗證。通過才刪掉文字檔（不留給下一次發版）；上傳失敗時留著，重建 release 還要用
-gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"' && rm -f "$TITLE_FILE" "$NOTES_FILE"
+# Step 4: 驗證
+gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
+# 兩個 asset 都在 release 上才刪文字檔（不留給下一次發版）。curl 沒有 --fail，HTTP 錯誤時它的結束碼仍是 0，所以要看 release 上實際有什麼
+ASSETS=$(gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[].name') || { echo "✗ 查不到 release 的 asset 清單：文字檔保留"; exit 1; }
+for A in "$BINARY_NAME" "$MCPB_FILENAME"; do
+  printf '%s\n' "$ASSETS" | grep -qxF -- "$A" || { echo "✗ release 上沒有 ${A}：文字檔保留。只重新上傳缺的那一個（上面的 Step 2 或 Step 3），不要重建 release"; exit 1; }
+done
+rm -f "$TITLE_FILE" "$NOTES_FILE"
 ```
 
 **為什麼不用 `gh release create` 帶 assets**：
@@ -687,7 +698,8 @@ printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_
 DEPLOY_TMP="$(git rev-parse --absolute-git-dir)/harness-deploy"
 TITLE_FILE="$DEPLOY_TMP/release-title.txt"; NOTES_FILE="$DEPLOY_TMP/release-notes.md"
 [ -s "$NOTES_FILE" ] || { echo "✗ 找不到 release notes 檔（或是空的）：${NOTES_FILE} — 先用 Write 工具寫好"; exit 1; }
-if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' -e '{''project-name''}' -e '{''BinaryName''}' -e '{''owner''}' -e '{''repo''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
+MATCH=$(grep -oF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' -e '{''project-name''}' -e '{''BinaryName''}' -e '{''owner''}' -e '{''repo''}' -e 'download/v{''version''}' "$NOTES_FILE" | head -n 1)
+[ -z "$MATCH" ] || { echo "✗ release notes 裡還有沒代入的 placeholder：${MATCH}（模板的字樣；changelog 真的要寫這個字時，改寫成別的寫法）"; exit 1; }
 TITLE=""; [ -s "$TITLE_FILE" ] && IFS= read -r TITLE < "$TITLE_FILE"
 case "$TITLE" in
   *'{'title'}'*) echo "✗ release 標題還沒代入"; exit 1 ;;

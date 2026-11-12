@@ -240,6 +240,8 @@ lipo -info .release/$BINARY_NAME
 
 commit 訊息、release 標題、release notes、repo 描述都是自由文字，內容常來自 CHANGELOG，可能有反引號、`$( )`、引號。**這些文字不寫進 bash 區塊**：shell 會執行雙引號裡的反引號與 `$( )`，引號會把字串截斷（#50）。做法是用 Write 工具把文字寫成檔案，區塊只從檔案讀。
 
+這個目錄在 `.git` 底下。Claude Code 把 `.git` 列為受保護目錄（官方文件 permission-modes 的 Protected paths）：default、acceptEdits 模式每寫一個檔案都會問一次；auto 模式交給分類器；dontAsk 模式直接拒絕；`permissions.allow` 規則與 skill 的 `allowed-tools` 都不能預先核准它。所以發版時最多會有 兩 次寫檔的確認（commit 訊息、release notes）。Write 被拒絕時：**停下來告訴使用者**，請他在提示按允許，或改用 default、acceptEdits、auto、bypassPermissions 模式重跑；**不要改回把文字貼進 bash 區塊**，那正是 #50 修掉的缺陷。
+
 先準備放檔案的目錄：
 
 ```bash
@@ -350,6 +352,8 @@ echo "→ Step 1.5: $TAG 已在 ${OWNER_REPO}；Step 2 在同一個 repo 用這�
 
 先用 Write 工具把 release notes 寫到 Step 1 印出的目錄，檔名 `release-notes.md`（模板在本節最後）。區塊從檔案讀，**不要把文字貼進區塊**（#50）。
 
+重做 release 時，`release-notes.md` 是上一次失敗時留下的：先確認內容還是這一次要發的。
+
 ```bash
 VERSION='{version}'   # 與 Step 1.5 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
 case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
@@ -360,7 +364,8 @@ gh api "repos/$OWNER_REPO/git/ref/tags/v$VERSION" --jq .object.sha >/dev/null ||
 # release notes 從檔案讀，不經過 shell 解析（#50）；檔案由 Write 工具寫在 Step 1 印出的目錄
 NOTES_FILE="$(git rev-parse --absolute-git-dir)/harness-deploy/release-notes.md"
 [ -s "$NOTES_FILE" ] || { echo "✗ 找不到 release notes 檔（或是空的）：${NOTES_FILE} — 先用 Write 工具寫好"; exit 1; }
-if grep -qF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' -e '{''binary''}' -e '{''owner''}' -e '{''repo''}' "$NOTES_FILE"; then echo "✗ release notes 裡還有沒代入的 placeholder"; exit 1; fi
+MATCH=$(grep -oF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' -e '{''binary''}' -e '{''owner''}' -e '{''repo''}' "$NOTES_FILE" | head -n 1)
+[ -z "$MATCH" ] || { echo "✗ release notes 裡還有沒代入的 placeholder：${MATCH}（模板的字樣；changelog 真的要寫這個字時，改寫成別的寫法）"; exit 1; }
 
 # 建立 Release：tag_name 用 Step 1.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不另外指定 commit（#42）
 RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
@@ -370,7 +375,7 @@ RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   -F draft=false \
   -F prerelease=false \
   --jq '.id')
-
+case "$RELEASE_ID" in ''|*[!0-9]*) echo "✗ release 沒建成（RELEASE_ID=${RELEASE_ID:-空}）：文字檔保留。$OWNER_REPO 上 v$VERSION 若已經有 release，先處理掉再重跑這個區塊"; exit 1 ;; esac
 echo "Release created: ID=$RELEASE_ID"
 
 # 上傳 Binary（用 curl，支援進度條）
@@ -383,8 +388,13 @@ curl -L -X POST \
   --data-binary "@.release/$BINARY_NAME" \
   --progress-bar -o /dev/null -w "Upload: HTTP %{http_code}, %{size_upload} bytes\n"
 
-# 驗證。通過才刪掉文字檔（不留給下一次發版）；上傳失敗時留著，重建 release 還要用
-gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"' && rm -f "$NOTES_FILE"
+# 驗證
+gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
+# binary 在 release 上才刪文字檔（不留給下一次發版）。curl 沒有 --fail，HTTP 錯誤時它的結束碼仍是 0，所以要看 release 上實際有什麼
+[ -n "$BINARY_NAME" ] || { echo "✗ BINARY_NAME 沒有值（Phase 0 的變數；每個 Bash 呼叫是新的 shell，要在這個區塊裡先設）：文字檔保留"; exit 1; }
+ASSETS=$(gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[].name') || { echo "✗ 查不到 release 的 asset 清單：文字檔保留"; exit 1; }
+printf '%s\n' "$ASSETS" | grep -qxF -- "$BINARY_NAME" || { echo "✗ release 上沒有 ${BINARY_NAME}：文字檔保留。重新上傳（上面的 curl），不要重建 release"; exit 1; }
+rm -f "$NOTES_FILE"
 ```
 
 Release Notes 模板：

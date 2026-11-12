@@ -492,6 +492,35 @@ for s in mcp-deploy cli-deploy; do
     hasnt "$s: no bash block holds the free-text placeholder $ph" "$CODE" "$ph"
   done
 done
+echo "no bash block holds a placeholder that is not on the list of identifier placeholders (#50)"
+# description and keywords are on the list only for mcp-deploy's Phase 4 heredocs (quoted, one-line values, #56)
+ID_PLACEHOLDERS=" BinaryName binary description keywords owner project-name project_name repo u version "
+for s in mcp-deploy cli-deploy; do
+  FOUND=$(python3 -I -c 'import re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+seen = []
+for b in re.findall(r"```bash\n(.*?)```", t, re.S):
+    for m in re.findall(r"(?<![$%])\{([A-Za-z][A-Za-z0-9_-]*)\}", b):
+        if m not in seen:
+            seen.append(m)
+print(" ".join(seen))' "$PLUGIN_ROOT/skills/$s/SKILL.md")
+  UNKNOWN=""
+  for tk in $FOUND; do case "$ID_PLACEHOLDERS" in *" $tk "*) ;; *) UNKNOWN="$UNKNOWN $tk" ;; esac; done
+  same "$s: every placeholder in a bash block is an identifier (a new one needs a decision: free text goes through a file)" "$UNKNOWN" ""
+done
+echo "no bash block writes a variable name directly in front of a non-ASCII character (#50)"
+# $NAME followed by a full-width character such as ： or （ : bash takes the character's bytes as part of the name,
+# the variable comes out empty and the message is garbled. Write ${NAME}.
+for s in mcp-deploy cli-deploy; do
+  BAD=$(python3 -I -c 'import re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+out = []
+for b in re.findall(r"```bash\n(.*?)```", t, re.S):
+    for m in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*)([^\x00-\x7f])", b):
+        out.append(m.group(0))
+print(" ".join(out))' "$PLUGIN_ROOT/skills/$s/SKILL.md")
+  same "$s: every \$NAME in a bash block that is followed by non-ASCII text is written \${NAME}" "$BAD" ""
+done
 # gh and curl stand-ins that record what they were given, one value per file, and play
 # the release endpoints of "the GitHub repo o/r"
 mkdir -p "$T/bin50"
@@ -522,6 +551,8 @@ for a in "$@"; do
 done
 [ -n "${GH50_FAIL:-}" ] && exit 1
 [ -n "${GH50_FAIL_VIEW:-}" ] && [ "$1 $2" = "release view" ] && exit 1
+[ -n "${GH50_FAIL_POST:-}" ] && [ "$1 $2" = "api repos/o/r/releases" ] && exit 1
+case "$1 $2" in "release view") printf '%s\n' "${GH50_ASSETS-Bin proj.mcpb}" | tr ' ' '\n' ;; esac
 case "$1 $2" in "api repos/o/r/releases") echo 42 ;; esac
 exit 0
 SH
@@ -532,8 +563,8 @@ run50() {
   local sh=$1 dir=$2 f=$3
   rm -rf "$T/rec"; mkdir -p "$T/rec"
   case "$sh" in
-    zsh) OUT=$(cd "$dir" && GH50_REC="$T/rec" PATH="$T/bin50:$PATH" zsh -f -c "$(cat "$f")" 2>&1); RC=$? ;;
-    *)   OUT=$(cd "$dir" && GH50_REC="$T/rec" PATH="$T/bin50:$PATH" "$sh" "$f" 2>&1); RC=$? ;;
+    zsh) OUT=$(cd "$dir" && GH50_REC="$T/rec" BINARY_NAME="${B50-Bin}" PATH="$T/bin50:$PATH" zsh -f -c "$(cat "$f")" 2>&1); RC=$? ;;
+    *)   OUT=$(cd "$dir" && GH50_REC="$T/rec" BINARY_NAME="${B50-Bin}" PATH="$T/bin50:$PATH" "$sh" "$f" 2>&1); RC=$? ;;
   esac
 }
 # hostile <word> — one line that runs commands and breaks out of quotes if a shell ever parses it
@@ -548,6 +579,7 @@ for SM in "mcp-deploy:Step 2" "cli-deploy:Step 1"; do
   # a user setting that drops the lines of a message that start with #; the block must not depend on it
   git -C "$W" config commit.cleanup strip
   D=$(deploy_dir "$W"); mkdir -p "$D"; echo stale > "$D/commit-message.txt"; echo stale > "$D/release-notes.md"
+  if [ "$S" = mcp-deploy ]; then echo stale > "$D/release-title.txt"; echo stale > "$D/repo-description.txt"; fi
   fence "$S" "$STEP: DEPLOY_TMP" "$T/prep.sh"
   for sh in $SHELLS; do
     run50 "$sh" "$W" "$T/prep.sh"
@@ -615,12 +647,19 @@ release_texts; printf '%s\n' 'v1.4.0 - the one that was released' > "$D/release-
 run50 bash "$W" "$T/relA.sh"
 has "a title that already starts with v<version> → stops" "$OUT" "不要以 v1.4.0 開頭"
 hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
-for ph in project-name BinaryName owner repo; do
-  release_texts; printf '## Install\n\nclaude mcp add {%s}\n' "$ph" > "$D/release-notes.md"
+for tok in release-notes 'CHANGELOG 內容' project-name BinaryName owner repo; do
+  release_texts; printf '## Install\n\nx {%s} y\n' "$tok" > "$D/release-notes.md"
   run50 bash "$W" "$T/relA.sh"
-  has "notes that still hold {$ph} from the install template → stops" "$OUT" "還有沒代入的 placeholder"
+  has "notes that still hold {$tok} → stops, and names it" "$OUT" "沒代入的 placeholder：{$tok}"
   hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
 done
+release_texts; printf 'curl -L https://github.com/o/r/releases/download/v{version}/Bin\n' > "$D/release-notes.md"
+run50 bash "$W" "$T/relA.sh"
+has "notes that still hold the install url's v{version} → stops, and names it" "$OUT" "沒代入的 placeholder：download/v{version}"
+release_texts; : > "$D/release-notes.md"
+run50 bash "$W" "$T/relA.sh"
+has "an empty notes file → stops" "$OUT" "找不到 release notes 檔"
+hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
 for sh in $SHELLS; do
   release_texts
   run50 "$sh" "$W" "$T/relA.sh"
@@ -641,6 +680,20 @@ same "a release that was not created keeps the text files for the retry" "$(left
 release_texts; export GH50_FAIL_VIEW=1; run50 bash "$W" "$T/relA.sh"; unset GH50_FAIL_VIEW
 has "the release exists but the check after the upload fails → says so" "$OUT" "Release created: ID=42"
 same "…and the text files are kept, the release has to be made again" "$(left "$D")" "release-notes.md release-title.txt "
+# the gate is what the release really holds: curl has no --fail, an HTTP error does not change its exit code
+release_texts; export GH50_ASSETS="Bin"; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
+has "an asset is missing from the release → says which" "$OUT" "release 上沒有 proj.mcpb"
+same "…and the text files are kept" "$(left "$D")" "release-notes.md release-title.txt "
+release_texts; export GH50_ASSETS=""; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
+has "the release holds no asset at all → stops" "$OUT" "release 上沒有 Bin"
+same "…and the text files are kept" "$(left "$D")" "release-notes.md release-title.txt "
+release_texts; export GH50_FAIL_POST=1; run50 bash "$W" "$T/relA.sh"; unset GH50_FAIL_POST
+has "no release id → stops before any upload" "$OUT" "release 沒建成"
+hasnt "…nothing was uploaded" "$(cat "$T/rec/calls" 2>/dev/null)" "curl"
+same "…and the text files are kept" "$(left "$D")" "release-notes.md release-title.txt "
+printf '123\n' > "$D/release-notes.md"
+run50 bash "$W" "$T/relA.sh"
+same "notes that read 123 are sent from the file, not as a typed value" "$(cat "$T/rec/body-file" 2>/dev/null)" "123"
 
 echo "mcp-deploy Step 4, method B (#50)"
 fence mcp-deploy 'gh release create "v$VERSION"' "$T/relB.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
@@ -652,9 +705,22 @@ release_texts; printf '%s\n' 'v1.4.0' > "$D/release-title.txt"
 run50 bash "$W" "$T/relB.sh"
 has "a title that already starts with v<version> → stops" "$OUT" "不要以 v1.4.0 開頭"
 hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
-release_texts; printf '## Install\n\ncurl -L https://github.com/{owner}/{repo}/releases\n' > "$D/release-notes.md"
+release_texts; printf '%s\n' '{title}' > "$D/release-title.txt"
 run50 bash "$W" "$T/relB.sh"
-has "notes that still hold {owner} from the install template → stops" "$OUT" "還有沒代入的 placeholder"
+has "a title that was never filled in → stops" "$OUT" "標題還沒代入"
+hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+for tok in release-notes 'CHANGELOG 內容' project-name BinaryName owner repo; do
+  release_texts; printf '## Install\n\nx {%s} y\n' "$tok" > "$D/release-notes.md"
+  run50 bash "$W" "$T/relB.sh"
+  has "notes that still hold {$tok} → stops, and names it" "$OUT" "沒代入的 placeholder：{$tok}"
+  hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+done
+release_texts; printf 'curl -L https://github.com/o/r/releases/download/v{version}/Bin\n' > "$D/release-notes.md"
+run50 bash "$W" "$T/relB.sh"
+has "notes that still hold the install url's v{version} → stops, and names it" "$OUT" "沒代入的 placeholder：download/v{version}"
+release_texts; : > "$D/release-notes.md"
+run50 bash "$W" "$T/relB.sh"
+has "an empty notes file → stops" "$OUT" "找不到 release notes 檔"
 hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
 for sh in $SHELLS; do
   release_texts
@@ -674,6 +740,14 @@ rm -f "$D"/*
 run50 bash "$W" "$T/desc.sh"
 has "no description file → stops" "$OUT" "找不到 repo 描述檔"
 hasnt "…before gh repo edit" "$(cat "$T/rec/calls" 2>/dev/null)" "repo edit"
+printf '%s\n' '{updated-description}' > "$D/repo-description.txt"
+run50 bash "$W" "$T/desc.sh"
+has "a description that was never filled in → stops" "$OUT" "描述是空的，或還沒代入"
+hasnt "…before gh repo edit" "$(cat "$T/rec/calls" 2>/dev/null)" "repo edit"
+printf '\n' > "$D/repo-description.txt"
+run50 bash "$W" "$T/desc.sh"
+has "an empty description → stops" "$OUT" "描述是空的，或還沒代入"
+hasnt "…before gh repo edit" "$(cat "$T/rec/calls" 2>/dev/null)" "repo edit"
 for sh in $SHELLS; do
   { hostile description; printf '\n'; } > "$D/repo-description.txt"
   run50 "$sh" "$W" "$T/desc.sh"
@@ -690,14 +764,27 @@ fence cli-deploy "releases --method POST" "$T/relC.sh" "VERSION='{version}' ==> 
 run50 bash "$W" "$T/relC.sh"
 has "no notes file → stops" "$OUT" "找不到 release notes 檔"
 hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
-for ph in binary owner repo; do
-  release_texts; rm -f "$D/release-title.txt"; printf '## Install\n\ncurl -fsSL https://x/{%s}\n' "$ph" > "$D/release-notes.md"
+for tok in release-notes 'CHANGELOG 內容' binary owner repo; do
+  release_texts; rm -f "$D/release-title.txt"; printf '## Install\n\nx {%s} y\n' "$tok" > "$D/release-notes.md"
   run50 bash "$W" "$T/relC.sh"
-  has "notes that still hold {$ph} from the install template → stops" "$OUT" "還有沒代入的 placeholder"
+  has "notes that still hold {$tok} → stops, and names it" "$OUT" "沒代入的 placeholder：{$tok}"
   hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
 done
+release_texts; rm -f "$D/release-title.txt"; : > "$D/release-notes.md"
+run50 bash "$W" "$T/relC.sh"
+has "an empty notes file → stops" "$OUT" "找不到 release notes 檔"
+hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
 release_texts; rm -f "$D/release-title.txt"; export GH50_FAIL_VIEW=1; run50 bash "$W" "$T/relC.sh"; unset GH50_FAIL_VIEW
 same "the check after the upload fails → the notes file is kept for the retry" "$(left "$D")" "release-notes.md "
+release_texts; rm -f "$D/release-title.txt"; export GH50_ASSETS=""; run50 bash "$W" "$T/relC.sh"; unset GH50_ASSETS
+has "the release does not hold the binary → stops" "$OUT" "release 上沒有 Bin"
+same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
+release_texts; rm -f "$D/release-title.txt"; B50="" run50 bash "$W" "$T/relC.sh"
+has "BINARY_NAME has no value → says so instead of passing" "$OUT" "BINARY_NAME 沒有值"
+same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
+release_texts; rm -f "$D/release-title.txt"; export GH50_FAIL_POST=1; run50 bash "$W" "$T/relC.sh"; unset GH50_FAIL_POST
+has "no release id → stops before any upload" "$OUT" "release 沒建成"
+hasnt "…nothing was uploaded" "$(cat "$T/rec/calls" 2>/dev/null)" "curl"
 for sh in $SHELLS; do
   release_texts; rm -f "$D/release-title.txt"
   run50 "$sh" "$W" "$T/relC.sh"
