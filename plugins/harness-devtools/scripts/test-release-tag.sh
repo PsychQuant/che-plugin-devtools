@@ -900,7 +900,10 @@ dynamic = ["version"]
 
 [tool.setuptools_scm]'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
-check "an empty [tool.hatch.version] table next to setuptools_scm: nothing in the file to read → exit 0" "$RC" 0
+# verify R3: a [tool.hatch.version] table that is not source = "vcs" is read or it is a
+# problem - hatch's regex source cannot work without a path, and 2.6.0 stopped here too
+check "an empty [tool.hatch.version] table next to setuptools_scm is not explained away → exit 21" "$RC" 21
+has "…and the message names the table" "[tool.hatch.version] has no path"
 new_repo; put "$W" pyproject.toml '[project]
 name = "x"
 version = "1.2.3"
@@ -915,6 +918,99 @@ check "a static version next to a poetry-dynamic-versioning placeholder → exit
 has "…version 1.2.3" "name=v1.2.3"
 hasnt "…and the note does not say the version comes from git tags" "comes from git tags"
 has "…it says the placeholder was not read" "placeholder"
+
+echo "== a declaration the helper cannot read is exit 21 next to ANYTHING else in the file (#48 verify R3)"
+# Rounds 1-3 each found one more neighbour that hid such a declaration (a git-tag
+# table, a second git-tag table, a [tool.poetry].version): the checks ran as one
+# if/elif chain and the first branch that matched won. The rule is per declaration,
+# so the test is a matrix - every unreadable declaration next to every kind of
+# neighbour, with a release that agrees with the readable sources (1.0.0) and one
+# that does not (9.9.9). A neighbour that hides the declaration shows up as exit 0
+# with the first and as exit 20 with the second.
+dyn_pyproject() {   # a [project] whose version is dynamic, then each argument as a table
+  local t
+  printf '[project]\nname = "x"\ndynamic = ["version"]\n'
+  for t in "$@"; do [ -z "$t" ] || printf '\n%s\n' "$t"; done
+}
+for U in 'setuptools attr|[tool.setuptools.dynamic]|[tool.setuptools.dynamic]
+version = {attr = "x.__version__"}' 'setuptools file|[tool.setuptools.dynamic]|[tool.setuptools.dynamic]
+version = {file = "VERSION"}' 'hatch source = env|hatch version source|[tool.hatch.version]
+source = "env"' 'a hatch table without a path|[tool.hatch.version] has no path|[tool.hatch.version]
+pattern = "v(?P<version>.+)"' 'a tool.hatch.version that is not a table|tool.hatch.version is not a table|[tool.hatch]
+version = "x.py"'; do
+  U_NAME=${U%%|*}; U_REST=${U#*|}; U_SAYS=${U_REST%%|*}; U_TOML=${U_REST#*|}
+  for H in 'nothing else|' 'a [tool.poetry].version|[tool.poetry]
+version = "1.0.0"' 'a hatch path|[tool.hatch.version]
+path = "x.py"' 'hatch source = vcs|[tool.hatch.version]
+source = "vcs"' 'a [tool.setuptools_scm] table|[tool.setuptools_scm]' 'a poetry-dynamic-versioning placeholder|[tool.poetry]
+version = "0.0.0"
+
+[tool.poetry-dynamic-versioning]
+enable = true'; do
+    H_NAME=${H%%|*}; H_TOML=${H#*|}
+    # one file holds one [tool.hatch.version]; source = "code" with a path is covered above
+    case "$U_TOML/$H_NAME" in "[tool.hatch"*"/a hatch path"|"[tool.hatch"*"/hatch source = vcs") continue ;; esac
+    new_repo; put "$W" pyproject.toml "$(dyn_pyproject "$U_TOML" "$H_TOML")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+    for EXPECT in 1.0.0 9.9.9; do
+      run "$W" --dir . --commit HEAD --name-style v --dry-run --expect "$EXPECT"
+      check "$U_NAME next to $H_NAME, --expect $EXPECT → exit 21" "$RC" 21
+    done
+    has "…and the message names it" "$U_SAYS"
+  done
+done
+
+echo "== the backend tables count only when [project].dynamic lists version and [project] states none (as in 2.6.0)"
+# pyproject.toml specification, `dynamic`: "If the metadata does not list a key in
+# dynamic, then a build back-end CANNOT fill in the requisite metadata on behalf of the
+# user", and a back-end "MUST raise an error if the metadata specifies a key statically
+# as well as being listed in dynamic" (the exception it makes is for a list or table
+# that can be extended, which version is not). So in these files no build takes a
+# version from the table (hatchling stops with "Field `project.version` can only be
+# resolved dynamically if `version` is in field `project.dynamic`"). The helper has left
+# such a table alone since #42; #48 does not change that, and these cases pin it.
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+version = "1.0.0"
+
+[tool.setuptools.dynamic]
+version = {attr = "x.__version__"}'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a static version, dynamic not listed, next to a setuptools dynamic table → exit 0" "$RC" 0
+has "…read from [project]" "sources=pyproject"
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+version = "1.0.0"
+dynamic = ["version"]
+
+[tool.setuptools.dynamic]
+version = {attr = "x.__version__"}'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a version both static and listed in dynamic: the static one is read → exit 0" "$RC" 0
+has "…read from [project]" "sources=pyproject"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+check "…and --expect cannot replace it → exit 20" "$RC" 20
+for DEAD in 'a hatch path|[tool.hatch.version]
+path = "x.py"' 'hatch source = env|[tool.hatch.version]
+source = "env"' 'a setuptools dynamic table|[tool.setuptools.dynamic]
+version = {attr = "x.__version__"}'; do
+  new_repo; put "$W" pyproject.toml "[project]
+name = \"x\"
+
+${DEAD#*|}"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+  check "${DEAD%%|*} without version in dynamic is not consulted → exit 0" "$RC" 0
+  has "…and --expect names the tag" "sources=--expect"
+done
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+
+[tool.hatch.version]
+source = "env"
+
+[tool.setuptools_scm]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
+check "…the same next to a [tool.setuptools_scm] table → exit 0" "$RC" 0
+has "…with the git-tag note" "comes from git tags (setuptools_scm)"
 
 echo "== --at-bump finds the commit that set a poetry version (#48 verify R1)"
 new_repo; put "$W" pyproject.toml '[tool.poetry]
