@@ -57,16 +57,34 @@ run() {
     *)   OUT=$(cd "$dir" && PATH="$T/bin:$PATH" "$sh" "$f" 2>&1); RC=$? ;;
   esac
 }
-# gh stub: only `gh api repos/o/r/git/ref/tags/<tag> --jq .object.sha`, answered with the tag
-# object id from the bare repo in GH_STUB_REMOTE — "the GitHub repo o/r"
+# gh stub: `gh api repos/o/r/git/ref/tags/<tag> --jq .object.sha`, answered with the tag
+# object id from the bare repo in GH_STUB_REMOTE — "the GitHub repo o/r" — and
+# `gh api repos/<name> --jq .full_name` (#53), answered the way GitHub does: o/r is the
+# repository's name (any case), GH_STUB_OLD_NAME is a former name that redirects to it, any
+# other name does not exist. GH_STUB_NO_NAME=1 makes the lookup fail (gh not logged in).
+# gh_full_name is shared with the recording stub further down.
 mkdir -p "$T/bin"
+cat > "$T/bin/gh-full-name" <<'SH'
+#!/bin/sh
+# usage: gh-full-name <owner/repo>
+[ -z "${GH_STUB_NO_NAME:-}" ] || exit 1
+case "$(printf '%s' "$1" | tr 'A-Z' 'a-z')" in
+  o/r) echo o/r ;;
+  "$(printf '%s' "${GH_STUB_OLD_NAME:-}" | tr 'A-Z' 'a-z')") [ -n "${GH_STUB_OLD_NAME:-}" ] && echo o/r || exit 1 ;;
+  *) exit 1 ;;
+esac
+SH
 cat > "$T/bin/gh" <<'SH'
 #!/bin/sh
 [ "$1" = api ] || exit 1
-case "$2" in repos/o/r/git/ref/tags/*) tag=${2#repos/o/r/git/ref/tags/} ;; *) exit 1 ;; esac
-git --git-dir="$GH_STUB_REMOTE" rev-parse -q --verify "refs/tags/$tag" || exit 1
+case "$2" in
+  repos/o/r/git/ref/tags/*) git --git-dir="$GH_STUB_REMOTE" rev-parse -q --verify "refs/tags/${2#repos/o/r/git/ref/tags/}" || exit 1 ;;
+  repos/*/*/*) exit 1 ;;
+  repos/*/*) [ "$3 $4" = "--jq .full_name" ] || exit 1; exec "$(dirname "$0")/gh-full-name" "${2#repos/}" ;;
+  *) exit 1 ;;
+esac
 SH
-chmod +x "$T/bin/gh"
+chmod +x "$T/bin/gh" "$T/bin/gh-full-name"
 
 # mk <name> [url] — work repo $T/<name> on main, pushed with upstream to bare $T/<name>.git,
 # whose remote URL is <url> (default https://github.com/o/r.git) rewritten to the bare path
@@ -99,9 +117,14 @@ for s in mcp-deploy cli-deploy; do
   CODE=$(bash_blocks "$s")
   hasnt "$s: the release API is not given target_commitish" "$CODE" 'target_commitish='
   hasnt "$s: no gh release view without --repo" "$(printf '%s\n' "$CODE" | grep 'gh release view' | grep -v -- '--repo')" 'gh release view'
-  N_DERIVE=$(printf '%s\n' "$CODE" | grep -c '^OWNER_REPO=')
-  N_STRICT=$(printf '%s\n' "$CODE" | grep -A1 '^OWNER_REPO=' | grep -c 'grep -qxE')
+  # a derivation is the line that reads the remote URL; `OWNER_REPO=$CANON` (#53) is not one
+  N_DERIVE=$(printf '%s\n' "$CODE" | grep -c '^OWNER_REPO=\$(git config')
+  N_STRICT=$(printf '%s\n' "$CODE" | grep -A1 '^OWNER_REPO=\$(git config' | grep -c 'grep -qxE')
   same "$s: every owner/repo derivation ($N_DERIVE) is followed by the strict check" "$N_STRICT" "$N_DERIVE"
+  # #53: a block that talks to the GitHub API about the repository asks GitHub for its current name first
+  N_API=$(python3 -I -c 'import re,sys; print(sum(1 for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1], encoding="utf-8").read(), re.S) if "repos/$OWNER_REPO/" in b or "--repo \"$OWNER_REPO\"" in b))' "$PLUGIN_ROOT/skills/$s/SKILL.md")
+  N_CANON=$(python3 -I -c 'import re,sys; print(sum(1 for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1], encoding="utf-8").read(), re.S) if ("repos/$OWNER_REPO/" in b or "--repo \"$OWNER_REPO\"" in b) and "--jq .full_name" in b and "OWNER_REPO=$CANON" in b))' "$PLUGIN_ROOT/skills/$s/SKILL.md")
+  same "$s: every block that uses the GitHub API with the repo name ($N_API) looks up its current name first (#53)" "$N_CANON" "$N_API"
   has "$s: the completion report has a tag line" "$(cat "$PLUGIN_ROOT/skills/$s/SKILL.md")" '- **Tag**: '
 done
 has "mcp-deploy: gh release create checks the tag exists" "$(grep 'gh release create' "$PLUGIN_ROOT/skills/mcp-deploy/SKILL.md")" '--verify-tag'
@@ -559,9 +582,15 @@ case "$1 $2" in
     exit 0 ;;
   "auth token") echo tok; exit 0 ;;
 esac
+# the repository itself: `gh api repos/<name> --jq .full_name` (#53)
+case "$1 $2 $3 $4" in
+  "api repos/"*/*/*" --jq .full_name") ;;
+  "api repos/"*/*" --jq .full_name") exec "$GH50_BIN/gh-full-name" "${2#repos/}" ;;
+esac
 prev=""
 for a in "$@"; do
   case "$prev" in
+    --repo)        printf '%s' "$a" > "$REC/repo" ;;
     --title)       printf '%s' "$a" > "$REC/title" ;;
     --notes)       printf '%s' "$a" > "$REC/notes-inline" ;;
     --notes-file)  cp "$a" "$REC/notes-file" ;;
@@ -581,15 +610,15 @@ case "$1 $2" in "release view") printf '%s\n' "${GH50_ASSETS-Bin proj.mcpb}" | t
 case "$1 $2" in "api repos/o/r/releases") echo 42 ;; esac
 exit 0
 SH
-printf '%s\n' '#!/bin/sh' 'printf "%s\n" curl >> "$GH50_REC/calls"' 'exit 0' > "$T/bin50/curl"
+printf '%s\n' '#!/bin/sh' 'printf "%s\n" curl >> "$GH50_REC/calls"' 'printf "%s\n" "$*" >> "$GH50_REC/curl-args"' 'exit 0' > "$T/bin50/curl"
 chmod +x "$T/bin50/gh" "$T/bin50/curl"
 # run50 <shell> <dir> <script> — like run, with the recording gh and curl; $T/rec starts empty
 run50() {
   local sh=$1 dir=$2 f=$3
   rm -rf "$T/rec"; mkdir -p "$T/rec"
   case "$sh" in
-    zsh) OUT=$(cd "$dir" && GH50_REC="$T/rec" BINARY_NAME="${B50-Bin}" PATH="$T/bin50:$PATH" zsh -f -c "$(cat "$f")" 2>&1); RC=$? ;;
-    *)   OUT=$(cd "$dir" && GH50_REC="$T/rec" BINARY_NAME="${B50-Bin}" PATH="$T/bin50:$PATH" "$sh" "$f" 2>&1); RC=$? ;;
+    zsh) OUT=$(cd "$dir" && GH50_REC="$T/rec" GH50_BIN="$T/bin" BINARY_NAME="${B50-Bin}" PATH="$T/bin50:$PATH" zsh -f -c "$(cat "$f")" 2>&1); RC=$? ;;
+    *)   OUT=$(cd "$dir" && GH50_REC="$T/rec" GH50_BIN="$T/bin" BINARY_NAME="${B50-Bin}" PATH="$T/bin50:$PATH" "$sh" "$f" 2>&1); RC=$? ;;
   esac
 }
 # hostile <word> — one line that runs commands and breaks out of quotes if a shell ever parses it
@@ -913,6 +942,78 @@ W="$T/cli-rel"; D=$(deploy_dir "$W"); mkdir -p "$D"
 release_texts; rm -f "$D/release-title.txt"; export GH50_ASSETS="Bin.sha256"; run50 bash "$W" "$T/relC.sh"; unset GH50_ASSETS
 has "cli-deploy: a name that only starts like the binary → stops" "$OUT" "release 上沒有 Bin"
 same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
+
+echo "a remote URL that still has the repository's old name (#53)"
+# After a rename or a transfer GitHub redirects git and the API calls that were tried, but
+# the asset upload host was not confirmed to follow, and an upload that fails leaves a
+# release with no assets. So every block that talks to the API first asks GitHub for the
+# repository's current name and uses that from there on. "o/r" is the current name;
+# GH_STUB_OLD_NAME is the former one.
+for SK in mcp-deploy:3a cli-deploy:1.5; do
+  S=${SK%%:*}; STEP=${SK#*:}
+  mk "$S-renamed" "https://github.com/old/name.git"; W="$T/$S-renamed"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
+  fence "$S" "Step $STEP: VERSION" "$T/ren.sh" "VERSION='{version}' ==> VERSION='1.0.0'"
+  export GH_STUB_NO_NAME=1
+  run bash "$W" "$T/ren.sh"
+  has "$S: the current name cannot be read → stops" "$OUT" "讀不到"
+  same "$S: …before any tag is pushed" "$(rtag "$T/$S-renamed.git" v1.0.0)" ""
+  unset GH_STUB_NO_NAME
+  run bash "$W" "$T/ren.sh"
+  has "$S: a name GitHub does not know → stops" "$OUT" "讀不到"
+  same "$S: …before any tag is pushed" "$(rtag "$T/$S-renamed.git" v1.0.0)" ""
+  export GH_STUB_OLD_NAME=old/name
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/ren.sh"
+    has "$S: the old name in the URL → goes on under the current name ($sh)" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
+    has "$S: …and says the URL has the old name ($sh)" "$OUT" "舊名稱 old/name"
+  done
+  same "$S: …and v1.0.0 is on HEAD" "$(rtag "$T/$S-renamed.git" v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
+  unset GH_STUB_OLD_NAME
+  mk "$S-case" "https://github.com/O/R.git"; W="$T/$S-case"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
+  run bash "$W" "$T/ren.sh"
+  has "$S: a URL that differs from the current name only in case → goes on" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
+  hasnt "$S: …and is not called an old name" "$OUT" "舊名稱"
+done
+# the release blocks: the API call, the uploads and gh release create all get the current name
+mk mcp-rel-old "https://github.com/old/name.git"; W="$T/mcp-rel-old"
+put "$W" mcpb/manifest.json '{
+  "name": "proj",
+  "version": "1.4.0"
+}'
+put "$W" mcpb/server/Bin x; put "$W" mcpb/proj.mcpb x
+ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+D=$(deploy_dir "$W"); mkdir -p "$D"
+export GH_STUB_NO_NAME=1; release_texts
+run50 bash "$W" "$T/relA.sh"
+has "method A: the current name cannot be read → stops" "$OUT" "讀不到"
+hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "/releases"
+run50 bash "$W" "$T/relB.sh"
+has "method B: the current name cannot be read → stops" "$OUT" "讀不到"
+hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+unset GH_STUB_NO_NAME; export GH_STUB_OLD_NAME=old/name
+for sh in $SHELLS; do
+  release_texts
+  run50 "$sh" "$W" "$T/relA.sh"
+  has "method A: the release is created under the current name ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+  hasnt "…never under the old one ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "repos/old/name/"
+  has "…and the assets are uploaded to the current name ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "uploads.github.com/repos/o/r/releases/"
+  hasnt "…never to the old one ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "old/name"
+  release_texts
+  run50 "$sh" "$W" "$T/relB.sh"
+  same "method B: gh release create is given the current name ($sh)" "$(cat "$T/rec/repo" 2>/dev/null)" "o/r"
+done
+mk cli-rel-old "https://github.com/old/name.git"; W="$T/cli-rel-old"; put "$W" README.md x; ci "$W"; push "$W"
+git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+D=$(deploy_dir "$W"); mkdir -p "$D"
+for sh in $SHELLS; do
+  release_texts; rm -f "$D/release-title.txt"
+  run50 "$sh" "$W" "$T/relC.sh"
+  has "cli-deploy Step 2: the release is created under the current name ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+  hasnt "…never under the old one ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "repos/old/name/"
+done
+unset GH_STUB_OLD_NAME
 
 echo "the release commit is checked before it is pushed (#51)"
 rmain() { git --git-dir="$1" rev-parse -q --verify "refs/heads/${2:-main}" 2>/dev/null; }
