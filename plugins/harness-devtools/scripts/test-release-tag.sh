@@ -1070,7 +1070,8 @@ echo "== the stated build backend decides what may stand for a dynamic version (
 # counting under a stated backend that is not hatchling. Before this, a table of a
 # backend the helper does not know ([tool.pdm.version], say) was hidden by a
 # [tool.poetry].version or a git-tag table next to it, and the run exited 0.
-bs() { [ -z "$1" ] || printf '[build-system]\nbuild-backend = "%s"\n\n' "$1"; }
+bs() { [ -z "$1" ] || printf '[build-system]\nrequires = [%s]\nbuild-backend = "%s"\n\n' "${2:-\"x\"}" "$1"; }
+PLUGINS='"setuptools>=80", "setuptools_scm[toml]>=8", "hatch-vcs", "poetry-dynamic-versioning"'
 PASS_POETRY2='[tool.poetry]
 version = "1.0.0"'
 PASS_SCM='[tool.setuptools_scm]'
@@ -1095,7 +1096,7 @@ for P in "the poetry 2 layout|poetry|$PASS_POETRY2" "a [tool.setuptools_scm] tab
       poetry/poetry|setuptools/setuptools|hatch/hatch|hatch-or-not-stated/hatch|hatch-or-not-stated/not-stated) WANT=0 ;;
       *) WANT=21 ;;
     esac
-    new_repo; put "$W" pyproject.toml "$(bs "$B_NAME"; dyn_pyproject "$P_TOML")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+    new_repo; put "$W" pyproject.toml "$(bs "$B_NAME" "$PLUGINS"; dyn_pyproject "$P_TOML")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
     run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
     check "$P_NAME, build-backend ${B_NAME:-not stated} → exit $WANT" "$RC" "$WANT"
   done
@@ -1116,6 +1117,7 @@ path = "v.py"')"; put "$W" x.py '__version__ = "1.0.0"'; put "$W" v.py '__versio
       check "a [tool.pdm.version] next to ${HIDER%%|*}, build-backend ${B:-not stated}, --expect $EXPECT → exit $WANT" "$RC" "$WANT"
     done
     [ -z "$B" ] || has "…and the message names the backend" "pdm.backend"
+    [ -z "$B" ] || has "…and says what the user can do" "state the version in [project]"
   done
 done
 new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["hatchling"]\n\n'; dyn_pyproject "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
@@ -1136,7 +1138,7 @@ run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "a static [project].version under a backend the helper does not know is still read → exit 0" "$RC" 0
 has "…from [project]" "sources=pyproject"
 # a version that comes from git tags in a tree with no [project] table (a setup.py project)
-new_repo; put "$W" pyproject.toml "$(bs setuptools.build_meta; printf '[tool.setuptools_scm]\n')"; commit "$W"
+new_repo; put "$W" pyproject.toml "$(bs setuptools.build_meta '"setuptools", "setuptools-scm"'; printf '[tool.setuptools_scm]\n')"; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.2.3
 check "no [project] table, a [tool.setuptools_scm] table, setuptools stated → exit 0" "$RC" 0
 has "…with the git-tag note" "comes from git tags (setuptools_scm)"
@@ -1144,6 +1146,38 @@ new_repo; put "$W" pyproject.toml '[tool.setuptools_scm]'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.2.3
 check "…the same with no backend stated → exit 0, as in 2.6.0" "$RC" 0
 hasnt "…but the note is not printed: nothing says setuptools is the backend" "comes from git tags"
+
+# [tool.setuptools_scm] is the table of a plugin. An isolated build installs only what
+# [build-system].requires lists, so without setuptools-scm there the table is not in use,
+# and it does not explain anything (#48 second pre-check). Names are compared the way
+# package indexes do: case, and - _ . , do not matter; a longer name is another package.
+for R in 'requires = ["setuptools", "setuptools-scm"]|0' 'requires = ["setuptools", "setuptools_scm[toml]>=6.2"]|0' \
+         'requires = ["setuptools", "Setuptools.SCM >= 8"]|0' 'requires = ["setuptools"]|21' \
+         'requires = ["setuptools", "my-setuptools-scm"]|21' 'requires = ["setuptools", "setuptools-scm-git-archive"]|21' \
+         'requires = "setuptools-scm"|21' 'requires = [["setuptools-scm"]]|21' '|21'; do
+  new_repo; put "$W" pyproject.toml "$(printf '[build-system]\n%s\nbuild-backend = "setuptools.build_meta"\n\n' "${R%|*}"; dyn_pyproject "$PASS_SCM")"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+  check "a [tool.setuptools_scm] table under setuptools, ${R%|*} → exit ${R##*|}" "$RC" "${R##*|}"
+done
+
+echo "== two declarations the helper cannot read: each is reported, neither hides the other (#48 second pre-check)"
+new_repo; put "$W" pyproject.toml "$(dyn_pyproject '[tool.setuptools.dynamic]
+version = {attr = "x.__version__"}' '[tool.hatch.version]
+source = "env"')"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a setuptools dynamic table and another hatch source → exit 21" "$RC" 21
+has "…the setuptools table is reported" "[tool.setuptools.dynamic]"
+has "…and so is the hatch source" "hatch version source"
+new_repo; put "$W" pyproject.toml "$(dyn_pyproject '[tool.setuptools.dynamic]
+version = {attr = "x.__version__"}' '[tool.hatch]
+version = "x.py"')"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+has "a setuptools dynamic table and a tool.hatch.version that is not a table: the first is reported" "[tool.setuptools.dynamic]"
+has "…and so is the second" "tool.hatch.version is not a table"
+new_repo; put "$W" pyproject.toml "$(dyn_pyproject '[tool.setuptools.dynamic]
+version = {attr = "x.__version__"}' "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+has "a setuptools dynamic table does not stop the hatch path from being read" "sources=hatch:x.py"
 
 echo "== messages that say what to do (#48 pre-check)"
 new_repo; put "$W" pyproject.toml "$(dyn_pyproject '[tool.setuptools.dynamic]
