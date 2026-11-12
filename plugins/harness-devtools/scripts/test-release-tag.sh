@@ -695,15 +695,28 @@ new_repo; plugin_json "$W" "" 1.4.0; put "$W" pyproject.toml '[tool.poetry]
 version = "1.3.0"'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run
 check "poetry disagrees with plugin.json → exit 20" "$RC" 20
-new_repo; put "$W" pyproject.toml '[project]
+new_repo; put "$W" pyproject.toml '[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
 name = "x"
 dynamic = ["version"]
 
 [tool.poetry]
 version = "2.0.1"'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run
-check "poetry 2: a dynamic version kept in [tool.poetry] → exit 0" "$RC" 0
+check "poetry 2: a dynamic version kept in [tool.poetry], poetry's backend stated → exit 0" "$RC" 0
 has "…version 2.0.1" "name=v2.0.1"
+new_repo; put "$W" pyproject.toml '[project]
+name = "x"
+dynamic = ["version"]
+
+[tool.poetry]
+version = "2.0.1"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.1
+check "…the same file with no [build-system]: nothing says poetry supplies the dynamic version → exit 21" "$RC" 21
+has "…and the message asks for the build backend" "build-backend"
 new_repo; put "$W" pyproject.toml '[project]
 name = "x"
 version = "2.0.0"
@@ -721,16 +734,28 @@ run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 3.0.0
 check "[tool].poetry that is not a table is not a source → --expect is used" "$RC" 0
 
 echo "== a version that comes from git tags is not a version source (#48: a closed list of three)"
-for SCM in 'setuptools_scm|[project]
+for SCM in 'setuptools_scm|[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
 name = "x"
 dynamic = ["version"]
 
-[tool.setuptools_scm]' 'hatch-vcs|[project]
+[tool.setuptools_scm]' 'hatch-vcs|[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
 name = "x"
 dynamic = ["version"]
 
 [tool.hatch.version]
-source = "vcs"' 'poetry-dynamic-versioning|[tool.poetry]
+source = "vcs"' 'poetry-dynamic-versioning|[build-system]
+requires = ["poetry-core", "poetry-dynamic-versioning"]
+build-backend = "poetry_dynamic_versioning.backend"
+
+[tool.poetry]
 name = "x"
 version = "0.0.0"
 
@@ -746,7 +771,11 @@ enable = true'; do
   check "$SCM_NAME without --expect → exit 21" "$RC" 21
   has "…with the same explanation" "comes from git tags ($SCM_NAME)"
 done
-new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml '[project]
+new_repo; plugin_json "$W" "" 1.2.3; put "$W" pyproject.toml '[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
 name = "x"
 dynamic = ["version"]
 
@@ -812,7 +841,11 @@ has "…version 1.0.0" "name=v1.0.0"
 hasnt "…and no git-tag note contradicts it" "comes from git tags"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
 check "…and --expect cannot replace it → exit 20" "$RC" 20
-new_repo; put "$W" pyproject.toml '[project]
+new_repo; put "$W" pyproject.toml '[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
 name = "x"
 dynamic = ["version"]
 
@@ -822,7 +855,11 @@ path = "x.py"'; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
 check "hatch source = vcs does not use path, and neither does the helper → exit 0" "$RC" 0
 has "…with the git-tag note" "comes from git tags (hatch-vcs)"
-new_repo; put "$W" pyproject.toml '[project]
+new_repo; put "$W" pyproject.toml '[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
 name = "x"
 dynamic = ["version"]
 
@@ -847,7 +884,11 @@ run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "a hatch path that is not a string is a problem even next to a poetry version → exit 21" "$RC" 21
 
 echo "== each git-tag backend is judged by its own table, and none hides another declaration (#48 verify R2)"
-new_repo; put "$W" pyproject.toml '[tool.poetry]
+new_repo; put "$W" pyproject.toml '[build-system]
+requires = ["poetry-core", "poetry-dynamic-versioning"]
+build-backend = "poetry_dynamic_versioning.backend"
+
+[tool.poetry]
 version = "0.0.0"
 
 [tool.poetry-dynamic-versioning]
@@ -856,8 +897,13 @@ enable = true
 [tool.setuptools_scm]'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.2.3
 check "poetry-dynamic-versioning next to a [tool.setuptools_scm] table: the placeholder is still not read → exit 0" "$RC" 0
-has "…and both backends are named" "comes from git tags (setuptools_scm, poetry-dynamic-versioning)"
-new_repo; put "$W" pyproject.toml '[project]
+has "…and the note names the backend that is stated" "comes from git tags (poetry-dynamic-versioning)"
+hasnt "…not the table of a backend that is not" "setuptools_scm"
+new_repo; put "$W" pyproject.toml '[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
 name = "x"
 dynamic = ["version"]
 
@@ -868,7 +914,8 @@ path = "x.py"
 [tool.setuptools_scm]'; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
 check "hatch source = vcs next to a [tool.setuptools_scm] table: path is still not read → exit 0" "$RC" 0
-has "…and both backends are named" "comes from git tags (setuptools_scm, hatch-vcs)"
+has "…and the note names the backend that is stated" "comes from git tags (hatch-vcs)"
+hasnt "…not the table of a backend that is not" "setuptools_scm"
 for SETUPTOOLS in 'attr = "x.__version__"' 'file = "VERSION"'; do
   new_repo; put "$W" pyproject.toml "[project]
 name = \"x\"
@@ -1010,7 +1057,108 @@ source = "env"
 [tool.setuptools_scm]'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 9.9.9
 check "…the same next to a [tool.setuptools_scm] table → exit 0" "$RC" 0
+# the specification quoted above means no back-end supplies a version here, from git tags
+# or anywhere else, so the note that says it does is not printed (#48 pre-check)
+hasnt "…and no note says the version comes from git tags" "comes from git tags"
+
+echo "== the stated build backend decides what may stand for a dynamic version (#48 pre-check)"
+# [build-system].build-backend is the one place a pyproject.toml says who supplies a
+# dynamic version. The helper knows a CLOSED list of five backend strings, and a stated
+# backend only ever takes a pass away. The four passes #48 added - the poetry 2 layout
+# and the three git-tag declarations - hold only under their own backend, stated. A
+# hatch path, which 2.6.0 read too, still counts when no backend is stated, and stops
+# counting under a stated backend that is not hatchling. Before this, a table of a
+# backend the helper does not know ([tool.pdm.version], say) was hidden by a
+# [tool.poetry].version or a git-tag table next to it, and the run exited 0.
+bs() { [ -z "$1" ] || printf '[build-system]\nbuild-backend = "%s"\n\n' "$1"; }
+PASS_POETRY2='[tool.poetry]
+version = "1.0.0"'
+PASS_SCM='[tool.setuptools_scm]'
+PASS_HATCH_VCS='[tool.hatch.version]
+source = "vcs"'
+PASS_PDV='[tool.poetry]
+version = "0.0.0"
+
+[tool.poetry-dynamic-versioning]
+enable = true'
+PASS_HATCH_PATH='[tool.hatch.version]
+path = "x.py"'
+for P in "the poetry 2 layout|poetry|$PASS_POETRY2" "a [tool.setuptools_scm] table|setuptools|$PASS_SCM" \
+         "hatch source = vcs|hatch|$PASS_HATCH_VCS" "poetry-dynamic-versioning|poetry|$PASS_PDV" \
+         "a hatch path|hatch-or-not-stated|$PASS_HATCH_PATH"; do
+  P_NAME=${P%%|*}; P_REST=${P#*|}; P_FAMILY=${P_REST%%|*}; P_TOML=${P_REST#*|}
+  # hatchling.ouroboros is hatchling's own bootstrap backend: the list is of whole strings, not prefixes
+  for B in "|not-stated" "hatchling.build|hatch" "setuptools.build_meta|setuptools" "setuptools.build_meta:__legacy__|setuptools" \
+           "poetry.core.masonry.api|poetry" "poetry_dynamic_versioning.backend|poetry" "pdm.backend|other" "hatchling.ouroboros|other"; do
+    B_NAME=${B%%|*}; B_FAMILY=${B#*|}
+    case "$P_FAMILY/$B_FAMILY" in
+      poetry/poetry|setuptools/setuptools|hatch/hatch|hatch-or-not-stated/hatch|hatch-or-not-stated/not-stated) WANT=0 ;;
+      *) WANT=21 ;;
+    esac
+    new_repo; put "$W" pyproject.toml "$(bs "$B_NAME"; dyn_pyproject "$P_TOML")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+    run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+    check "$P_NAME, build-backend ${B_NAME:-not stated} → exit $WANT" "$RC" "$WANT"
+  done
+done
+# the case as it was found: a backend the helper does not know, next to something that carried the run
+for HIDER in "a [tool.poetry].version|$PASS_POETRY2" "a [tool.setuptools_scm] table|$PASS_SCM" "a hatch path|$PASS_HATCH_PATH"; do
+  for B in "" "pdm.backend"; do
+    new_repo; put "$W" pyproject.toml "$(bs "$B"; dyn_pyproject "${HIDER#*|}" '[tool.pdm.version]
+source = "file"
+path = "v.py"')"; put "$W" x.py '__version__ = "1.0.0"'; put "$W" v.py '__version__ = "3.0.0"'; commit "$W"
+    for EXPECT in 1.0.0 9.9.9; do
+      # No backend stated and a hatch path: the helper cannot tell that the path is not
+      # in use, and reads it - as 2.6.0 does. Stating the backend is what closes this.
+      case "$B/${HIDER%%|*}/$EXPECT" in
+        "/a hatch path/1.0.0") WANT=0 ;; "/a hatch path/9.9.9") WANT=20 ;; *) WANT=21 ;;
+      esac
+      run "$W" --dir . --commit HEAD --name-style v --dry-run --expect "$EXPECT"
+      check "a [tool.pdm.version] next to ${HIDER%%|*}, build-backend ${B:-not stated}, --expect $EXPECT → exit $WANT" "$RC" "$WANT"
+    done
+    [ -z "$B" ] || has "…and the message names the backend" "pdm.backend"
+  done
+done
+new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["hatchling"]\n\n'; dyn_pyproject "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a [build-system] table with no build-backend key states no backend: a hatch path is read → exit 0" "$RC" 0
+new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["poetry-core"]\n\n'; dyn_pyproject "$PASS_POETRY2")"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "…and the poetry 2 layout is not carried by it → exit 21" "$RC" 21
+new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nbuild-backend = 5\n\n'; dyn_pyproject "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a build-backend that is not a string is stated and matches nothing → exit 21" "$RC" 21
+has "…and the message says so" "a build-backend that is not a string"
+new_repo; put "$W" pyproject.toml "$(printf 'build-system = "hatchling.build"\n\n'; dyn_pyproject "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a build-system that is not a table matches nothing → exit 21" "$RC" 21
+new_repo; put "$W" pyproject.toml "$(bs pdm.backend; printf '[project]\nname = "x"\nversion = "1.0.0"\n')"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a static [project].version under a backend the helper does not know is still read → exit 0" "$RC" 0
+has "…from [project]" "sources=pyproject"
+# a version that comes from git tags in a tree with no [project] table (a setup.py project)
+new_repo; put "$W" pyproject.toml "$(bs setuptools.build_meta; printf '[tool.setuptools_scm]\n')"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.2.3
+check "no [project] table, a [tool.setuptools_scm] table, setuptools stated → exit 0" "$RC" 0
 has "…with the git-tag note" "comes from git tags (setuptools_scm)"
+new_repo; put "$W" pyproject.toml '[tool.setuptools_scm]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.2.3
+check "…the same with no backend stated → exit 0, as in 2.6.0" "$RC" 0
+hasnt "…but the note is not printed: nothing says setuptools is the backend" "comes from git tags"
+
+echo "== messages that say what to do (#48 pre-check)"
+new_repo; put "$W" pyproject.toml "$(dyn_pyproject '[tool.setuptools.dynamic]
+version = {attr = "x.__version__"}' "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+has "a setuptools dynamic table next to a hatch path: the message says to delete the table" "delete the table"
+hasnt "…and does not suggest a hatch path, which the file already has" "use a [tool.hatch.version] path"
+new_repo; put "$W" pyproject.toml '[tool.poetry]
+version = "0.0.0"
+
+[tool.poetry-dynamic-versioning]
+enable = false'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.2.3
+check "a poetry placeholder with enable = false in the file is read as the version → exit 20" "$RC" 20
+has "…and a note says what would make it a placeholder" "enable = true"
 
 echo "== --at-bump finds the commit that set a poetry version (#48 verify R1)"
 new_repo; put "$W" pyproject.toml '[tool.poetry]
