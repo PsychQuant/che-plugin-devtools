@@ -1070,14 +1070,54 @@ for SH in $SHELLS; do
   put "$W" Sources/S/Version.swift 'enum V { static let version = "1.0.0" }'; put "$W" README.md readme
   put "$W" CHANGELOG.md changelog; put "$W" package.json '{ "version": "1.0.0" }'; put "$W" notes.txt notes
   put "$W" Sources/S/Deep/Version.swift deep
+  put "$W" Sources/S/Server.swift 'let s = 1'; put "$W" pyproject.toml '[project]'; put "$W" plugin.json '{ }'
+  put "$W" .claude-plugin/plugin.json '{ }'; put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'
+  put "$W" Sources/測試/Version.swift 'enum V { static let version = "1.0.0" }'
   ci "$W"; push "$W"; BASE=$(git -C "$W" rev-parse HEAD)
   run "$SH" "$W" "$T/guard.sh"
   same "$SH: a clean tree passes" "$RC" 0
+  # every file of the list stops the run when it has an uncommitted change (the list is what git matches, not only its text)
+  for LF in Sources/S/Server.swift mcpb/manifest.json pyproject.toml plugin.json .claude-plugin/plugin.json package.json; do
+    printf '%s\n' "an uncommitted line" >> "$W/$LF"
+    run "$SH" "$W" "$T/guard.sh"
+    same "$SH: an uncommitted change in $LF stops the run" "$RC" 1
+    has "$SH: …and $LF is named" "$OUT" "$LF"
+    git -C "$W" checkout -q -- "$LF"
+  done
+  printf '%s\n' "an uncommitted line" >> "$W/Sources/測試/Version.swift"
+  run "$SH" "$W" "$T/guard.sh"
+  has "$SH: a path with non-ASCII characters is named as it is, not as an octal escape" "$OUT" "Sources/測試/Version.swift"
+  git -C "$W" checkout -q -- "Sources/測試/Version.swift"
+  # a merge that is not finished, and a CHANGELOG.md with a conflict: the release commit would finish the merge
+  # or commit the conflict markers (#52 verify R1)
+  git -C "$W" checkout -q -b side; put "$W" CHANGELOG.md 'side text'; put "$W" notes.txt 'side notes'; ci "$W" side
+  git -C "$W" checkout -q main; put "$W" CHANGELOG.md 'main text'; ci "$W" main-side
+  git -C "$W" merge -q side >/dev/null 2>&1
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: CHANGELOG.md with a merge conflict stops the run" "$RC" 1
+  has "$SH: …the merge that is in progress is named" "$OUT" "MERGE_HEAD"
+  git -C "$W" merge --abort >/dev/null 2>&1; git -C "$W" reset -q --hard "$BASE"
+  git -C "$W" checkout -q -b side2; put "$W" notes.txt 'side notes'; ci "$W" side2
+  git -C "$W" checkout -q main
+  git -C "$W" merge -q --no-commit --no-ff side2 >/dev/null 2>&1
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: a merge that is resolved but not committed stops the run (the release commit would be its merge commit)" "$RC" 1
+  has "$SH: …and says what is in progress" "$OUT" "MERGE_HEAD"
+  git -C "$W" merge --abort >/dev/null 2>&1; git -C "$W" reset -q --hard "$BASE"
+  # a conflict in CHANGELOG.md without a recorded merge (the files are unmerged in the index only)
+  CH_BLOB=$(printf 'a\n' | git -C "$W" hash-object -w --stdin)
+  git -C "$W" update-index --force-remove CHANGELOG.md
+  printf '0 0000000000000000000000000000000000000000\tCHANGELOG.md\n100644 %s 2\tCHANGELOG.md\n100644 %s 3\tCHANGELOG.md\n' "$CH_BLOB" "$CH_BLOB" | git -C "$W" update-index --index-info 2>/dev/null
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: CHANGELOG.md unmerged in the index stops the run" "$RC" 1
+  has "$SH: …and says it is a conflict" "$OUT" "未解決的 merge 衝突"
+  git -C "$W" reset -q --hard "$BASE"
   put "$W" README.md unrelated
   run "$SH" "$W" "$T/guard.sh"
   same "$SH: an uncommitted change in README.md stops the run" "$RC" 1
   has "$SH: …and the file is named" "$OUT" "README.md"
-  has "$SH: …with what to do" "$OUT" "git stash"
+  has "$SH: …with what to do" "$OUT" "git stash push -- "
+  has "$SH: …and what to do when an earlier cli-deploy left the changes" "$OUT" "上一次沒做完的 cli-deploy"
   git -C "$W" checkout -q -- README.md
   put "$W" Sources/S/Version.swift 'enum V { static let version = "0.9.9" }'
   run "$SH" "$W" "$T/guard.sh"
@@ -1098,15 +1138,33 @@ for SH in $SHELLS; do
   same "$SH: a change in CHANGELOG.md alone passes" "$RC" 0
   has "$SH: …with a note that it goes into the release commit" "$OUT" "CHANGELOG.md"
   git -C "$W" checkout -q -- CHANGELOG.md
+  git -C "$W" rm -q -f --cached CHANGELOG.md; git -C "$W" commit -qm "drop CHANGELOG" >/dev/null 2>&1
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: an untracked CHANGELOG.md passes" "$RC" 0
+  has "$SH: …with the same note" "$OUT" "CHANGELOG.md 已經有未 commit 的修改"
+  git -C "$W" reset -q --hard "$BASE"
   put "$W" notes.txt unrelated; put "$W" Sources/S/Deep/Version.swift unrelated
   run "$SH" "$W" "$T/guard.sh"
   same "$SH: a change in a file that is not on the list passes (Phase 3 Step 1 does not stage it)" "$RC" 0
-  put "$W" mcpb/manifest.json '{ "version": "0.0.1" }'
+  put "$W" Sources/New/Version.swift 'enum V { static let version = "0.0.1" }'
   run "$SH" "$W" "$T/guard.sh"
   same "$SH: an untracked version file passes (Phase 3 Step 1 does not stage it either)" "$RC" 0
   same "$SH: the check changed nothing: HEAD" "$(git -C "$W" rev-parse HEAD)" "$BASE"
   same "$SH: …and nothing is staged" "$(git -C "$W" diff --cached --name-only)" ""
 done
+# the check comes before the step that edits the version, and Phase 3 says what it does and does not guarantee
+STEP0_ORDER=$(python3 -I - "$PLUGIN_ROOT/skills/cli-deploy/SKILL.md" <<'PY'
+import sys
+t = open(sys.argv[1], encoding="utf-8").read()
+i = t.index("Phase 1 Step 0:"); j = t.index("### Step 1: 更新版本號")
+print("before" if i < j else "after")
+PY
+)
+same "the Phase 1 Step 0 check comes before the step that updates the version" "$STEP0_ORDER" before
+CLI_TEXT=$(cat "$PLUGIN_ROOT/skills/cli-deploy/SKILL.md")
+has "Phase 3 Step 1 says what to do when --stat lists another file" "$CLI_TEXT" "列出別的檔案就不要跑下面的推送區塊"
+has "…and that CHANGELOG.md goes in whole" "$CLI_TEXT" "CHANGELOG.md（Step 0 讓它通過，整個檔案都會進 release commit）"
+hasnt "the reference to Phase 0 is not the dangling 'Step 0.3'" "$CLI_TEXT" "Step 0.3"
 # outside a git repository the check stops instead of passing
 mkdir -p "$T/not-a-repo"
 run bash "$T/not-a-repo" "$T/guard.sh"
