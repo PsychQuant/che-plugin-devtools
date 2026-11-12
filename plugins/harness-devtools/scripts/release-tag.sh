@@ -35,8 +35,13 @@
 #                 Later commits that change --dir are counted in a note, since
 #                 the tag will not include them.
 #   --dry-run     resolve the version, look the tag up on the remote and locally the
-#                 way a real run does, and print the decision line; create nothing.
-#                 It ends as the real run would: 10, 20, 21, 30, or 0 (#51)
+#                 way a real run does, check that a committer identity exists (a
+#                 real run needs one to create the tag), and print the decision line;
+#                 create nothing. For those lookups it ends as the real run would:
+#                 10, 20, 21, 30, or 0 (#51). It cannot predict whether creating the
+#                 tag succeeds when tag.gpgSign is on (it says so), or whether a hook
+#                 on the remote or a local pre-push hook refuses the push: those
+#                 show up only in a real run.
 #
 # Version sources — a CLOSED list of eight, read relative to --dir. Do not add a
 # ninth by resemblance. Every source found must agree, and a source that is
@@ -954,6 +959,15 @@ if [ -n "$LOCAL_AT" ] && [ "$LOCAL_AT" != "$TARGET" ]; then
 fi
 
 if [ "$DRY" = 1 ]; then
+  if [ -z "$LOCAL_AT" ]; then
+    # a real run creates an annotated tag here, which needs a committer identity (#51 verify R1)
+    git -C "$TOP" var GIT_COMMITTER_IDENT >/dev/null 2>&1 \
+      || { echo "RELEASE_TAG: push-failed $LINE_TAIL"; echo "$PROG: git tag would fail: no committer identity (user.name, user.email)" >&2; exit 30; }
+    # signing is not tried: creating a tag to find out would break "creates nothing"
+    case "$(git -C "$TOP" config --type=bool --get tag.gpgSign 2>/dev/null)$(git -C "$TOP" config --type=bool --get tag.forceSignAnnotated 2>/dev/null)" in
+      *true*) echo "$PROG: note: tag signing is on (tag.gpgSign or tag.forceSignAnnotated); a dry run cannot check that signing works" >&2 ;;
+    esac
+  fi
   echo "RELEASE_TAG: dry-run $LINE_TAIL"
   exit 0
 fi

@@ -221,7 +221,7 @@ chmod +x mcpb/server/run.sh
 
 ### Step 2: 更新 Server.swift / package.json 版本（如適用）
 
-確保所有地方的版本號一致。下面是 Phase 3 Step 3a（`scripts/release-tag.sh`）會讀的版本來源，封閉列舉，與 helper 同一份；repo 裡有哪個就改哪個，漏改任何一個，Step 3a 會因版本不一致而停止、不建 release（#42）：
+確保所有地方的版本號一致。下面是 Phase 3 Step 3a（`scripts/release-tag.sh`）會讀的版本來源，封閉列舉，與 helper 同一份；repo 裡有哪個就改哪個，漏改任何一個，推送前的 Step 3（#51）會因版本不一致而不推送，Step 3a 也會停止、不建 release（#42）：
 - `mcpb/manifest.json` 的 `version`
 - Swift：`Sources/*/Server.swift` 的 `version: "x.x.x"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）、`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
 - Python：`pyproject.toml` 的 `[project].version` 或 `[tool.poetry].version`；版本是 `dynamic` 時，`[tool.hatch.version].path` 指到的檔案裡的 `__version__`（`[build-system]` 的 `build-backend` 若寫明不是 `hatchling.build`，那個檔案不代表 dynamic 版本，Step 3a 回 21）。版本來自 git tag 的專案（setuptools_scm、hatch-vcs、poetry-dynamic-versioning）沒有檔案要改。這三種寫法，以及 dynamic 版本寫在 `[tool.poetry].version` 的寫法，要 `[build-system]` 的 `build-backend` 寫明那個工具自己的 backend（setuptools_scm 還要列在 `requires`），helper 才認，否則 Step 3a 回 21
@@ -501,7 +501,9 @@ git commit --cleanup=whitespace -F "$MSG_FILE" && rm -f "$MSG_FILE"
 
 ### Step 3: 推送前檢查，然後推送到 GitHub
 
-release commit 推出去就收不回。Step 3a 會停下的情況裡，推送前就看得出來的先在這裡檢查（#51）：版本來源彼此不一致或讀不出、同名 tag 已在別的 commit、沒有 upstream、追蹤的不是預設 branch、remote 不在 github.com。版本與 tag 用 `release-tag.sh --dry-run` 查，它不建立任何東西。全部通過才推送，推到這個 branch 追蹤的 upstream。
+release commit 推出去就收不回。Step 3a 會停下的情況裡，推送前就看得出來的先在這裡檢查（#51）：版本來源彼此不一致或讀不出、同名 tag 已在別的 commit、沒有 upstream、追蹤的不是預設 branch、remote 不在 github.com。版本與 tag 用 `release-tag.sh --dry-run` 查，它不建立任何東西。全部通過才推送，推到這個 branch 追蹤的 upstream（branch 名稱要與 upstream 的名稱相同；這次會推的 commit 會先印出來）。
+
+推送前若要向使用者確認，同一個確認要列出 Step 3a 接著會推的 tag `v{version}`（#42）：推 tag 與推 branch 一樣是對外、收不回的動作，不另外問一次。
 
 ```bash
 VERSION='{version}'   # Phase 0 Step 4 決定的版本；代入前核對只含 0-9 A-Z a-z . + -
@@ -515,33 +517,36 @@ case "$REMOTE" in ''|.) echo "✗ Step 3: $BRANCH 沒有指向 remote 的 upstre
 git remote | grep -qxF -- "$REMOTE" || { echo "✗ Step 3: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 停止，不推送"; exit 1; }
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
 DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
-if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
-    echo "✗ Step 3: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT:-讀不到}）— 合併到預設 branch 後再發版；停止，不推送"; exit 1
-fi
+[ -n "$DEFAULT" ] || { echo "✗ Step 3: 讀不到 $REMOTE 的預設 branch（連線、權限或 remote 設定的問題，不是 branch 追蹤錯了）— 停止，不推送；連得上之後重跑這一步"; exit 1; }
+[ "$UPSTREAM_BRANCH" = "$DEFAULT" ] || { echo "✗ Step 3: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT}）— 合併到預設 branch 後再發版；停止，不推送"; exit 1; }
+# 推送的是 HEAD:refs/heads/<upstream branch>。branch 名稱與 upstream 不同時（例如從 origin/main 開出來的 feature branch），這個 branch 上還沒推的 commit 會一起進預設 branch；以前寫死 origin 與 main 的那一行只推本機的 main
+[ "$BRANCH" = "$UPSTREAM_BRANCH" ] || { echo "✗ Step 3: 本機 branch ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH}，名稱不同：這樣推送會把 ${BRANCH} 上還沒推的 commit 全部推進 ${UPSTREAM_BRANCH} — 先把要發的 commit 合併到本機的 ${UPSTREAM_BRANCH} 再發版；停止，不推送"; exit 1; }
 OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
   || { echo "✗ Step 3: 從 remote $REMOTE 的網址推不出 github.com 的 owner/repo（ssh host alias、GitHub Enterprise 不支援）— 停止，不推送"; exit 1; }
-# --dry-run：讀 HEAD 這個 commit 的版本、查同名 tag，不建立任何東西；結束碼與真的打 tag 時相同
+# --dry-run：讀 HEAD 這個 commit 的版本、查同名 tag、查 remote 連不連得上，不建立任何東西。這些查詢的結束碼與真的打 tag 時相同；
+# 建 tag 本身會不會成功（簽章）、remote 或本機的 hook 會不會拒絕，它預測不了，那些要到 Step 3a 才看得到
 LINE=$(bash "$HELPER" --dir . --commit HEAD --name-style v --remote "$REMOTE" --expect "$VERSION" --dry-run); RC=$?
 echo "$LINE"
 if [ "$RC" != 0 ]; then
     case "$RC" in
-      10) echo "✗ Step 3: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止。前者要先升版號；後者確認那個 tag 該不該留（刪 remote 上的 tag 由你決定）" ;;
-      20) echo "✗ Step 3: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 2 Step 2 改成同一個版本，再從 Phase 2 Step 5 重新打包 .mcpb（已打包的那一份帶著舊的版本）" ;;
-      21) echo "✗ Step 3: 有版本檔讀不出值（見上方的原因；讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）" ;;
-      30) echo "✗ Step 3: 查不到 $REMOTE 上的 tag，或 push URL 指向別的 repo（見上方的原因）" ;;
-      *)  echo "✗ Step 3: release-tag --dry-run rc=${RC}" ;;
+      10) echo "✗ Step 3: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止，也可能是本機留著一個沒推出去的同名 tag（git tag -l v$VERSION 看）。前者要先升版號、重新走 Phase 2；後者確認那個 tag 該不該留（刪 tag 由你決定）。停止，不推送" ;;
+      20) echo "✗ Step 3: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 2 Step 2 改成同一個版本，補一個 commit，再重跑這一步。改到的若是會編進 binary 的檔案（Server.swift、Version.swift），Swift 專案要先從 Phase 1 A2 重新編譯，再從 Phase 2 Step 5 重新打包 .mcpb；只改 manifest.json、package.json 時，從 Phase 2 Step 5 重新打包就夠（已編好、已打包的那些帶著舊的版本）。停止，不推送" ;;
+      21) echo "✗ Step 3: 有版本檔讀不出值（見上方的原因；讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）— 修好環境後重跑這一步，不需要新的 commit。停止，不推送" ;;
+      30) echo "✗ Step 3: 查不到 $REMOTE 上的 tag、建 tag 需要的 git 身分（user.name、user.email）沒設，或 push URL 指向別的 repo（見上方的原因）— 修好連線或設定後重跑這一步，不需要新的 commit。停止，不推送" ;;
+      *)  echo "✗ Step 3: release-tag --dry-run rc=${RC} — 停止，不推送" ;;
     esac
-    echo "  停止，不推送：release commit 還在本機。修好後補一個 commit（或 git commit --amend），再重跑這一步。"; exit 1
+    exit 1
 fi
+# 這次會推的 commit：最後一個是 release commit；前面還有的，是這個 branch 上本來就沒推的
+echo "→ Step 3: 這次會推到 $REMOTE 的 ${UPSTREAM_BRANCH} 的 commit："
+git log --oneline "$REMOTE/$UPSTREAM_BRANCH..HEAD" 2>/dev/null | head -n 20
 # --no-follow-tags：push.followTags 開著時，推 branch 會連帶推出本機的 annotated tag；這一步只推 release commit
 git push --no-follow-tags "$REMOTE" "HEAD:refs/heads/$UPSTREAM_BRANCH" || { echo "✗ Step 3: 推送失敗（$REMOTE 上有別人的新 commit 時，先確認要發的是哪一個 commit）— 停止"; exit 1; }
 echo "→ Step 3: release commit 已推到 $REMOTE 的 ${UPSTREAM_BRANCH}；Step 3a 接著打 tag"
 ```
 
 **注意**：如果使用 Git LFS，會自動上傳大型檔案。
-
-推送前若要向使用者確認，同一個確認要列出 Step 3a 接著會推的 tag `v{version}`（#42）：推 tag 與推 branch 一樣是對外、收不回的動作，不另外問一次。
 
 ### Step 3a: 在 release commit 打版號 tag（#42）
 
@@ -586,7 +591,7 @@ TAG=$(printf '%s\n' "$LINE" | sed -n 's/^RELEASE_TAG: [a-z-]* name=\([^ ]*\) .*/
 if [ "$RC" != 0 ] || [ "$TAG" != "v$VERSION" ]; then
     case "$RC" in
       10) echo "✗ Step 3a: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止。前者要先升版號；後者確認那個 tag 該不該留（刪 remote 上的 tag 由你決定）" ;;
-      20) echo "✗ Step 3a: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 2 Step 2 改成同一個版本，再從 Phase 2 Step 5 重新打包 .mcpb（已打包的那一份帶著舊的版本）" ;;
+      20) echo "✗ Step 3a: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 2 Step 2 改成同一個版本。改到的若是會編進 binary 的檔案（Server.swift、Version.swift），Swift 專案要先從 Phase 1 A2 重新編譯，再從 Phase 2 Step 5 重新打包 .mcpb；只改 manifest.json、package.json 時，從 Phase 2 Step 5 重新打包就夠（已編好、已打包的那些帶著舊的版本）" ;;
       21) echo "✗ Step 3a: 有版本檔讀不出值（見上方的原因；讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）— 修好後重跑這一步" ;;
       30) echo "✗ Step 3a: tag 沒推成（見上方的原因：push URL 指向別的 repo 時先改 remote 設定，其他情況照上方的重跑指令）" ;;
       *)  echo "✗ Step 3a: release-tag rc=${RC}、tag=${TAG:-?}（預期 v${VERSION}）" ;;

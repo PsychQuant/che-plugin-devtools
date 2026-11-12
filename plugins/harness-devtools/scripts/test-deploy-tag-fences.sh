@@ -282,6 +282,10 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
     has "files say 1.4.1, the release is 1.4.0 → stops ($sh)" "$OUT" "版本檔與 1.4.0 不一致"
     has "…and says no release ($sh)" "$OUT" "不建 release"
   done
+  if [ "$S" = mcp-deploy ]; then
+    has "mcp-deploy: the Step 3a message says the .mcpb is packed again" "$OUT" "從 Phase 2 Step 5 重新打包"
+    has "…and that a compiled-in file means building again first" "$OUT" "Phase 1 A2 重新編譯"
+  fi
 
   git -C "$W" checkout -q -b feat; put "$W" mcpb/manifest.json '{ "version": "1.5.0" }'; ci "$W"; push "$W"
   fence "$S" "Step $STEP: VERSION" "$T/f15.sh" "VERSION='{version}' ==> VERSION='1.5.0'"
@@ -926,13 +930,21 @@ for SM in "mcp-deploy:Step 3:3a" "cli-deploy:Step 1 推送:1.5"; do
     has "$S: the files say 1.4.1, the release is 1.5.0 → stops ($sh)" "$OUT" "✗ $STEP: 版本檔與 1.5.0 不一致"
     same "$S: …and the release commit stays local ($sh)" "$(rmain "$B")" "$BASE"
   done
-  if [ "$S" = mcp-deploy ]; then has "$S: …and it says the .mcpb has to be packed again" "$OUT" "重新打包"; fi
+  if [ "$S" = mcp-deploy ]; then
+    has "$S: …and it says the .mcpb has to be packed again" "$OUT" "重新打包"
+    has "$S: …and that a compiled-in file means building again first" "$OUT" "Phase 1 A2 重新編譯"
+  else
+    has "$S: …and that a compiled-in file means building again" "$OUT" "Phase 2 要重新 build"
+  fi
+  has "$S: …a new commit is what fixes it" "$OUT" "補一個 commit"
+  same "$S: …and the check created no tag" "$(git -C "$W" tag -l)" ""
 
   # the tag name is taken by another commit → nothing is pushed
   git -C "$W" tag -a v1.4.1 -m x "$BASE"; git -C "$W" push -q origin refs/tags/v1.4.1
   fence "$S" "推送前檢查（#51）" "$T/pre141.sh" "VERSION='{version}' ==> VERSION='1.4.1'"
   run bash "$W" "$T/pre141.sh"
   has "$S: v1.4.1 already sits on another commit → stops" "$OUT" "✗ $STEP: v1.4.1 已在別的 commit 上"
+  has "$S: …and points at a leftover local tag too" "$OUT" "git tag -l v1.4.1"
   same "$S: …and the release commit stays local" "$(rmain "$B")" "$BASE"
   git -C "$W" push -q origin :refs/tags/v1.4.1; git -C "$W" tag -d v1.4.1 >/dev/null
 
@@ -957,6 +969,7 @@ for SM in "mcp-deploy:Step 3:3a" "cli-deploy:Step 1 推送:1.5"; do
     run "$sh" "$W" "$T/pre141.sh"
     has "$S: nothing in the way → pushed ($sh)" "$OUT" "→ $STEP: release commit 已推到"
   done
+  has "$S: …the commits that go along are printed first" "$OUT" "這次會推到 origin 的 main 的 commit"
   same "$S: the remote branch is the release commit" "$(rmain "$B")" "$(git -C "$W" rev-parse HEAD)"
   same "$S: the push took no tag along, and the check created none" "$(git --git-dir="$B" tag -l)" ""
   git -C "$W" tag -d unrelated >/dev/null; git -C "$W" config --unset push.followTags
@@ -984,6 +997,56 @@ for SM in "mcp-deploy:Step 3:3a" "cli-deploy:Step 1 推送:1.5"; do
   run bash "$W" "$T/pre141.sh"
   has "$S: a remote outside github.com → stops" "$OUT" "推不出 github.com 的 owner/repo"
   same "$S: …and the release commit stays local" "$(rmain "$B")" "$BASE"
+
+  # the checks that stand between the block and an irreversible push, one at a time (#51 verify R1):
+  # each case leaves the remote's main where it was
+  mk "$S-x"; W="$T/$S-x"; B="$T/$S-x.git"
+  put "$W" mcpb/manifest.json '{ "version": "1.4.0" }'; ci "$W"; push "$W"; BASE=$(git -C "$W" rev-parse HEAD)
+  put "$W" mcpb/manifest.json '{ "version": "1.4.1" }'; ci "$W" release
+  stays() { same "$S: …and the remote's main did not move" "$(rmain "$B")" "$BASE"; }
+  # VERSION not filled in, or not made of the allowed characters
+  fence "$S" "推送前檢查（#51）" "$T/prenov.sh"
+  run bash "$W" "$T/prenov.sh"
+  has "$S: VERSION still the placeholder → stops" "$OUT" "VERSION 未代入或不合法"; stays
+  fence "$S" "推送前檢查（#51）" "$T/prebad.sh" "VERSION='{version}' ==> VERSION='1.4.1;x'"
+  run bash "$W" "$T/prebad.sh"
+  has "$S: VERSION with a character outside the list → stops" "$OUT" "VERSION 未代入或不合法"; stays
+  # a detached HEAD, an upstream that is a local branch, an upstream remote that is not configured
+  git -C "$W" checkout -q --detach
+  run bash "$W" "$T/pre141.sh"
+  has "$S: a detached HEAD → stops" "$OUT" "沒有指向 remote 的 upstream"; stays
+  git -C "$W" checkout -q main
+  git -C "$W" checkout -q -b local-up main; git -C "$W" config branch.local-up.remote .; git -C "$W" config branch.local-up.merge refs/heads/main
+  run bash "$W" "$T/pre141.sh"
+  has "$S: an upstream that is a local branch → stops" "$OUT" "沒有指向 remote 的 upstream"; stays
+  git -C "$W" checkout -q main; git -C "$W" branch -q -D local-up
+  git -C "$W" config branch.main.remote ghost
+  run bash "$W" "$T/pre141.sh"
+  has "$S: an upstream remote that is not configured → stops" "$OUT" "不是這個 repo 設定過的 remote 名稱"; stays
+  git -C "$W" config branch.main.remote origin
+  # a feature branch cut from origin/main: its upstream is the default branch, its name is not
+  git -C "$W" checkout -q -b featx main; git -C "$W" branch -q --set-upstream-to=origin/main featx
+  run bash "$W" "$T/pre141.sh"
+  has "$S: a branch that tracks the default branch under another name → stops" "$OUT" "名稱不同"; stays
+  git -C "$W" checkout -q main; git -C "$W" branch -q -D featx
+  # the default branch cannot be read: the block must stop, and say it is the connection
+  OLDURL=$(git -C "$W" config --get remote.origin.url)   # the written one; get-url would give the rewritten path
+  git -C "$W" config --unset "url.$T/$S-x.git.insteadOf"; git -C "$W" remote set-url origin "$T/no-such-remote.git"
+  run bash "$W" "$T/pre141.sh"
+  has "$S: the default branch cannot be read → stops" "$OUT" "讀不到 origin 的預設 branch"
+  hasnt "$S: …and does not blame the branch it tracks" "$OUT" "不是預設 branch"
+  git -C "$W" remote set-url origin "$OLDURL"; git -C "$W" config "url.$T/$S-x.git.insteadOf" "$OLDURL"; stays
+  # the helper's own exits: 21 (a version source that cannot be read), 30 (the push URL is another repository)
+  put "$W" Sources/App/Version.swift 'enum V { static let version = makeVersion() }'; ci "$W" unreadable
+  run bash "$W" "$T/pre141.sh"
+  has "$S: a version source that cannot be read (21) → stops" "$OUT" "有版本檔讀不出值"
+  has "$S: …and says no new commit is needed" "$OUT" "不需要新的 commit"; stays
+  git -C "$W" reset -q --hard HEAD~1
+  git -C "$W" config remote.origin.pushurl git@github.com:o/other.git
+  run bash "$W" "$T/pre141.sh"
+  has "$S: a push URL on another repository (30) → stops" "$OUT" "push URL 指向別的 repo"
+  has "$S: …and says no new commit is needed" "$OUT" "不需要新的 commit"; stays
+  git -C "$W" config --unset remote.origin.pushurl
 done
 fence mcp-deploy "Step 2: VERSION" "$T/blk.sh"
 hasnt "mcp-deploy: the commit block does not push" "$(cat "$T/blk.sh")" 'git push'

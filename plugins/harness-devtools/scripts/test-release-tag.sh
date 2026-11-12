@@ -1360,6 +1360,34 @@ has "…and says so" "cannot query remote"
 hasnt "…without a retry command for a tag that was never created" "retry with"
 check "…and no local tag is created" "$(git -C "$W" tag -l)" ""
 
+echo "== --dry-run checks what a real run needs, and says what it cannot predict (#51 verify R1)"
+# a real run creates an annotated tag, which needs a committer identity. The fixtures export one, so
+# take the variables away and let a repository setting forbid guessing one from the host name.
+NOID=(env -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL)
+new_repo; plugin_json "$W" "" 1.2.3; commit "$W"; git -C "$W" config user.useConfigOnly true
+OUT=$(cd "$W" && "${NOID[@]}" "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+check "no committer identity → a dry run exits 30" "$RC" 30
+has "…says why" "no committer identity"
+has "…and prints the push-failed line a real run prints" "RELEASE_TAG: push-failed name=v1.2.3"
+check "…and creates no tag" "$(git -C "$W" tag -l)" ""
+OUT=$(cd "$W" && "${NOID[@]}" "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v 2>&1); RC=$?
+check "the real run fails the same way → exit 30" "$RC" 30
+check "…and has created no tag" "$(git -C "$W" tag -l)" ""
+git -C "$W" tag v1.2.3 HEAD
+OUT=$(cd "$W" && "${NOID[@]}" "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --dry-run 2>&1); RC=$?
+check "a local tag is already on this commit (a real run creates nothing) → no identity needed, exit 0" "$RC" 0
+new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+hasnt "signing is off → no note about signing" "tag signing is on"
+git -C "$W" config tag.gpgSign true
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "tag.gpgSign on → still exit 0" "$RC" 0
+has "…and says a dry run cannot check that signing works" "cannot check that signing works"
+check "…and creates no tag" "$(git -C "$W" tag -l)" ""
+git -C "$W" config --unset tag.gpgSign; git -C "$W" config tag.forceSignAnnotated true
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+has "tag.forceSignAnnotated on → the same note" "cannot check that signing works"
+
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
 run "$W" --dir . --name-style v;                                   check "missing --commit" "$RC" 2

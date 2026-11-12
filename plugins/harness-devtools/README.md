@@ -169,7 +169,7 @@ helper 的用法：
 bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v|plugin [--plugin <name>] \
      [--remote <remote>] [--expect <x.y.z>] [--at-bump] [--dry-run]
 # → RELEASE_TAG: <tagged|exists|not-bumped|mismatch|unreadable|push-failed|dry-run> name=… commit=… version=… sources=…
-# --dry-run 不建立任何東西，但會查 remote 與本機的同名 tag，結束碼與真的執行時相同（#51）
+# --dry-run 不建立任何東西，但會查 remote 與本機的同名 tag、檢查有 git 身分；這些查詢的結束碼與真的執行時相同（#51）。簽章與 hook 會不會擋，它預測不了
 ```
 
 - **版本從 commit 讀，不讀工作樹**；八種來源（封閉列舉）全部一致才打：plugin.json、pyproject 靜態版本、hatch `path` 指到的檔案（照 hatchling 的 regex source 讀：路徑先正規化、嚴格 UTF-8、預設或設定的 pattern、第一個符合的值；tag 是 hatch 讀到的版本字串，預發行版建 wheel 時 packaging 會再正規化，例如 `1.0.0-beta` 建成 `1.0.0b0`；其他 hatch source → 21，`vcs` 見下方）、pyproject 的 `[tool.poetry].version`、package.json、`Sources/*/Version.swift`（`static let|var version|current`，可帶 `: String`；初始值必須整個是一個字串常值）、`mcpb/manifest.json`、`Sources/*/Server.swift`（`version: "x"` 必須是整個引數；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）。JSON 來源沒有 `version` 欄位、`Version.swift` 沒有這種宣告時都不算來源；Swift 的值不是一整個字串常值 → 21。Swift 先去掉註解（區塊註解可巢狀）。
