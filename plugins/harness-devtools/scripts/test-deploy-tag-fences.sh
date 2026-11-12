@@ -94,7 +94,7 @@ for s in mcp-deploy cli-deploy plugin-deploy; do
     hasnt "$s: the tag fence does not use \${CLAUDE_PLUGIN_ROOT:?} (empty in the Bash tool, #39)" "$(cat "$T/text.sh")" 'CLAUDE_PLUGIN_ROOT:?'
   done
 done
-bash_blocks() { python3 -I -c 'import re,sys; print("\n".join(re.findall(r"```bash\n(.*?)```", open(sys.argv[1]).read(), re.S)))' "$PLUGIN_ROOT/skills/$1/SKILL.md"; }
+bash_blocks() { python3 -I -c 'import re,sys; print("\n".join(re.findall(r"```(?:bash|sh|zsh|shell)\n(.*?)```", open(sys.argv[1]).read(), re.S)))' "$PLUGIN_ROOT/skills/$1/SKILL.md"; }
 for s in mcp-deploy cli-deploy; do
   CODE=$(bash_blocks "$s")
   hasnt "$s: the release API is not given target_commitish" "$CODE" 'target_commitish='
@@ -493,20 +493,29 @@ for s in mcp-deploy cli-deploy; do
   done
 done
 echo "no bash block holds a placeholder that is not on the list of identifier placeholders (#50)"
-# description and keywords are on the list only for mcp-deploy's Phase 4 heredocs (quoted, one-line values, #56)
-ID_PLACEHOLDERS=" BinaryName binary description keywords owner project-name project_name repo u version "
+# one list per skill. description and keywords are on mcp-deploy's list only for its Phase 4 heredocs (quoted, one-line values, #56).
+# The pattern takes any {words} (spaces and CJK too: a free-text placeholder is usually written that way), not only identifiers;
+# {'x'} (a guard spells the placeholder with split braces), ${x}, %{x}, awk programs and { cmd; } groups are not placeholders.
 for s in mcp-deploy cli-deploy; do
+  case "$s" in
+    mcp-deploy) ALLOW=" BinaryName description keywords owner project-name project_name repo u version " ;;
+    cli-deploy) ALLOW=" binary owner repo u version " ;;
+  esac
   FOUND=$(python3 -I -c 'import re, sys
 t = open(sys.argv[1], encoding="utf-8").read()
 seen = []
-for b in re.findall(r"```bash\n(.*?)```", t, re.S):
-    for m in re.findall(r"(?<![$%])\{([A-Za-z][A-Za-z0-9_-]*)\}", b):
+W = r"[^\s{}\x27$=;()\"\\|&<>*?]+"
+for b in re.findall(r"```(?:bash|sh|zsh|shell)\n(.*?)```", t, re.S):
+    for m in re.findall(r"(?<![$%])\{(" + W + r"(?: " + W + r")*)\}", b):
         if m not in seen:
             seen.append(m)
-print(" ".join(seen))' "$PLUGIN_ROOT/skills/$s/SKILL.md")
+print("\n".join(seen))' "$PLUGIN_ROOT/skills/$s/SKILL.md")
   UNKNOWN=""
-  for tk in $FOUND; do case "$ID_PLACEHOLDERS" in *" $tk "*) ;; *) UNKNOWN="$UNKNOWN $tk" ;; esac; done
-  same "$s: every placeholder in a bash block is an identifier (a new one needs a decision: free text goes through a file)" "$UNKNOWN" ""
+  while IFS= read -r tk; do
+    [ -n "$tk" ] || continue
+    case "$ALLOW" in *" $tk "*) ;; *) UNKNOWN="$UNKNOWN{$tk} " ;; esac
+  done <<< "$FOUND"
+  same "$s: every placeholder in a shell block is on this skill's list of identifiers (a new one needs a decision: free text goes through a file)" "$UNKNOWN" ""
 done
 echo "no bash block writes a variable name directly in front of a non-ASCII character (#50)"
 # $NAME followed by a full-width character such as ： or （ : bash takes the character's bytes as part of the name,
@@ -515,11 +524,20 @@ for s in mcp-deploy cli-deploy; do
   BAD=$(python3 -I -c 'import re, sys
 t = open(sys.argv[1], encoding="utf-8").read()
 out = []
-for b in re.findall(r"```bash\n(.*?)```", t, re.S):
+for b in re.findall(r"```(?:bash|sh|zsh|shell)\n(.*?)```", t, re.S):
     for m in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*)([^\x00-\x7f])", b):
         out.append(m.group(0))
 print(" ".join(out))' "$PLUGIN_ROOT/skills/$s/SKILL.md")
   same "$s: every \$NAME in a bash block that is followed by non-ASCII text is written \${NAME}" "$BAD" ""
+done
+echo "the skills never recommend bypassPermissions to get a file written (#50)"
+for f in skills/mcp-deploy/SKILL.md skills/cli-deploy/SKILL.md CLAUDE.md; do
+  # clause by clause (a line holds several; split at 。 and ；): every clause that names it must also say 不要
+  BAD=$(python3 -I -c 'import re, sys
+for s in re.split(r"[。；\n]", open(sys.argv[1], encoding="utf-8").read()):
+    if "bypassPermissions" in s and "不要" not in s:
+        print(s.strip()[:80])' "$PLUGIN_ROOT/$f")
+  same "$f: bypassPermissions only appears in a sentence that says not to use it" "$BAD" ""
 done
 # gh and curl stand-ins that record what they were given, one value per file, and play
 # the release endpoints of "the GitHub repo o/r"
@@ -602,6 +620,13 @@ for SM in "mcp-deploy:Step 2" "cli-deploy:Step 1"; do
   run50 bash "$W" "$T/commit.sh"
   has "$S: a summary that was never filled in → stops" "$OUT" "還沒代入"
   same "$S: …and nothing is committed" "$(git -C "$W" rev-parse HEAD)" "$BEFORE"
+  # the first line must be exactly v<version>: and then something; a longer version, a pre-release, the bare tag and an empty summary are not
+  for first in 'v1.4.0-rc1: left by an earlier release candidate' 'v1.4.01: another version' 'v1.4.0' 'v1.4.0: '; do
+    printf '%s\n' "$first" > "$D/commit-message.txt"
+    run50 bash "$W" "$T/commit.sh"
+    has "$S: first line [$first] → stops" "$OUT" "第一行要是"
+    same "$S: …and nothing is committed" "$(git -C "$W" rev-parse HEAD)" "$BEFORE"
+  done
   for sh in $SHELLS; do
     put "$W" CHANGELOG.md "changed for $sh"
     { printf 'v1.4.0: '; hostile subject; printf '\n\n'; hostile body; printf '\n# not a comment\n'; } > "$D/commit-message.txt"
@@ -689,6 +714,7 @@ has "the release holds no asset at all → stops" "$OUT" "release 上沒有 Bin"
 same "…and the text files are kept" "$(left "$D")" "release-notes.md release-title.txt "
 release_texts; export GH50_FAIL_POST=1; run50 bash "$W" "$T/relA.sh"; unset GH50_FAIL_POST
 has "no release id → stops before any upload" "$OUT" "release 沒建成"
+has "…and tells the user instead of deleting or changing a release itself" "$OUT" "不要自己刪或改它"
 hasnt "…nothing was uploaded" "$(cat "$T/rec/calls" 2>/dev/null)" "curl"
 same "…and the text files are kept" "$(left "$D")" "release-notes.md release-title.txt "
 printf '123\n' > "$D/release-notes.md"
@@ -781,6 +807,7 @@ has "the release does not hold the binary → stops" "$OUT" "release 上沒有 B
 same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
 release_texts; rm -f "$D/release-title.txt"; B50="" run50 bash "$W" "$T/relC.sh"
 has "BINARY_NAME has no value → says so instead of passing" "$OUT" "BINARY_NAME 沒有值"
+hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
 same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
 release_texts; rm -f "$D/release-title.txt"; export GH50_FAIL_POST=1; run50 bash "$W" "$T/relC.sh"; unset GH50_FAIL_POST
 has "no release id → stops before any upload" "$OUT" "release 沒建成"
@@ -794,6 +821,91 @@ for sh in $SHELLS; do
   pwned "cli-deploy release ($sh)"
   same "the notes file is removed once the release exists ($sh)" "$(left "$D")" ""
 done
+
+echo "every token of the Release Notes template stops the release when it is left in the notes (#50)"
+# the guard list is kept by hand in three blocks; this ties it to the template. Every other {token} is filled in, so only this one is left.
+tpl_tokens() { python3 -I - "$PLUGIN_ROOT/skills/$1/SKILL.md" <<'PY'
+import re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+lines, inside = [], False
+for l in t[t.index("Release Notes 模板"):].split("\n")[1:]:
+    if not inside and l.startswith("```markdown"): inside = True; continue
+    if inside and l == "```": break
+    if inside: lines.append(l)
+print("\n".join(sorted(set(re.findall(r"\{([^{}\n]+)\}", "\n".join(lines))))))
+PY
+}
+tpl_notes() { python3 -I - "$PLUGIN_ROOT/skills/$1/SKILL.md" "$2" "$3" <<'PY'
+import re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+lines, inside = [], False
+for l in t[t.index("Release Notes 模板"):].split("\n")[1:]:
+    if not inside and l.startswith("```markdown"): inside = True; continue
+    if inside and l == "```": break
+    if inside: lines.append(l)
+body = re.sub(r"\{([^{}\n]+)\}", lambda m: m.group(0) if m.group(1) == sys.argv[2] else "x", "\n".join(lines))
+open(sys.argv[3], "w", encoding="utf-8").write(body + "\n")
+PY
+}
+W="$T/mcp-rel"; D=$(deploy_dir "$W"); mkdir -p "$D"
+tpl_tokens mcp-deploy > "$T/toks"
+same "mcp-deploy: the template has tokens to check" "$([ -s "$T/toks" ] && echo yes)" "yes"
+for blk in relA relB; do
+  while IFS= read -r tok <&3; do
+    release_texts; tpl_notes mcp-deploy "$tok" "$D/release-notes.md"
+    run50 bash "$W" "$T/$blk.sh"
+    has "mcp-deploy $blk: {$tok} left in the notes → stops" "$OUT" "沒代入的 placeholder"
+    hasnt "…and nothing is released" "$(cat "$T/rec/calls" 2>/dev/null)" "release"
+  done 3< "$T/toks"
+done
+W="$T/cli-rel"; D=$(deploy_dir "$W"); mkdir -p "$D"
+tpl_tokens cli-deploy > "$T/toks"
+same "cli-deploy: the template has tokens to check" "$([ -s "$T/toks" ] && echo yes)" "yes"
+while IFS= read -r tok <&3; do
+  release_texts; rm -f "$D/release-title.txt"; tpl_notes cli-deploy "$tok" "$D/release-notes.md"
+  run50 bash "$W" "$T/relC.sh"
+  has "cli-deploy: {$tok} left in the notes → stops" "$OUT" "沒代入的 placeholder"
+  hasnt "…and nothing is released" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+done 3< "$T/toks"
+
+echo "the asset gate: a project without a binary, and names that only start like the uploaded ones (#50)"
+# Python and TypeScript projects keep only run.sh in mcpb/server, so BINARY_NAME is empty: only the .mcpb is uploaded and checked
+mk mcp-py; W="$T/mcp-py"
+put "$W" mcpb/manifest.json '{
+  "name": "proj",
+  "version": "1.4.0"
+}'
+put "$W" mcpb/server/run.sh x; put "$W" mcpb/proj.mcpb x
+ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+D=$(deploy_dir "$W"); mkdir -p "$D"
+release_texts; export GH50_ASSETS="proj.mcpb"; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
+same "no binary, the .mcpb is on the release → the block succeeds" "$RC" "0"
+same "…and the text files are removed" "$(left "$D")" ""
+release_texts; export GH50_ASSETS=""; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
+has "no binary, nothing on the release → names the .mcpb" "$OUT" "release 上沒有 proj.mcpb"
+hasnt "…and does not name an empty file" "$OUT" "release 上沒有 ："
+same "…and the text files are kept" "$(left "$D")" "release-notes.md release-title.txt "
+# nothing to upload at all: not even a .mcpb. An empty name must not pass as "found" (an empty asset list prints one empty line)
+mk mcp-none; W="$T/mcp-none"
+put "$W" mcpb/manifest.json '{
+  "name": "proj",
+  "version": "1.4.0"
+}'
+put "$W" mcpb/server/run.sh x
+ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+D=$(deploy_dir "$W"); mkdir -p "$D"
+release_texts; export GH50_ASSETS=""; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
+has "no file name at all → stops, does not pass an empty name" "$OUT" "BINARY_NAME 與 MCPB_FILENAME 都是空的"
+same "…and the text files are kept" "$(left "$D")" "release-notes.md release-title.txt "
+# a release that only holds Bin.sha256 and proj.mcpb.sig does not hold Bin and proj.mcpb (whole-line match)
+W="$T/mcp-rel"; D=$(deploy_dir "$W"); mkdir -p "$D"
+release_texts; export GH50_ASSETS="Bin.sha256 proj.mcpb.sig"; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
+has "mcp-deploy: names that only start with the uploaded ones → stops" "$OUT" "release 上沒有 Bin"
+same "…and the text files are kept" "$(left "$D")" "release-notes.md release-title.txt "
+W="$T/cli-rel"; D=$(deploy_dir "$W"); mkdir -p "$D"
+release_texts; rm -f "$D/release-title.txt"; export GH50_ASSETS="Bin.sha256"; run50 bash "$W" "$T/relC.sh"; unset GH50_ASSETS
+has "cli-deploy: a name that only starts like the binary → stops" "$OUT" "release 上沒有 Bin"
+same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
 
 echo
 echo "deploy tag fences: $PASS passed, $FAIL failed"

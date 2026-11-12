@@ -460,7 +460,7 @@ git status
 
 commit 訊息、release 標題、release notes、repo 描述都是自由文字，內容常來自 CHANGELOG，可能有反引號、`$( )`、引號。**這些文字不寫進 bash 區塊**：shell 會執行雙引號裡的反引號與 `$( )`，引號會把字串截斷（#50）。做法是用 Write 工具把文字寫成檔案，區塊只從檔案讀。
 
-這個目錄在 `.git` 底下。Claude Code 把 `.git` 列為受保護目錄（官方文件 permission-modes 的 Protected paths）：default、acceptEdits 模式每寫一個檔案都會問一次；auto 模式交給分類器；dontAsk 模式直接拒絕；`permissions.allow` 規則與 skill 的 `allowed-tools` 都不能預先核准它。所以發版時最多會有 四 次寫檔的確認（commit 訊息、標題、notes、repo 描述）。Write 被拒絕時：**停下來告訴使用者**，請他在提示按允許，或改用 default、acceptEdits、auto、bypassPermissions 模式重跑；**不要改回把文字貼進 bash 區塊**，那正是 #50 修掉的缺陷。
+這個目錄在 `.git` 底下。Claude Code 把 `.git` 列為受保護目錄（官方文件 permission-modes 的 Protected paths）：default、acceptEdits 模式每寫一個檔案都會問一次；auto 模式交給分類器；dontAsk 模式直接拒絕；`permissions.allow` 規則不能預先核准它。所以發版時最多會有 四 次寫檔的確認（commit 訊息、標題、notes、repo 描述）。在 linked worktree 裡，git 目錄是主 repo 的 `.git/worktrees/<名稱>`，在工作目錄之外：設定擋了工作目錄以外的寫入（`permissions.blockWritesOutsideWorkingDirectories`）時，Write 每個模式都會被拒，提示按不了允許。Write 被拒絕時：**停下來告訴使用者**，請他在提示按允許；dontAsk 模式要改用會詢問的模式（default 或 acceptEdits）重跑。**不要改回把文字貼進 bash 區塊**，那正是 #50 修掉的缺陷；**也不要為了寫檔改用 bypassPermissions**，它會連這個要推送、要發版的流程的所有確認一起關掉。
 
 先準備放檔案的目錄：
 
@@ -581,7 +581,7 @@ echo "→ Step 3a: $TAG 已在 ${OWNER_REPO}；Step 4 在同一個 repo 用這�
 - `release-title.txt`：標題，一行，只寫 `v{version} - ` 後面那一段。沒有標題就不要建這個檔案。
 - `release-notes.md`：release notes 全文，照下面的模板。
 
-重做 release 時，這兩個文字檔是上一次失敗時留下的：先確認內容還是這一次要發的；不要標題就把 `release-title.txt` 刪掉（區塊看到檔案就會用）。
+重做 release 時，這兩個文字檔是上一次失敗時留下的：先確認內容還是這一次要發的（要改它得先 Read 再 Write，每個檔案多一次確認）；不要標題就把 `release-title.txt` 刪掉（區塊看到檔案就會用）。
 
 **Release Notes 模板**：
 
@@ -645,7 +645,7 @@ RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
   -F draft=false \
   -F prerelease=false \
   --jq '.id')
-case "$RELEASE_ID" in ''|*[!0-9]*) echo "✗ release 沒建成（RELEASE_ID=${RELEASE_ID:-空}）：文字檔保留。$OWNER_REPO 上 v$VERSION 若已經有 release，先處理掉再重跑這個區塊"; exit 1 ;; esac
+case "$RELEASE_ID" in ''|*[!0-9]*) echo "✗ release 沒建成（RELEASE_ID=${RELEASE_ID:-空}）：文字檔保留。$OWNER_REPO 上 v$VERSION 若已經有 release，停下來告訴使用者，不要自己刪或改它"; exit 1 ;; esac
 echo "Release created: ID=$RELEASE_ID"
 
 # Step 2: 用 curl 上傳 Binary（支援進度條，不會 timeout）
@@ -673,9 +673,14 @@ curl -L -X POST \
 gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[] | "\(.name) (\(.size) bytes)"'
 # 兩個 asset 都在 release 上才刪文字檔（不留給下一次發版）。curl 沒有 --fail，HTTP 錯誤時它的結束碼仍是 0，所以要看 release 上實際有什麼
 ASSETS=$(gh release view "v$VERSION" --repo "$OWNER_REPO" --json assets --jq '.assets[].name') || { echo "✗ 查不到 release 的 asset 清單：文字檔保留"; exit 1; }
+# Python、TypeScript 專案的 mcpb/server 只有 run.sh，BINARY_NAME 是空的：只檢查有名字的
+GATE_N=0
 for A in "$BINARY_NAME" "$MCPB_FILENAME"; do
-  printf '%s\n' "$ASSETS" | grep -qxF -- "$A" || { echo "✗ release 上沒有 ${A}：文字檔保留。只重新上傳缺的那一個（上面的 Step 2 或 Step 3），不要重建 release"; exit 1; }
+  [ -n "$A" ] || continue
+  GATE_N=$((GATE_N + 1))
+  printf '%s\n' "$ASSETS" | grep -qxF -- "$A" || { echo "✗ release 上沒有 ${A}：文字檔保留。release 已經建好，不要重跑整個區塊（會停在建立 release 那一步）；把缺的這一個告訴使用者，由他決定怎麼補"; exit 1; }
 done
+[ "$GATE_N" -gt 0 ] || { echo "✗ 沒有任何要上傳的檔案名稱（BINARY_NAME 與 MCPB_FILENAME 都是空的）：文字檔保留"; exit 1; }
 rm -f "$TITLE_FILE" "$NOTES_FILE"
 ```
 
