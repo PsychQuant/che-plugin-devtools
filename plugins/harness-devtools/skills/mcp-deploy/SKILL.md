@@ -501,7 +501,7 @@ git commit --cleanup=whitespace -F "$MSG_FILE" && rm -f "$MSG_FILE"
 
 ### Step 3: 推送前檢查，然後推送到 GitHub
 
-release commit 推出去就收不回。Step 3a 會停下的情況裡，推送前就看得出來的先在這裡檢查（#51）：版本來源彼此不一致或讀不出、同名 tag 已在別的 commit、沒有 upstream、追蹤的不是預設 branch、remote 不在 github.com。版本與 tag 用 `release-tag.sh --dry-run` 查，它不建立任何東西。全部通過才推送，推到這個 branch 追蹤的 upstream（branch 名稱要與 upstream 的名稱相同；這次會推的 commit 會先印出來）。
+release commit 推出去就收不回。Step 3a 會停下的情況裡，推送前就看得出來的先在這裡檢查（#51）：版本來源彼此不一致或讀不出、同名 tag 已在別的 commit、沒有 upstream、追蹤的不是預設 branch、remote 不在 github.com、`gh` 讀不到這個 repo 在 GitHub 上的名稱（沒登入、沒有權限、連不上；Step 3a 一開始就要查它，#53）。版本與 tag 用 `release-tag.sh --dry-run` 查，它不建立任何東西。全部通過才推送，推到這個 branch 追蹤的 upstream（branch 名稱要與 upstream 的名稱相同；這次會推的 commit 會先印出來）。
 
 推送前若要向使用者確認，同一個確認要列出 Step 3a 接著會推的 tag `v{version}`（#42）：推 tag 與推 branch 一樣是對外、收不回的動作，不另外問一次。
 
@@ -524,6 +524,11 @@ DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("
 OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
   || { echo "✗ Step 3: 從 remote $REMOTE 的網址推不出 github.com 的 owner/repo（ssh host alias、GitHub Enterprise 不支援）— 停止，不推送"; exit 1; }
+# #53：Step 3a 一開始就要向 GitHub 問這個 repo 現在的正式名稱。gh 沒登入、沒有權限或連不上時，這裡就看得出來：先擋，release commit 還沒離開本機
+# 答案只收一行、而且要符合 owner/repo 的樣式（這個區塊只確認查得到，之後的推送用的是 remote，不是這個名稱）
+CANON=$(gh api "repos/$OWNER_REPO" --jq .full_name 2>/dev/null)
+[ "$(printf '%s\n' "$CANON" | wc -l | tr -d ' ')" = 1 ] && printf '%s\n' "$CANON" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
+  || { echo "✗ Step 3: 讀不到 $OWNER_REPO 在 GitHub 上的正式名稱（gh 沒登入、沒有權限、repo 不存在，或連不上 GitHub；跑 gh api repos/${OWNER_REPO} 看原因）— 停止，不推送；修好後重跑這一步，不需要新的 commit"; exit 1; }
 # --dry-run：讀 HEAD 這個 commit 的版本、查同名 tag、查 remote 連不連得上，不建立任何東西。這些查詢的結束碼與真的打 tag 時相同；
 # 建 tag 本身會不會成功（簽章）、remote 或本機的 hook 會不會拒絕，它預測不了，那些要到 Step 3a 才看得到
 LINE=$(bash "$HELPER" --dir . --commit HEAD --name-style v --remote "$REMOTE" --expect "$VERSION" --dry-run); RC=$?
@@ -557,7 +562,7 @@ echo "→ Step 3: release commit 已推到 $REMOTE 的 ${UPSTREAM_BRANCH}；Step
 - 打完確認 tag 在 **release 要建的那個 GitHub repo** 上，並且名稱就是 `v{version}`。
 - **只在 remote 的預設 branch 上發版**：看的是目前 branch 追蹤的 upstream branch，不是本機 branch 名。feature branch 上打的 `v{version}` 會指向還沒合併的 commit，而且 tag 不會移動（#42 verify 第 2 輪）。
 - owner/repo 從 upstream remote 的網址推出，只認 `github.com` 的網址；ssh host alias、GitHub Enterprise 會停下（不印網址，網址可能帶憑證）。
-- repo 改過名或轉移過、remote 的網址還是舊名稱時，區塊會向 GitHub 問這個 repo 現在的正式名稱（`gh api repos/<owner>/<repo> --jq .full_name`），後面的 API 與上傳都用正式名稱，並提醒用 `git remote set-url` 更新網址。讀不到正式名稱就停下，這時還沒有打 tag（#53）。
+- repo 改過名或轉移過、remote 的網址還是舊名稱時，區塊會向 GitHub 問這個 repo 現在的正式名稱（`gh api repos/<owner>/<repo> --jq .full_name`），後面的 API 與上傳都用正式名稱，並提醒用 `git remote set-url` 更新網址。讀不到正式名稱就停下，這一步不打 tag（#53）。同一個查詢在 Step 3 推送之前先做一次，所以 `gh` 沒登入或連不上時，release commit 不會先推出去。這個查詢只處理 GitHub 還在轉址的舊名稱：舊名稱已經被另一個 repo 取用時，GitHub 不再轉址，查到的是那個 repo 自己的名稱，區塊分不出來（`git push` 也一樣會推到那個 repo）。
 
 binary repo 的 tag 名稱固定是 `v{version}`：wrapper 從 `releases/download/v{version}/…` 下載，不能改。推送前的確認（Step 3）要一併列出這個 tag。
 
@@ -587,9 +592,10 @@ OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(htt
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
   || { echo "✗ Step 3a: 從 remote $REMOTE 的網址推不出 github.com 的 owner/repo（ssh host alias、GitHub Enterprise 不支援）— 停止，不建 release"; exit 1; }
 # #53：remote 的網址可能還是 repo 改名或轉移之前的名稱。向 GitHub 問這個 repo 現在的正式名稱，後面的 API 與上傳都用它
+# 答案只收一行、而且要符合 owner/repo 的樣式：它接下來會被當成指令的引數
 CANON=$(gh api "repos/$OWNER_REPO" --jq .full_name 2>/dev/null)
-printf '%s\n' "$CANON" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
-  || { echo "✗ Step 3a: 讀不到 $OWNER_REPO 在 GitHub 上的正式名稱（gh 沒登入、沒有權限，或 repo 不存在）— 停止，還沒有打 tag，不建 release"; exit 1; }
+[ "$(printf '%s\n' "$CANON" | wc -l | tr -d ' ')" = 1 ] && printf '%s\n' "$CANON" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
+  || { echo "✗ Step 3a: 讀不到 $OWNER_REPO 在 GitHub 上的正式名稱（gh 沒登入、沒有權限、repo 不存在，或連不上 GitHub；跑 gh api repos/${OWNER_REPO} 看原因）— 停止，這一步沒有打 tag，不建 release；修好後重跑這一步"; exit 1; }
 [ "$(printf '%s' "$CANON" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$OWNER_REPO" | tr 'A-Z' 'a-z')" ] \
   || echo "→ Step 3a: remote 的網址用的是舊名稱 ${OWNER_REPO}，GitHub 上現在是 ${CANON}；這次改用 ${CANON}。之後可以用 git remote set-url 把網址改成新的"
 OWNER_REPO=$CANON
@@ -670,9 +676,10 @@ MCPB_FILE=$(ls mcpb/*.mcpb | head -1)
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3a"; exit 1; }
 # #53：remote 的網址可能還是 repo 改名或轉移之前的名稱。向 GitHub 問這個 repo 現在的正式名稱，後面的 API 與上傳都用它
+# 答案只收一行、而且要符合 owner/repo 的樣式：它接下來會被當成指令的引數
 CANON=$(gh api "repos/$OWNER_REPO" --jq .full_name 2>/dev/null)
-printf '%s\n' "$CANON" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
-  || { echo "✗ Step 4: 讀不到 $OWNER_REPO 在 GitHub 上的正式名稱（gh 沒登入、沒有權限，或 repo 不存在）— 停止，不建 release"; exit 1; }
+[ "$(printf '%s\n' "$CANON" | wc -l | tr -d ' ')" = 1 ] && printf '%s\n' "$CANON" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
+  || { echo "✗ Step 4: 讀不到 $OWNER_REPO 在 GitHub 上的正式名稱（gh 沒登入、沒有權限、repo 不存在，或連不上 GitHub；跑 gh api repos/${OWNER_REPO} 看原因）— 停止，不建 release；修好後重跑這一步"; exit 1; }
 [ "$(printf '%s' "$CANON" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$OWNER_REPO" | tr 'A-Z' 'a-z')" ] \
   || echo "→ Step 4: remote 的網址用的是舊名稱 ${OWNER_REPO}，GitHub 上現在是 ${CANON}；這次改用 ${CANON}。之後可以用 git remote set-url 把網址改成新的"
 OWNER_REPO=$CANON
@@ -692,7 +699,7 @@ NAME="v$VERSION"; [ -n "$TITLE" ] && NAME="v$VERSION - $TITLE"
 
 # Step 1: 建立 Release（不帶 assets，秒完成）
 # tag_name 用 Step 3a 已推上去的 tag；tag 已存在時 GitHub 直接用它，不另外指定 commit（#42）
-RELEASE_ID=$(gh api repos/$OWNER_REPO/releases --method POST \
+RELEASE_ID=$(gh api "repos/$OWNER_REPO/releases" --method POST \
   -f tag_name="v$VERSION" \
   -f name="$NAME" \
   -F body=@"$NOTES_FILE" \
@@ -754,9 +761,10 @@ case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' || { echo "✗ 推不出 owner/repo — 先跑完 Step 3a"; exit 1; }
 # #53：remote 的網址可能還是 repo 改名或轉移之前的名稱。向 GitHub 問這個 repo 現在的正式名稱，後面的 API 與上傳都用它
+# 答案只收一行、而且要符合 owner/repo 的樣式：它接下來會被當成指令的引數
 CANON=$(gh api "repos/$OWNER_REPO" --jq .full_name 2>/dev/null)
-printf '%s\n' "$CANON" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
-  || { echo "✗ Step 4: 讀不到 $OWNER_REPO 在 GitHub 上的正式名稱（gh 沒登入、沒有權限，或 repo 不存在）— 停止，不建 release"; exit 1; }
+[ "$(printf '%s\n' "$CANON" | wc -l | tr -d ' ')" = 1 ] && printf '%s\n' "$CANON" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
+  || { echo "✗ Step 4: 讀不到 $OWNER_REPO 在 GitHub 上的正式名稱（gh 沒登入、沒有權限、repo 不存在，或連不上 GitHub；跑 gh api repos/${OWNER_REPO} 看原因）— 停止，不建 release；修好後重跑這一步"; exit 1; }
 [ "$(printf '%s' "$CANON" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$OWNER_REPO" | tr 'A-Z' 'a-z')" ] \
   || echo "→ Step 4: remote 的網址用的是舊名稱 ${OWNER_REPO}，GitHub 上現在是 ${CANON}；這次改用 ${CANON}。之後可以用 git remote set-url 把網址改成新的"
 OWNER_REPO=$CANON
@@ -783,7 +791,7 @@ gh release create "v$VERSION" --verify-tag --repo "$OWNER_REPO" \
 
 ### Step 4.5: 更新 GitHub Repo About 描述
 
-如果工具數量、主要功能、或支援範圍有變更，更新 repo 的 About 描述。描述也是自由文字：用 Write 工具寫到 Step 2 印出的目錄，檔名 `repo-description.txt`（一行），再執行（#50）：
+如果工具數量、主要功能、或支援範圍有變更，更新 repo 的 About 描述。描述也是自由文字：用 Write 工具寫到 Step 2 印出的目錄，檔名 `repo-description.txt`（一行），再執行（#50）。`{owner}/{repo}` 代入 Step 3a 最後一行印出的名稱（`→ Step 3a: v… 已在 <owner>/<repo>`）：那是 GitHub 上的正式名稱，remote 的網址可能還是改名之前的（#53）。
 
 ```bash
 DESC_FILE="$(git rev-parse --absolute-git-dir)/harness-deploy/repo-description.txt"

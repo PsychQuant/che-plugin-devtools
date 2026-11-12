@@ -61,17 +61,24 @@ run() {
 # object id from the bare repo in GH_STUB_REMOTE — "the GitHub repo o/r" — and
 # `gh api repos/<name> --jq .full_name` (#53), answered the way GitHub does: o/r is the
 # repository's name (any case), GH_STUB_OLD_NAME is a former name that redirects to it, any
-# other name does not exist. GH_STUB_NO_NAME=1 makes the lookup fail (gh not logged in).
+# other name does not exist: like the real gh (2.96.0) the stub then prints the body of the
+# 404 on stdout, one line of JSON without a newline, and exits 1 - so it is the block's strict
+# pattern that has to keep that text out of OWNER_REPO. GH_STUB_NO_NAME=1 makes the lookup
+# fail with nothing on stdout (gh not logged in: exit 4). GH_STUB_MULTILINE=1 answers with
+# three lines, the first of which is a clean name (not something GitHub sends; the blocks
+# must refuse it, because the answer is used as a command argument later).
 # gh_full_name is shared with the recording stub further down.
 mkdir -p "$T/bin"
 cat > "$T/bin/gh-full-name" <<'SH'
 #!/bin/sh
 # usage: gh-full-name <owner/repo>
-[ -z "${GH_STUB_NO_NAME:-}" ] || exit 1
+[ -z "${GH_STUB_NO_NAME:-}" ] || exit 4
+[ -z "${GH_STUB_MULTILINE:-}" ] || { printf '%s\n' o/r --hostname attacker.example; exit 0; }
+not_found() { printf '%s' '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/repos#get-a-repository","status":"404"}'; exit 1; }
 case "$(printf '%s' "$1" | tr 'A-Z' 'a-z')" in
   o/r) echo o/r ;;
-  "$(printf '%s' "${GH_STUB_OLD_NAME:-}" | tr 'A-Z' 'a-z')") [ -n "${GH_STUB_OLD_NAME:-}" ] && echo o/r || exit 1 ;;
-  *) exit 1 ;;
+  "$(printf '%s' "${GH_STUB_OLD_NAME:-}" | tr 'A-Z' 'a-z')") [ -n "${GH_STUB_OLD_NAME:-}" ] && echo o/r || not_found ;;
+  *) not_found ;;
 esac
 SH
 cat > "$T/bin/gh" <<'SH'
@@ -112,19 +119,54 @@ for s in mcp-deploy cli-deploy plugin-deploy; do
     hasnt "$s: the tag fence does not use \${CLAUDE_PLUGIN_ROOT:?} (empty in the Bash tool, #39)" "$(cat "$T/text.sh")" 'CLAUDE_PLUGIN_ROOT:?'
   done
 done
+# lookup_order <SKILL.md> — prints the number of bash blocks that mention OWNER_REPO and, after a
+# space, what is wrong with any of them (#53; the rules are spelled out where it is called).
+# A function with its own here-document, not a here-document inside $( ): bash 3.2 reads those differently.
+lookup_order() {
+  python3 -I - "$1" <<'PY'
+import re, sys
+LOOKUP = 'CANON=$(gh api "repos/$OWNER_REPO" --jq .full_name 2>/dev/null)'
+USE = re.compile(r'repos/\$\{?OWNER_REPO\}?/|(?:--repo|-R)[ =]"?\$\{?OWNER_REPO|gh repo [a-z]+ "?\$\{?OWNER_REPO')
+blocks = re.findall(r"```bash\n(.*?)```", open(sys.argv[1], encoding="utf-8").read(), re.S)
+n, bad = 0, []
+for b in blocks:
+    if "OWNER_REPO" not in b:
+        continue
+    n += 1
+    lines = b.split("\n")
+    d = next((i for i, l in enumerate(lines) if l.startswith("OWNER_REPO=") and l != "OWNER_REPO=$CANON"), None)
+    q = next((i for i, l in enumerate(lines) if l == LOOKUP), None)
+    a = next((i for i, l in enumerate(lines) if l == "OWNER_REPO=$CANON"), None)
+    uses = [i for i, l in enumerate(lines) if USE.search(l) and l != LOOKUP]
+    push = next((i for i, l in enumerate(lines) if l.startswith("git push ")), None)
+    why = None
+    if d is None: why = "uses OWNER_REPO without deriving it"
+    elif q is None or q < d: why = "no lookup after the derivation"
+    elif not ("wc -l" in lines[q + 1] and "grep -qxE" in lines[q + 1] and "exit 1" in lines[q + 2]):
+        why = "the lookup is not followed by the one-line and strict-pattern check that stops"
+    elif push is not None and push < q: why = "pushes before the lookup"
+    elif uses and (a is None or not (q < a < min(uses))): why = "names the repository before OWNER_REPO=$CANON"
+    if why: bad.append(lines[0][:40] + ": " + why)
+print(n, "; ".join(bad))
+PY
+}
 bash_blocks() { python3 -I -c 'import re,sys; print("\n".join(re.findall(r"```(?:bash|sh|zsh|shell)\n(.*?)```", open(sys.argv[1]).read(), re.S)))' "$PLUGIN_ROOT/skills/$1/SKILL.md"; }
 for s in mcp-deploy cli-deploy; do
   CODE=$(bash_blocks "$s")
   hasnt "$s: the release API is not given target_commitish" "$CODE" 'target_commitish='
   hasnt "$s: no gh release view without --repo" "$(printf '%s\n' "$CODE" | grep 'gh release view' | grep -v -- '--repo')" 'gh release view'
-  # a derivation is the line that reads the remote URL; `OWNER_REPO=$CANON` (#53) is not one
-  N_DERIVE=$(printf '%s\n' "$CODE" | grep -c '^OWNER_REPO=\$(git config')
-  N_STRICT=$(printf '%s\n' "$CODE" | grep -A1 '^OWNER_REPO=\$(git config' | grep -c 'grep -qxE')
+  # a derivation is any line that assigns OWNER_REPO, however it is written; the one line
+  # that is not is `OWNER_REPO=$CANON` (#53), which takes over the name GitHub answered with
+  N_DERIVE=$(printf '%s\n' "$CODE" | grep '^OWNER_REPO=' | grep -vcxF 'OWNER_REPO=$CANON')
+  N_STRICT=$(printf '%s\n' "$CODE" | grep -A1 '^OWNER_REPO=' | grep -c 'grep -qxE')
   same "$s: every owner/repo derivation ($N_DERIVE) is followed by the strict check" "$N_STRICT" "$N_DERIVE"
-  # #53: a block that talks to the GitHub API about the repository asks GitHub for its current name first
-  N_API=$(python3 -I -c 'import re,sys; print(sum(1 for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1], encoding="utf-8").read(), re.S) if "repos/$OWNER_REPO/" in b or "--repo \"$OWNER_REPO\"" in b))' "$PLUGIN_ROOT/skills/$s/SKILL.md")
-  N_CANON=$(python3 -I -c 'import re,sys; print(sum(1 for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1], encoding="utf-8").read(), re.S) if ("repos/$OWNER_REPO/" in b or "--repo \"$OWNER_REPO\"" in b) and "--jq .full_name" in b and "OWNER_REPO=$CANON" in b))' "$PLUGIN_ROOT/skills/$s/SKILL.md")
-  same "$s: every block that uses the GitHub API with the repo name ($N_API) looks up its current name first (#53)" "$N_CANON" "$N_API"
+  # #53: every block that works out owner/repo asks GitHub for the repository's current name,
+  # in this order: derivation, lookup, (the push, in the blocks that push), `OWNER_REPO=$CANON`,
+  # and only then the first call that names the repository - in any spelling of that call.
+  # The lookup's answer is checked on the next line: one line only, and the strict pattern.
+  REPORT=$(lookup_order "$PLUGIN_ROOT/skills/$s/SKILL.md")
+  case "$s" in mcp-deploy) WANT=4 ;; *) WANT=3 ;; esac
+  same "$s: the blocks that work out owner/repo ($WANT: the push block, the tag block, the release blocks) all look up the current name, in order (#53)" "$REPORT" "$WANT "
   has "$s: the completion report has a tag line" "$(cat "$PLUGIN_ROOT/skills/$s/SKILL.md")" '- **Tag**: '
 done
 has "mcp-deploy: gh release create checks the tag exists" "$(grep 'gh release create' "$PLUGIN_ROOT/skills/mcp-deploy/SKILL.md")" '--verify-tag'
@@ -269,8 +311,9 @@ for EX in "rules/mcp-binary-distribution.md|helper" "skills/mcp-sign-pipeline/te
   done
 done
 # verify R3: the release steps use the VERSION checked at the top of their block, not a raw {version}
-release_blocks() { python3 -I -c 'import re,sys; print("\n".join(b for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1]).read(), re.S) if "releases --method POST" in b or "gh release create" in b))' "$PLUGIN_ROOT/skills/$1/SKILL.md"; }
+release_blocks() { python3 -I -c 'import re,sys; print("\n".join(b for b in re.findall(r"```bash\n(.*?)```", open(sys.argv[1]).read(), re.S) if "--method POST" in b or "gh release create" in b))' "$PLUGIN_ROOT/skills/$1/SKILL.md"; }
 for s in mcp-deploy cli-deploy; do
+  has "$s: the release blocks are found (the next check is not run on nothing)" "$(release_blocks "$s")" '/releases" --method POST'
   hasnt "$s: the release blocks do not substitute v{version} unchecked" "$(release_blocks "$s")" 'v{version}'
 done
 # verify R4: the guard must not repeat the placeholder it guards — substituting {version}
@@ -590,7 +633,7 @@ esac
 prev=""
 for a in "$@"; do
   case "$prev" in
-    --repo)        printf '%s' "$a" > "$REC/repo" ;;
+    --repo|-R)     printf '%s' "$a" > "$REC/repo"; printf '%s\n' "$a" >> "$REC/repos" ;;
     --title)       printf '%s' "$a" > "$REC/title" ;;
     --notes)       printf '%s' "$a" > "$REC/notes-inline" ;;
     --notes-file)  cp "$a" "$REC/notes-file" ;;
@@ -692,7 +735,7 @@ release_texts() {
 }
 
 echo "mcp-deploy Step 4, method A (#50)"
-fence mcp-deploy "releases --method POST" "$T/relA.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
+fence mcp-deploy 'releases" --method POST' "$T/relA.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
 run50 bash "$W" "$T/relA.sh"
 has "no notes file → stops" "$OUT" "找不到 release notes 檔"
 hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
@@ -822,7 +865,7 @@ echo "cli-deploy Step 2: release (#50)"
 mk cli-rel; W="$T/cli-rel"; put "$W" README.md x; ci "$W"; push "$W"
 git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
 D=$(deploy_dir "$W"); mkdir -p "$D"
-fence cli-deploy "releases --method POST" "$T/relC.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
+fence cli-deploy 'releases" --method POST' "$T/relC.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
 run50 bash "$W" "$T/relC.sh"
 has "no notes file → stops" "$OUT" "找不到 release notes 檔"
 hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
@@ -954,14 +997,25 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
   mk "$S-renamed" "https://github.com/old/name.git"; W="$T/$S-renamed"
   put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
   fence "$S" "Step $STEP: VERSION" "$T/ren.sh" "VERSION='{version}' ==> VERSION='1.0.0'"
+  # the needle is the new message itself: the block has other messages that say 讀不到
+  NONAME="✗ Step $STEP: 讀不到 old/name 在 GitHub 上的正式名稱"
   export GH_STUB_NO_NAME=1
   run bash "$W" "$T/ren.sh"
-  has "$S: the current name cannot be read → stops" "$OUT" "讀不到"
+  has "$S: the current name cannot be read → stops" "$OUT" "$NONAME"
   same "$S: …before any tag is pushed" "$(rtag "$T/$S-renamed.git" v1.0.0)" ""
   unset GH_STUB_NO_NAME
-  run bash "$W" "$T/ren.sh"
-  has "$S: a name GitHub does not know → stops" "$OUT" "讀不到"
-  same "$S: …before any tag is pushed" "$(rtag "$T/$S-renamed.git" v1.0.0)" ""
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/ren.sh"
+    has "$S: a name GitHub does not know (gh prints the 404 body) → stops ($sh)" "$OUT" "$NONAME"
+    same "$S: …before any tag is pushed ($sh)" "$(rtag "$T/$S-renamed.git" v1.0.0)" ""
+  done
+  export GH_STUB_MULTILINE=1
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/ren.sh"
+    has "$S: an answer of several lines, the first a clean name → stops ($sh)" "$OUT" "$NONAME"
+    same "$S: …before any tag is pushed ($sh)" "$(rtag "$T/$S-renamed.git" v1.0.0)" ""
+  done
+  unset GH_STUB_MULTILINE
   export GH_STUB_OLD_NAME=old/name
   for sh in $SHELLS; do
     run "$sh" "$W" "$T/ren.sh"
@@ -985,14 +1039,23 @@ put "$W" mcpb/manifest.json '{
 put "$W" mcpb/server/Bin x; put "$W" mcpb/proj.mcpb x
 ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
 D=$(deploy_dir "$W"); mkdir -p "$D"
-export GH_STUB_NO_NAME=1; release_texts
-run50 bash "$W" "$T/relA.sh"
-has "method A: the current name cannot be read → stops" "$OUT" "讀不到"
-hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "/releases"
-run50 bash "$W" "$T/relB.sh"
-has "method B: the current name cannot be read → stops" "$OUT" "讀不到"
-hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
-unset GH_STUB_NO_NAME; export GH_STUB_OLD_NAME=old/name
+NONAME="✗ Step 4: 讀不到 old/name 在 GitHub 上的正式名稱"
+# three ways the name cannot be had: gh fails with nothing on stdout (not logged in), gh prints
+# the body of a 404 (a name GitHub does not know), an answer of several lines
+for HOW in "GH_STUB_NO_NAME:the current name cannot be read" "-:a name GitHub does not know" "GH_STUB_MULTILINE:an answer of several lines"; do
+  VAR=${HOW%%:*}; WHAT=${HOW#*:}
+  [ "$VAR" = - ] || export "$VAR=1"
+  release_texts
+  run50 bash "$W" "$T/relA.sh"
+  has "method A: $WHAT → stops" "$OUT" "$NONAME"
+  hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "/releases"
+  hasnt "…and nothing of the answer became an argument" "$(cat "$T/rec/calls" 2>/dev/null)" "attacker"
+  run50 bash "$W" "$T/relB.sh"
+  has "method B: $WHAT → stops" "$OUT" "$NONAME"
+  hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+  [ "$VAR" = - ] || unset "$VAR"
+done
+export GH_STUB_OLD_NAME=old/name
 for sh in $SHELLS; do
   release_texts
   run50 "$sh" "$W" "$T/relA.sh"
@@ -1000,18 +1063,39 @@ for sh in $SHELLS; do
   hasnt "…never under the old one ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "repos/old/name/"
   has "…and the assets are uploaded to the current name ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "uploads.github.com/repos/o/r/releases/"
   hasnt "…never to the old one ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "old/name"
+  # gh release view decides whether the text files are deleted: it has to look at the same repository
+  same "…and every gh release view is given the current name ($sh)" "$(sort -u "$T/rec/repos" 2>/dev/null)" "o/r"
+  has "…and the block says the URL has the old name ($sh)" "$OUT" "→ Step 4: remote 的網址用的是舊名稱 old/name"
   release_texts
   run50 "$sh" "$W" "$T/relB.sh"
-  same "method B: gh release create is given the current name ($sh)" "$(cat "$T/rec/repo" 2>/dev/null)" "o/r"
+  same "method B: gh release create and gh release view are given the current name ($sh)" "$(sort -u "$T/rec/repos" 2>/dev/null)" "o/r"
+  has "…and the block says the URL has the old name ($sh)" "$OUT" "→ Step 4: remote 的網址用的是舊名稱 old/name"
 done
+unset GH_STUB_OLD_NAME
 mk cli-rel-old "https://github.com/old/name.git"; W="$T/cli-rel-old"; put "$W" README.md x; ci "$W"; push "$W"
 git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
 D=$(deploy_dir "$W"); mkdir -p "$D"
+NONAME="✗ Step 2: 讀不到 old/name 在 GitHub 上的正式名稱"
+for HOW in "GH_STUB_NO_NAME:the current name cannot be read" "-:a name GitHub does not know" "GH_STUB_MULTILINE:an answer of several lines"; do
+  VAR=${HOW%%:*}; WHAT=${HOW#*:}
+  [ "$VAR" = - ] || export "$VAR=1"
+  release_texts; rm -f "$D/release-title.txt"
+  run50 bash "$W" "$T/relC.sh"
+  has "cli-deploy Step 2: $WHAT → stops" "$OUT" "$NONAME"
+  hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "/releases"
+  hasnt "…and before the tag is looked up under a name that was not confirmed" "$(cat "$T/rec/calls" 2>/dev/null)" "git/ref/tags"
+  [ "$VAR" = - ] || unset "$VAR"
+done
+export GH_STUB_OLD_NAME=old/name
 for sh in $SHELLS; do
   release_texts; rm -f "$D/release-title.txt"
   run50 "$sh" "$W" "$T/relC.sh"
   has "cli-deploy Step 2: the release is created under the current name ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
   hasnt "…never under the old one ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "repos/old/name/"
+  has "…and the binary is uploaded to the current name ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "uploads.github.com/repos/o/r/releases/"
+  hasnt "…never to the old one ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "old/name"
+  same "…and every gh release view is given the current name ($sh)" "$(sort -u "$T/rec/repos" 2>/dev/null)" "o/r"
+  has "…and the block says the URL has the old name ($sh)" "$OUT" "→ Step 2: remote 的網址用的是舊名稱 old/name"
 done
 unset GH_STUB_OLD_NAME
 
@@ -1099,6 +1183,23 @@ for SM in "mcp-deploy:Step 3:3a" "cli-deploy:Step 1 推送:1.5"; do
   has "$S: a remote outside github.com → stops" "$OUT" "推不出 github.com 的 owner/repo"
   same "$S: …and the release commit stays local" "$(rmain "$B")" "$BASE"
 
+  # #53: the tag step asks GitHub for the repository's current name. A name GitHub does not
+  # know shows before the push; a former name that still redirects does not stand in the way
+  mk "$S-gone" https://github.com/gone/repo.git; W="$T/$S-gone"; B="$T/$S-gone.git"
+  put "$W" mcpb/manifest.json '{ "version": "1.4.0" }'; ci "$W"; push "$W"; BASE=$(git -C "$W" rev-parse HEAD)
+  put "$W" mcpb/manifest.json '{ "version": "1.4.1" }'; ci "$W" release
+  run bash "$W" "$T/pre141.sh"
+  has "$S: a name GitHub does not know → stops" "$OUT" "✗ $STEP: 讀不到 gone/repo 在 GitHub 上的正式名稱"
+  same "$S: …and the release commit stays local" "$(rmain "$B")" "$BASE"
+  mk "$S-preold" https://github.com/old/name.git; W="$T/$S-preold"; B="$T/$S-preold.git"
+  put "$W" mcpb/manifest.json '{ "version": "1.4.0" }'; ci "$W"; push "$W"
+  put "$W" mcpb/manifest.json '{ "version": "1.4.1" }'; ci "$W" release
+  export GH_STUB_OLD_NAME=old/name
+  run bash "$W" "$T/pre141.sh"
+  has "$S: a former name that redirects → the push goes on" "$OUT" "→ $STEP: release commit 已推到"
+  same "$S: …and the remote branch is the release commit" "$(rmain "$B")" "$(git -C "$W" rev-parse HEAD)"
+  unset GH_STUB_OLD_NAME
+
   # the checks that stand between the block and an irreversible push, one at a time (#51 verify R1):
   # each case leaves the remote's main where it was
   mk "$S-x"; W="$T/$S-x"; B="$T/$S-x.git"
@@ -1112,6 +1213,17 @@ for SM in "mcp-deploy:Step 3:3a" "cli-deploy:Step 1 推送:1.5"; do
   fence "$S" "推送前檢查（#51）" "$T/prebad.sh" "VERSION='{version}' ==> VERSION='1.4.1;x'"
   run bash "$W" "$T/prebad.sh"
   has "$S: VERSION with a character outside the list → stops" "$OUT" "VERSION 未代入或不合法"; stays
+  # #53: gh cannot tell the repository's name (not logged in; an answer of several lines). The tag
+  # step would stop on it, and it shows before the push, so the release commit must not leave
+  for HOW in "GH_STUB_NO_NAME:gh cannot read the repository's name" "GH_STUB_MULTILINE:an answer of several lines"; do
+    VAR=${HOW%%:*}; WHAT=${HOW#*:}
+    export "$VAR=1"
+    for sh in $SHELLS; do
+      run "$sh" "$W" "$T/pre141.sh"
+      has "$S: $WHAT → stops before the push ($sh)" "$OUT" "✗ $STEP: 讀不到 o/r 在 GitHub 上的正式名稱"; stays
+    done
+    unset "$VAR"
+  done
   # a detached HEAD, an upstream that is a local branch, an upstream remote that is not configured
   git -C "$W" checkout -q --detach
   run bash "$W" "$T/pre141.sh"
