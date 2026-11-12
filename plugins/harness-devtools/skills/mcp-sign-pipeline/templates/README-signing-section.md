@@ -26,15 +26,17 @@ Starting v{{NEXT_VERSION}}, release binaries are signed with a Developer ID Appl
 
 ```bash
 make release-signed     # builds → signs + notarizes → packages
-# Tag the release commit first and push only that tag. X.Y.Z must be the version
-# in your manifest / Version.swift, and HEAD must be the commit you built from.
-git tag -a vX.Y.Z -m "X.Y.Z"
-git push origin refs/tags/vX.Y.Z
+# Tag the commit you built from, then push only that tag. X.Y.Z must be the version in your
+# manifest / Version.swift. <release-commit> is the commit `make release-signed` ran on:
+# name it (`git rev-parse HEAD` right after the build), so a later commit cannot move the tag.
+git tag -a vX.Y.Z -m "{{TARGET_NAME}} X.Y.Z" <release-commit>
+# --no-follow-tags: with push.followTags set, a bare refspec would push other annotated tags too
+git push --no-follow-tags origin refs/tags/vX.Y.Z
 # --verify-tag: fail when the tag is not on the remote, instead of letting gh create one
 gh release create vX.Y.Z --verify-tag <path-to-binary> [<path-to-mcpb>] --notes "..."
 ```
 
-Without `--verify-tag`, gh creates a missing tag itself, on whatever the default branch points at then — not necessarily your release commit. `/harness-devtools:mcp-deploy` and `cli-deploy` do the tagging and the version check for you.
+Without `--verify-tag`, gh creates a missing tag itself, on whatever the default branch points at then — not necessarily your release commit. If you release with the harness-devtools plugin for Claude Code, its `mcp-deploy` and `cli-deploy` skills do the tagging and the version check for you.
 
 `make release-signed` runs `scripts/build-mcpb.sh` (or `build-cli.sh`) with `REQUIRE_CODESIGN=1` so missing prerequisites fail-fast. After universal binary creation, `scripts/sign-and-notarize.sh` performs codesign + notarization. Notarization typically takes 1–15 minutes (`notarytool submit --wait` blocks until Apple finishes).
 

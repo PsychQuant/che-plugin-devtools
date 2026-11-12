@@ -38,7 +38,7 @@ jobs:
           files: .build/release/MyMCPBinary
 ```
 
-**觸發條件**：push `v*` tag。只推那一個 tag（`git push origin refs/tags/v0.5.0`），不要用 `--tags`：它會把本機所有 tag 一起推上去。tag 怎麼打見下一節。
+**觸發條件**：push `v*` tag。只推那一個 tag（`git push --no-follow-tags origin refs/tags/v0.5.0`），不要用 `--tags`：它會把本機所有 tag 一起推上去。`--no-follow-tags` 也要寫：`push.followTags` 開著時，只寫 refspec 仍會連帶推出其他 annotated tag（從這個 commit 走得到、remote 還沒有的）。tag 怎麼打見下一節。
 
 ### 2. GitHub Release — binary 當 asset
 

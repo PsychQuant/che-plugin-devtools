@@ -104,15 +104,43 @@ for s in mcp-deploy cli-deploy; do
 done
 has "mcp-deploy: gh release create checks the tag exists" "$(grep 'gh release create' "$PLUGIN_ROOT/skills/mcp-deploy/SKILL.md")" '--verify-tag'
 # #49: the hand-release examples outside the skills — rules/ and the templates that get copied
-# into other repos — tag first too: gh never creates the tag, and no example pushes every tag
+# into other repos — tag first too: gh never creates the tag, and an example pushes one tag only.
+#
+# doc_commands prints the commands of a document, one per line: every line of a fenced block
+# (comment lines too; backslash-continued lines joined, so a flag on a continuation line counts)
+# and every inline code span of the prose around the blocks. Prose outside code spans is not
+# printed, so a sentence that names a flag in a span of its own ("do not use `--tags`") is not
+# taken for a command. doc_commands <file> untagged prints instead how many fenced blocks have
+# a gh release create with no tagging step above it in the same block.
+doc_commands() { python3 -I -c '
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read().replace("\r\n", "\n").replace("\\\n", " ")
+parts = re.split(r"^[ \t]*```[^\n]*\n(.*?)^[ \t]*```[ \t]*$", text, flags=re.S | re.M)
+blocks, prose = parts[1::2], parts[0::2]
+if len(sys.argv) > 2:
+    n = 0
+    for block in blocks:
+        at = block.find("gh release create")
+        if at >= 0 and not re.search(r"release-tag\.sh|git tag -a ", block[:at]):
+            n += 1
+    print(n)
+else:
+    lines = [line for block in blocks for line in block.split("\n")]
+    lines += [span for part in prose for span in re.findall(r"`([^`\n]+)`", part)]
+    print("\n".join(lines))' "$@"; }
 N_EXAMPLES=0
 while IFS= read -r f; do
   rel=${f#"$PLUGIN_ROOT"/}
-  CREATES=$(grep -c 'gh release create' "$f")
+  CMDS=$(doc_commands "$f")
+  CREATES=$(printf '%s\n' "$CMDS" | grep -c 'gh release create')
   N_EXAMPLES=$((N_EXAMPLES + CREATES))
-  VERIFIED=$(grep 'gh release create' "$f" | grep -c -- '--verify-tag')
+  VERIFIED=$(printf '%s\n' "$CMDS" | grep 'gh release create' | grep -c -- '--verify-tag')
   same "$rel: every gh release create ($CREATES) has --verify-tag" "$VERIFIED" "$CREATES"
-  hasnt "$rel: no example pushes every tag" "$(grep -E 'push( [^ ]+)? --tags' "$f")" 'push'
+  same "$rel: every block with gh release create has a tagging step above it" "$(doc_commands "$f" untagged)" "0"
+  hasnt "$rel: no example pushes more than one tag" "$(printf '%s\n' "$CMDS" | grep -E '(^|[^a-z-])push .*(--tags|--follow-tags|--mirror|--all)([^a-z-]|$)')" 'push'
+  TAG_PUSHES=$(printf '%s\n' "$CMDS" | grep -cE '(^|[^a-z-])push .*refs/tags/')
+  QUIET_PUSHES=$(printf '%s\n' "$CMDS" | grep -E '(^|[^a-z-])push .*refs/tags/' | grep -c -- '--no-follow-tags')
+  same "$rel: every push of a tag ($TAG_PUSHES) has --no-follow-tags" "$QUIET_PUSHES" "$TAG_PUSHES"
 done < <(find "$PLUGIN_ROOT/rules" "$PLUGIN_ROOT"/skills/*/templates -type f -name '*.md' | sort)
 if [ "$N_EXAMPLES" -ge 2 ]; then ok "rules and templates: the release examples were found ($N_EXAMPLES)"; else bad "rules and templates: expected at least 2 gh release create examples, found $N_EXAMPLES"; fi
 # verify R3: the release steps use the VERSION checked at the top of their block, not a raw {version}
