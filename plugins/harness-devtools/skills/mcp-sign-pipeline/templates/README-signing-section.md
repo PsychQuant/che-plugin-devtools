@@ -25,16 +25,20 @@ Starting v{{NEXT_VERSION}}, release binaries are signed with a Developer ID Appl
 **Per-release flow**:
 
 ```bash
-make release-signed     # builds → signs + notarizes → packages
-# Tag the commit you built from, then push only that tag. X.Y.Z must be the version in your
-# manifest / Version.swift. <release-commit> is the commit `make release-signed` ran on:
-# name it (`git rev-parse HEAD` right after the build), so a later commit cannot move the tag.
-git tag -a vX.Y.Z -m "{{TARGET_NAME}} X.Y.Z" <release-commit>
+# Build from a clean, committed tree: `git status --porcelain` must print nothing. <release-commit>
+# below is that commit (`git rev-parse HEAD` before you build), and X.Y.Z must be the version in
+# your manifest / Version.swift.
+make release-signed &&     # builds → signs + notarizes → packages
+# Tag the commit you built from, then push only that tag. The steps are chained with &&: when the
+# build, the tag or the push fails, nothing after it runs and no release is created.
+git tag -a vX.Y.Z -m '{{TARGET_NAME}} X.Y.Z' <release-commit> &&
 # --no-follow-tags: with push.followTags set, a bare refspec would push other annotated tags too
-git push --no-follow-tags origin refs/tags/vX.Y.Z
+git push --no-follow-tags origin refs/tags/vX.Y.Z &&
 # --verify-tag: fail when the tag is not on the remote, instead of letting gh create one
 gh release create vX.Y.Z --verify-tag <path-to-binary> [<path-to-mcpb>] --notes "..."
 ```
+
+Keep the `&&`: `--verify-tag` only checks that the tag exists on the remote, not which commit it points at. A tag of that name that already exists makes `git tag` or the push fail, and the chain stops there.
 
 Without `--verify-tag`, gh creates a missing tag itself, on whatever the default branch points at then — not necessarily your release commit. If you release with the harness-devtools plugin for Claude Code, its `mcp-deploy` and `cli-deploy` skills do the tagging and the version check for you.
 

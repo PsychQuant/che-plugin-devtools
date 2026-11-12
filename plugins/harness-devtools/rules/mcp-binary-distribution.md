@@ -46,10 +46,11 @@ Binary 必須是 release asset 而非 git-committed（太大、會撐爆 repo）
 
 ```bash
 # 手動發 release（CI 尚未設好時）
-# 1. 先在 release commit 打 tag 並推上去。helper 會確認每個版本來源都等於 --expect 的版本，只推這一個 tag
+# 1. 先在 release commit 打 tag 並推上去（HEAD 要是 build 這個 binary 用的 commit）。
+#    helper 會確認每個版本來源都等於 --expect 的版本，只推這一個 tag
 #    （<harness-devtools> 是這個 plugin 的安裝目錄）
-bash <harness-devtools>/scripts/release-tag.sh --dir . --commit HEAD --name-style v --expect 0.4.1
-# 2. 再建 release。--verify-tag：tag 不在 remote 上就失敗，不讓 gh 自己建
+bash <harness-devtools>/scripts/release-tag.sh --dir . --commit HEAD --name-style v --expect 0.4.1 &&
+# 2. helper 成功才建 release（上一行結尾的 &&）。--verify-tag：tag 不在 remote 上就失敗，不讓 gh 自己建
 gh release create v0.4.1 --verify-tag \
   --repo owner/repo \
   --title "v0.4.1 — get_chat_history fixes" \
@@ -57,7 +58,7 @@ gh release create v0.4.1 --verify-tag \
   .build/release/MyMCPBinary
 ```
 
-少了 `--verify-tag`，tag 不存在時 gh 會在預設 branch 當下的 HEAD 自動建一個：不保證落在 release commit，也沒有比對版號（#42、#49）。平常發版用 `/harness-devtools:mcp-deploy`，它已經照這個順序做。
+少了 `--verify-tag`，tag 不存在時 gh 會在預設 branch 當下的 HEAD 自動建一個：不保證落在 release commit，也沒有比對版號（#42、#49）。兩步要用 `&&` 串起來：`--verify-tag` 只確認 tag 在 remote 上，不看它指到哪個 commit，所以 helper 沒成功（版號不符、同名的 tag 已經在別的 commit 上）時不能接著建 release。平常發版用 `/harness-devtools:mcp-deploy`，它已經照這個順序做。
 
 ### 3. Wrapper 自動下載邏輯
 

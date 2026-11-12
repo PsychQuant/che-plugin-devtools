@@ -104,26 +104,49 @@ for s in mcp-deploy cli-deploy; do
 done
 has "mcp-deploy: gh release create checks the tag exists" "$(grep 'gh release create' "$PLUGIN_ROOT/skills/mcp-deploy/SKILL.md")" '--verify-tag'
 # #49: the hand-release examples outside the skills — rules/ and the templates that get copied
-# into other repos — tag first too: gh never creates the tag, and an example pushes one tag only.
+# into other repos — tag first too: gh never creates the tag, an example pushes one tag only, and
+# a failed step stops the example before the release is created.
+#
+# These are text checks against a forgotten step. They do not parse shell: a flag that only
+# appears in a comment at the end of a command line satisfies them, a tag pushed by its short
+# name (`git push origin v1`) is not recognised as a tag push, and only ``` fences are read.
+# The one way of stopping on failure they know is &&: an example that uses `set -e` or
+# `|| exit` instead is reported as unchained.
 #
 # doc_commands prints the commands of a document, one per line: every line of a fenced block
 # (comment lines too; backslash-continued lines joined, so a flag on a continuation line counts)
 # and every inline code span of the prose around the blocks. Prose outside code spans is not
 # printed, so a sentence that names a flag in a span of its own ("do not use `--tags`") is not
-# taken for a command. doc_commands <file> untagged prints instead how many fenced blocks have
-# a gh release create with no tagging step above it in the same block.
+# taken for a command. With a second argument it counts release commands instead, looking at
+# the lines of each fenced block that are not comments:
+#   untagged   gh release create lines with no tagging step (release-tag.sh, git tag -a/-s)
+#              above them in the block since the previous release command
+#   unchained  command lines above a gh release create in the same block that do not end
+#              in && (a comment may follow the &&)
+# A release command that follows && on the same line counts as a line of its own.
 doc_commands() { python3 -I -c '
 import re, sys
 text = open(sys.argv[1], encoding="utf-8").read().replace("\r\n", "\n").replace("\\\n", " ")
 parts = re.split(r"^[ \t]*```[^\n]*\n(.*?)^[ \t]*```[ \t]*$", text, flags=re.S | re.M)
 blocks, prose = parts[1::2], parts[0::2]
-if len(sys.argv) > 2:
-    n = 0
+mode = sys.argv[2] if len(sys.argv) > 2 else ""
+if mode:
+    untagged = unchained = 0
     for block in blocks:
-        at = block.find("gh release create")
-        if at >= 0 and not re.search(r"release-tag\.sh|git tag -a ", block[:at]):
-            n += 1
-    print(n)
+        block = re.sub(r"&&[ \t]*(?=gh release create)", "&&\n", block)
+        cmds = [l for l in block.split("\n") if l.strip() and not l.lstrip().startswith("#")]
+        tagged, pending = False, 0
+        for cmd in cmds:
+            if "gh release create" in cmd:
+                untagged += not tagged
+                unchained += pending
+                tagged, pending = False, 0
+                continue
+            if re.search(r"release-tag\.sh|git tag -[as] ", cmd):
+                tagged = True
+            if not re.search(r"&&[ \t]*(#.*)?$", cmd):
+                pending += 1
+    print(untagged if mode == "untagged" else unchained)
 else:
     lines = [line for block in blocks for line in block.split("\n")]
     lines += [span for part in prose for span in re.findall(r"`([^`\n]+)`", part)]
@@ -134,10 +157,11 @@ while IFS= read -r f; do
   CMDS=$(doc_commands "$f")
   CREATES=$(printf '%s\n' "$CMDS" | grep -c 'gh release create')
   N_EXAMPLES=$((N_EXAMPLES + CREATES))
-  VERIFIED=$(printf '%s\n' "$CMDS" | grep 'gh release create' | grep -c -- '--verify-tag')
+  VERIFIED=$(printf '%s\n' "$CMDS" | grep 'gh release create' | grep -cE -- '(^|[[:space:]])--verify-tag([[:space:]]|$)')
   same "$rel: every gh release create ($CREATES) has --verify-tag" "$VERIFIED" "$CREATES"
-  same "$rel: every block with gh release create has a tagging step above it" "$(doc_commands "$f" untagged)" "0"
-  hasnt "$rel: no example pushes more than one tag" "$(printf '%s\n' "$CMDS" | grep -E '(^|[^a-z-])push .*(--tags|--follow-tags|--mirror|--all)([^a-z-]|$)')" 'push'
+  same "$rel: every gh release create has a tagging step above it in its block" "$(doc_commands "$f" untagged)" "0"
+  same "$rel: every step above a gh release create ends in &&" "$(doc_commands "$f" unchained)" "0"
+  hasnt "$rel: no example pushes more than one tag" "$(printf '%s\n' "$CMDS" | grep -E '(^|[^a-z-])push .*((--tags|--follow-tags|--mirror|--all)([^a-z-]|$)|refs/tags/[^[:space:]]*[*])')" 'push'
   TAG_PUSHES=$(printf '%s\n' "$CMDS" | grep -cE '(^|[^a-z-])push .*refs/tags/')
   QUIET_PUSHES=$(printf '%s\n' "$CMDS" | grep -E '(^|[^a-z-])push .*refs/tags/' | grep -c -- '--no-follow-tags')
   same "$rel: every push of a tag ($TAG_PUSHES) has --no-follow-tags" "$QUIET_PUSHES" "$TAG_PUSHES"
