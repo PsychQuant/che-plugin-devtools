@@ -1057,6 +1057,80 @@ for s in mcp-deploy cli-deploy; do
   hasnt "$s: the push goes to the checked upstream, not to a hard-coded origin main" "$(cat "$T/blk.sh")" 'origin main'
 done
 
+echo "cli-deploy Phase 1 Step 0: no uncommitted change in a version file or README.md before the bump (#52)"
+# Phase 3 Step 1 stages every listed file that is modified; it cannot tell a change this
+# deploy made from one that was already sitting in the work tree. So the check runs
+# BEFORE Phase 1 edits anything: a listed file (or README.md) that already has an
+# uncommitted change stops the run. CHANGELOG.md is exempt - it is usually the notes of
+# this very release - and only gets a note.
+fence cli-deploy "Phase 1 Step 0:" "$T/guard.sh"
+for SH in $SHELLS; do
+  G="g-$(printf '%s' "$SH" | tr -c 'A-Za-z0-9' '-')"
+  mk "$G"; W="$T/$G"
+  put "$W" Sources/S/Version.swift 'enum V { static let version = "1.0.0" }'; put "$W" README.md readme
+  put "$W" CHANGELOG.md changelog; put "$W" package.json '{ "version": "1.0.0" }'; put "$W" notes.txt notes
+  put "$W" Sources/S/Deep/Version.swift deep
+  ci "$W"; push "$W"; BASE=$(git -C "$W" rev-parse HEAD)
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: a clean tree passes" "$RC" 0
+  put "$W" README.md unrelated
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: an uncommitted change in README.md stops the run" "$RC" 1
+  has "$SH: …and the file is named" "$OUT" "README.md"
+  has "$SH: …with what to do" "$OUT" "git stash"
+  git -C "$W" checkout -q -- README.md
+  put "$W" Sources/S/Version.swift 'enum V { static let version = "0.9.9" }'
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: an uncommitted change in Sources/*/Version.swift stops the run" "$RC" 1
+  has "$SH: …and the file is named" "$OUT" "Sources/S/Version.swift"
+  git -C "$W" checkout -q -- Sources/S/Version.swift
+  put "$W" package.json '{ "version": "9.9.9" }'; git -C "$W" add package.json
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: a change that is already staged stops the run too" "$RC" 1
+  has "$SH: …and the file is named" "$OUT" "package.json"
+  git -C "$W" reset -q --hard
+  git -C "$W" rm -q --cached README.md
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: a staged deletion of a listed file stops the run" "$RC" 1
+  git -C "$W" reset -q --hard
+  put "$W" CHANGELOG.md 'notes for this release'
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: a change in CHANGELOG.md alone passes" "$RC" 0
+  has "$SH: …with a note that it goes into the release commit" "$OUT" "CHANGELOG.md"
+  git -C "$W" checkout -q -- CHANGELOG.md
+  put "$W" notes.txt unrelated; put "$W" Sources/S/Deep/Version.swift unrelated
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: a change in a file that is not on the list passes (Phase 3 Step 1 does not stage it)" "$RC" 0
+  put "$W" mcpb/manifest.json '{ "version": "0.0.1" }'
+  run "$SH" "$W" "$T/guard.sh"
+  same "$SH: an untracked version file passes (Phase 3 Step 1 does not stage it either)" "$RC" 0
+  same "$SH: the check changed nothing: HEAD" "$(git -C "$W" rev-parse HEAD)" "$BASE"
+  same "$SH: …and nothing is staged" "$(git -C "$W" diff --cached --name-only)" ""
+done
+# outside a git repository the check stops instead of passing
+mkdir -p "$T/not-a-repo"
+run bash "$T/not-a-repo" "$T/guard.sh"
+same "outside a git repository the check stops" "$RC" 1
+# the check and the staging block must name the same files (CHANGELOG.md is the one exemption)
+fence cli-deploy "Phase 3 Step 1: stage" "$T/stage52.sh"
+SAME_LIST=$(python3 -I - "$T/guard.sh" "$T/stage52.sh" <<'PY'
+import re, shlex, sys
+def specs(path, command):
+    text = open(path, encoding="utf-8").read().replace("\\\n", " ")
+    m = re.search(command + r"[^\n]*? -- ([^\n]*)", text)
+    return sorted(shlex.split(m.group(1))) if m else None
+guard = specs(sys.argv[1], r"status --porcelain")
+stage = specs(sys.argv[2], r"ls-files -m")
+if guard is None or stage is None:
+    print("pathspec list not found")
+elif guard == [s for s in stage if s != "CHANGELOG.md"] and "CHANGELOG.md" in stage:
+    print("same")
+else:
+    print(f"guard {guard} / staging {stage}")
+PY
+)
+same "the check and the staging block name the same files, CHANGELOG.md apart" "$SAME_LIST" same
+
 echo
 echo "deploy tag fences: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

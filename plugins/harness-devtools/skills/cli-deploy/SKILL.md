@@ -66,6 +66,30 @@ echo "Binary: $BINARY_NAME"
 
 ## Phase 1: 更新版本與文檔（先於 build！）
 
+### Step 0: 動手之前，版本檔與 README.md 不能有未 commit 的修改（#52）
+
+Phase 3 Step 1 會把版本來源檔與 README.md 裡有修改的全部 stage 進 release commit。它分不出修改是這次 deploy 做的，還是原本就留在工作樹裡的。所以在改任何檔案之前先檢查：這些檔案若已經有未 commit 的修改（已經 `git add` 的也算），就停下，由使用者先處理。CHANGELOG.md 例外：它通常就是這次要發的內容，有修改時只印一行提醒。
+
+```bash
+# Phase 1 Step 0: 版本來源檔與 README.md 在動手之前要是乾淨的（#52）。清單與 Phase 3 Step 1 的 staging 區塊
+# 是同一份，只少 CHANGELOG.md。--untracked-files=no：untracked 的檔案 Phase 3 Step 1 不會 stage，不必擋
+DIRTY=$(git -c core.quotePath=false status --porcelain --untracked-files=no -- README.md ':(glob)Sources/*/Version.swift' ':(glob)Sources/*/Server.swift' \
+      mcpb/manifest.json package.json pyproject.toml .claude-plugin/plugin.json plugin.json
+) || { echo "✗ Phase 1 Step 0: git status 失敗（不在 git repo 裡？）— 停止"; exit 1; }
+if [ -n "$DIRTY" ]; then
+    echo "✗ Phase 1 Step 0: 下列檔案已經有未 commit 的修改。Phase 3 Step 1 會把它們連同這次的版本變更一起放進 release commit："
+    printf '%s\n' "$DIRTY" | sed 's/^/    /'
+    echo "  停止，還沒有改任何檔案。先把這些修改 commit 或 git stash，再重跑 cli-deploy。"
+    exit 1
+fi
+if [ -n "$(git -c core.quotePath=false status --porcelain -- CHANGELOG.md)" ]; then
+    echo "→ Phase 1 Step 0: CHANGELOG.md 已經有未 commit 的修改；它會整個進 release commit，先確認那是這次要發的內容"
+fi
+echo "→ Phase 1 Step 0: 版本來源檔與 README.md 沒有未 commit 的修改，可以開始"
+```
+
+通過才進 Step 1。這個區塊只檢查，不修改任何東西。
+
 ### Step 1: 更新版本號
 
 找到版本號所在的檔案並更新：
@@ -236,7 +260,7 @@ lipo -info .release/$BINARY_NAME
 
 ### Step 1: Commit，推送前檢查，然後 Push
 
-**只 stage 本次 deploy 實際動過的檔案** — `git add -A` 會把使用者 working tree 裡無關的 modified files（例如 session-start hook 改的 `.claude/*`、`CLAUDE.md`）全部塞進 release commit，污染歷史。
+**只 stage 本次 deploy 實際動過的檔案** — `git add -A` 會把使用者 working tree 裡無關的 modified files（例如 session-start hook 改的 `.claude/*`、`CLAUDE.md`）全部塞進 release commit，污染歷史。下面的區塊 stage 的是清單內有修改的檔案；Phase 1 Step 0 已經確認這些檔案在動手之前沒有未 commit 的修改，所以 stage 到的就是 Phase 1 改的（#52）。
 
 commit 訊息、release 標題、release notes、repo 描述都是自由文字，內容常來自 CHANGELOG，可能有反引號、`$( )`、引號。**這些文字不寫進 bash 區塊**：shell 會執行雙引號裡的反引號與 `$( )`，引號會把字串截斷（#50）。做法是用 Write 工具把文字寫成檔案，區塊只從檔案讀。
 
@@ -283,7 +307,7 @@ git diff --cached --stat
 git commit --cleanup=whitespace -F "$MSG_FILE" && rm -f "$MSG_FILE"
 ```
 
-如果 `git diff --cached --stat` 顯示了非預期的檔案，停下來檢查 — 可能是 working tree 本來就髒。
+`git diff --cached --stat` 列出的應該只有 CHANGELOG.md、README.md 與版本來源檔。Phase 1 Step 0 擋的是這份清單裡的檔案；清單以外的檔案若在跑 cli-deploy 之前就已經 `git add` 過，這個區塊不會擋，它們會跟著進 release commit。
 
 **推送前檢查，然後推送。** release commit 推出去就收不回。Step 1.5 會停下的情況裡，推送前就看得出來的先在這裡檢查（#51）：版本來源彼此不一致或讀不出、同名 tag 已在別的 commit、沒有 upstream、追蹤的不是預設 branch、remote 不在 github.com。版本與 tag 用 `release-tag.sh --dry-run` 查，它不建立任何東西。全部通過才推送，推到這個 branch 追蹤的 upstream（branch 名稱要與 upstream 的名稱相同；這次會推的 commit 會先印出來）。
 
