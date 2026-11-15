@@ -99,13 +99,18 @@
 #     a. a [tool.setuptools_scm] table           setuptools.build_meta, or
 #                                                setuptools.build_meta:__legacy__ —
 #                                                and setuptools-scm listed in
-#                                                [build-system].requires, without an
-#                                                environment marker: the table
-#                                                is a plugin's, and an isolated
-#                                                build installs only what is listed
-#     b. [tool.hatch.version] source = "vcs"     hatchling.build
+#                                                [build-system].requires in an entry
+#                                                with no `;` (no environment marker):
+#                                                the table is a plugin's, and an
+#                                                isolated build installs only what is
+#                                                listed — and no setup.py or setup.cfg
+#                                                next to pyproject.toml (see below)
+#     b. [tool.hatch.version] source = "vcs"     hatchling.build — and no custom
+#                                                metadata hook (see below)
 #     c. [tool.poetry-dynamic-versioning]        poetry.core.masonry.api, or
-#        enable = true                           poetry_dynamic_versioning.backend
+#        enable = true                           poetry_dynamic_versioning.backend —
+#                                                and no from-file table in it (the
+#                                                version then comes from a file)
 #   Such a declaration only EXPLAINS a version that is not in the file, and only
 #   when [build-system].build-backend states its backend: a dynamic version that
 #   nothing in the file stands for becomes a note instead of a problem, and the
@@ -157,6 +162,49 @@
 #   states none — the one case in which a build back-end supplies the version
 #   (pyproject.toml specification, `dynamic`). With a static [project].version, or
 #   with "version" not listed, they are not consulted, as in 2.6.0.
+#
+#   What sits next to pyproject.toml. Something outside the file can take a
+#   dynamic version over, and then the version a build produces is not the one
+#   the tables above speak of. The helper looks at three things, in the directory
+#   of pyproject.toml, at the commit it reads — a closed list; do not add a fourth
+#   by resemblance:
+#     1. setup.py, setup.cfg (names compared without regard to case). setuptools
+#        takes a version stated in either before setuptools-scm supplies one. The
+#        helper reads neither, and setup.py is code, so presence is enough: (a)
+#        does not count, and the run is unreadable with a message naming the file.
+#        A setup.py that only calls setup() stops the run as well.
+#     2. hatch.toml. hatchling merges it over [tool.hatch], one top-level key at a
+#        time, so a `version` key there replaces [tool.hatch.version]. With such a
+#        key (or a hatch.toml that is not valid TOML) the run is unreadable
+#        whenever hatch is the one building: hatchling.build stated, or no backend
+#        stated. Without that key hatch.toml changes nothing here.
+#     3. a `custom` metadata hook ([tool.hatch.metadata.hooks.custom], or
+#        [metadata.hooks.custom] in hatch.toml, merged as in 2.): code in the tree
+#        that may set the version. With one, (b) does not count.
+#   That is where the helper's view ends. Not looked at, and so known limits:
+#     - anything that only happens when the project is built: the code of a
+#       plugin named in requires (a metadata hook that is a named plugin, say),
+#       environment variables such as SETUPTOOLS_SCM_PRETEND_VERSION, and
+#       whether poetry-dynamic-versioning is active (under
+#       poetry.core.masonry.api it works only as a plugin of the poetry command;
+#       a build with pip or `python -m build` then keeps the placeholder);
+#     - a custom metadata hook next to a [tool.hatch.version] PATH: the path is
+#       read, as in 2.6.0;
+#     - a tree with no [project] table: setup.py and setup.cfg have never been
+#       version sources, so a version stated there is not compared and the run
+#       goes on with the other sources or --expect, as in 2.6.0. With one of the
+#       two files in the directory the helper does not print the git-tag note.
+#       The same goes for a poetry 1 file whose placeholder is not read: what
+#       poetry-dynamic-versioning then produces is not compared;
+#     - how a tag becomes a version. The helper does not check that the tag it is
+#       about to create will be read as that version: the tool's own settings for
+#       reading tags and writing versions are not looked at (setuptools-scm
+#       tag_regex, git_describe_command, version_scheme; hatch raw-options;
+#       poetry-dynamic-versioning pattern, format, format-jinja, style, bump), and
+#       neither is their fit with the tag's name. Two measured examples:
+#       poetry-dynamic-versioning's default pattern does not read a tag named
+#       <plugin>-v1.2.3, and a `format` with no placeholder in it yields that
+#       constant.
 #
 # The version must also make a valid git tag name (`git check-ref-format`), which
 # is checked before anything is created, so --dry-run and a real run agree.
@@ -449,8 +497,8 @@ def build_backend(doc):
 def required_plugins(doc):
     """The distribution names in [build-system].requires, normalised the way package
     indexes compare them: the name each requirement starts with, lower-cased, runs of
-    `-`, `_` and `.` as one `-`. Empty when requires is missing or not a list of
-    strings. A requirement with an environment marker (`name; python_version < "3"`)
+    `-`, `_` and `.` as one `-`. Empty when requires is missing or not a list; an
+    entry that is not a string is skipped. A requirement with an environment marker (`name; python_version < "3"`)
     is left out: it is installed only where the marker holds, and this helper cannot
     know the environment a build will run in, so such an entry does not show that the
     plugin is part of the build (#48 verify R4). Markers are not evaluated: any `;` in
@@ -541,6 +589,19 @@ def read_sources(commit):
             return []
         return [p[len(prefix):] for p in r.stdout.split("\0") if p]
 
+    def root_files():
+        """{lower-cased name: name} of the files directly in the version root at this
+        commit. Blobs only (a symbolic link is one), not directories or submodules.
+        Lower-cased, because on a file system that ignores case a build tool opens
+        Setup.py when it asks for setup.py."""
+        r = git("ls-tree", "-z", f"{commit}:{prefix.rstrip('/')}")
+        names = {}
+        for entry in (r.stdout.split("\0") if r.returncode == 0 else []):
+            meta, _, name = entry.partition("\t")
+            if name and meta.split()[1:2] == ["blob"]:
+                names.setdefault(name.lower(), name)
+        return names
+
     def add(name, value, rel):
         if isinstance(value, str) and SEMVER.fullmatch(value):
             found.append((name, value)); paths.append(prefix + rel)
@@ -613,9 +674,47 @@ def read_sources(commit):
         # provides it; poetry-dynamic-versioning also works as a poetry command-line
         # plugin, which requires cannot show.
         plugins = required_plugins(doc)
+        # What sits NEXT TO pyproject.toml can take the version over (verify R5: the
+        # wheel carried the version of a setup.py, and of a path named in hatch.toml,
+        # while the helper printed the git-tag note and went on with --expect). Three
+        # things are looked at, a CLOSED list - do not add a fourth by resemblance. What
+        # only runs when the project is built (the code of a plugin named in requires,
+        # an environment variable) is outside what this helper can see; the header says
+        # where that line is.
+        #   1. setup.py, setup.cfg. setuptools takes a version stated in either before
+        #      setuptools-scm supplies one. The helper reads neither, and setup.py is
+        #      code, so their presence is enough for [tool.setuptools_scm] not to count.
+        #   2. hatch.toml. hatchling merges it over [tool.hatch], one top-level key at a
+        #      time (hatchling metadata/core.py, read 2026-11-15: `hatch_config.update`),
+        #      so a `version` key there REPLACES [tool.hatch.version] and a `metadata`
+        #      key replaces [tool.hatch.metadata].
+        #   3. a `custom` metadata hook: code in the tree (hatch_build.py) that may set
+        #      any field `dynamic` lists, the version included. Like setup.py, its
+        #      presence is enough for source = "vcs" not to count.
+        nearby = root_files()
+        legacy = sorted(n for n in ("setup.cfg", "setup.py") if n in nearby)
+        hatch_file, hatch_file_why = {}, None
+        if "hatch.toml" in nearby:
+            try:
+                hatch_file = TOML.loads(show(nearby["hatch.toml"]) or "")
+            except (TOML.TOMLDecodeError, RecursionError):
+                hatch_file_why = "hatch.toml: not valid TOML, so it cannot be told whether it replaces [tool.hatch.version] in pyproject.toml (hatchling takes a version key in hatch.toml in its place)"
+        if "version" in hatch_file:
+            hatch_file_why = "hatch.toml: has a version key, which hatchling takes in place of [tool.hatch.version] in pyproject.toml, and this helper reads pyproject.toml only - move the version settings into [tool.hatch.version] and take the key out of hatch.toml"
+        tool_hatch = dig(doc, "tool", "hatch")
+        hatch_now = dict(tool_hatch) if isinstance(tool_hatch, dict) else {}
+        hatch_now.update(hatch_file)       # the merge hatchling does
+        custom_hook = dig(hatch_now, "metadata", "hooks", "custom") is not None
+        # poetry-dynamic-versioning reads the version from a FILE, not from git tags, when
+        # its table has a from-file table (measured: the wheel carried the 2.0.0 of the
+        # file it names). The placeholder is still a placeholder then, but the
+        # declaration no longer says "git tags", and the helper does not read that file.
+        pdv_table = dig(doc, "tool", "poetry-dynamic-versioning")
+        pdv_from_file = isinstance(pdv_table, dict) and "from-file" in pdv_table
         valid = [name for name in scm if stated and GIT_TAG_FAMILY[name] == family
-                 and (name != "setuptools_scm" or "setuptools-scm" in plugins)]
-        before = (len(found), len(problems))
+                 and (name != "setuptools_scm" or ("setuptools-scm" in plugins and not legacy))
+                 and (name != "hatch-vcs" or not (custom_hook or hatch_file_why))
+                 and (name != "poetry-dynamic-versioning" or not pdv_from_file)]
         explained = False       # a git-tag backend is why the dynamic version is not read
         skipped = False         # the poetry placeholder was left out
         if "version" in proj:
@@ -651,6 +750,11 @@ def read_sources(commit):
             if dig(doc, "tool", "setuptools", "dynamic", "version") is not None:
                 accounted = True
                 problems.append("pyproject.toml: [tool.setuptools.dynamic] version (attr or file) is not read by this helper - delete the table if the project does not build with setuptools; otherwise state the version in [project]")
+            # hatch.toml (2. above) counts whenever hatch is the one building: its
+            # backend is stated, or none is and the hatch tables are read as in 2.6.0.
+            if hatch_file_why and (not stated or family == "hatch"):
+                accounted = True
+                problems.append(hatch_file_why)
             # tool.hatch.version, unless it says source = "vcs", is either read or a
             # problem - there is no third outcome. An empty table, or one with no
             # path, used to count as "declares nothing", so a [tool.poetry].version or
@@ -691,12 +795,24 @@ def read_sources(commit):
             # git-tag declaration to explain - one whose own backend is stated - or
             # reported as one the helper does not read.
             if not accounted:
+                # A git-tag declaration whose own backend is stated and which still does
+                # not count: every reason is said (verify R4, R5). Under one backend only
+                # its own declaration can be in `valid`, so `valid` and `reasons` are
+                # never both non-empty.
+                reasons = []
+                if "setuptools_scm" in scm and family == GIT_TAG_FAMILY["setuptools_scm"]:
+                    if "setuptools-scm" not in plugins:
+                        reasons.append("pyproject.toml: dynamic version: [tool.setuptools_scm] is there and the file states setuptools' backend, but [build-system].requires has no setuptools-scm entry that counts, so the table does not count: a build installs only what requires lists, and an entry with a `;` in it is left out (what follows a `;` is an environment marker, and such an entry is installed only where the marker holds; a `;` inside a URL is not told apart from one) - list setuptools-scm in requires without a `;`, or state the version in [project]")
+                    if legacy:
+                        reasons.append(f"pyproject.toml: dynamic version: [tool.setuptools_scm] is there, but the directory also holds {', '.join(legacy)}: setuptools takes a version stated in setup.py or setup.cfg before setuptools-scm supplies one, and this helper reads neither file, so the table does not count - delete the file (what it configures can go into pyproject.toml), or state the version in [project]")
+                if "hatch-vcs" in scm and family == GIT_TAG_FAMILY["hatch-vcs"] and custom_hook:
+                    reasons.append('pyproject.toml: dynamic version: [tool.hatch.version] says source = "vcs", but a custom metadata hook is configured ([tool.hatch.metadata.hooks.custom], or the same table in hatch.toml): it is code in the tree that may set the version itself, and this helper does not run it, so the declaration does not count - state the version in [project]')
+                if "poetry-dynamic-versioning" in scm and family == GIT_TAG_FAMILY["poetry-dynamic-versioning"] and pdv_from_file:
+                    reasons.append("pyproject.toml: dynamic version: [tool.poetry-dynamic-versioning] has a from-file table, so the version comes from the file it names and not from git tags, and this helper does not read that file - take the from-file table out, or state the version in [project]")
                 if valid:
                     explained = True
-                elif "setuptools_scm" in scm and family == GIT_TAG_FAMILY["setuptools_scm"]:
-                    # the table and its backend are both there and `valid` is still empty:
-                    # the one thing missing is the requires entry
-                    problems.append("pyproject.toml: dynamic version: [tool.setuptools_scm] is there and the file states setuptools' backend, but [build-system].requires has no setuptools-scm entry without an environment marker, so the table does not count (a build installs only what requires lists, and an entry with a marker only where the marker holds) - list setuptools-scm in requires without a marker, or state the version in [project]")
+                elif reasons:
+                    problems.extend(reasons)
                 elif stated:
                     problems.append(f"pyproject.toml: dynamic version: the file states {backend}, and nothing this helper reads stands for the version under that backend (it reads a [tool.hatch.version] path under hatchling.build and [tool.poetry].version under poetry.core.masonry.api; a version taken from git tags needs that tool's own backend) - state the version in [project] instead, or move to one of those layouts")
                 else:
@@ -706,11 +822,12 @@ def read_sources(commit):
             # [project] table that neither states a version nor lists it in dynamic, no
             # back-end supplies one, so there is nothing for a git-tag note to explain.
             explained = True
-        used = (len(found), len(problems)) != before    # this file gave a source or a problem
         # the second case is a poetry 1 file - no [project] table - whose only version is
         # the placeholder; with a [project] table the git-tag note would claim what no
-        # back-end can do there (verify R4), so that file gets the placeholder note
-        if explained or (skipped and not used and "poetry-dynamic-versioning" in valid and "project" not in doc):
+        # back-end can do there (verify R4), so that file gets the placeholder note.
+        # (Without a [project] table this file gives no source and no problem, so there
+        # is nothing else to check here - verify R5 found the old extra condition dead.)
+        if explained or (skipped and "poetry-dynamic-versioning" in valid and "project" not in doc):
             notes.append(f"pyproject.toml: the version comes from git tags ({', '.join(valid)}); not a version source")
         elif skipped:
             notes.append("pyproject.toml: [tool.poetry].version is the placeholder of poetry-dynamic-versioning (enable = true); not read")

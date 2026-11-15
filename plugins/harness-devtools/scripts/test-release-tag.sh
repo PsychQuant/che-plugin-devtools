@@ -1166,12 +1166,14 @@ for R in 'requires = ["setuptools", "setuptools-scm"]|0' 'requires = ["setuptool
          "requires = [\"setuptools\", \"setuptools-scm @ https://example.com/x.whl ; python_version < '0'\"]|21" \
          'requires = ["setuptools", "setuptools-scm @ https://example.com/a;b.whl"]|21' \
          "requires = [\"setuptools-scm<8; python_version < '3.9'\", \"setuptools-scm>=8; python_version >= '3.9'\"]|21" \
-         "requires = [\"setuptools-scm; python_version < '0'\", \"setuptools-scm>=8\"]|0"; do
+         "requires = [\"setuptools-scm; python_version < '0'\", \"setuptools-scm>=8\"]|0" \
+         "requires = [\"setuptools\", \"setuptools-scm; sys_platform == 'win32'\"]|21" \
+         'requires = ["setuptools", "  setuptools-scm >= 8"]|0'; do
   new_repo; put "$W" pyproject.toml "$(printf '[build-system]\n%s\nbuild-backend = "setuptools.build_meta"\n\n' "${R%|*}"; dyn_pyproject "$PASS_SCM")"; commit "$W"
   run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
   check "a [tool.setuptools_scm] table under setuptools, ${R%|*} → exit ${R##*|}" "$RC" "${R##*|}"
   # the table and its backend are both there: the message has to name the one thing that is missing
-  [ "${R##*|}" = 0 ] || has "…and the message says what is missing in requires" "has no setuptools-scm entry without an environment marker"
+  [ "${R##*|}" = 0 ] || has "…and the message says what is missing in requires" "has no setuptools-scm entry that counts"
 done
 # verify R4: a requirement with an environment marker (the text after `;`) is installed only
 # where the marker holds, so it does not show that the plugin is part of the build - the
@@ -1180,8 +1182,11 @@ done
 # a marker on a URL requirement, a `;` inside a URL (no marker, but the helper does not parse
 # URLs and stops), two entries whose markers cover every case between them
 # (still 21: neither is unconditional), and an unconditional entry next to a conditional one
-# (0: the unconditional one counts). The same file with [tool.setuptools_scm] removed stops
-# with the general message, not with the one about requires.
+# (0: the unconditional one counts). Verify R5 added the last two: a marker on a variable
+# other than python_version (21), and white space before the name (0: a requirement may
+# start with it). The message speaks of entries with a `;`, which is true of the URL case
+# as well. The same file with [tool.setuptools_scm] removed stops with the general message,
+# not with the one about requires.
 new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n\n'; dyn_pyproject)"; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "dynamic version under setuptools with no [tool.setuptools_scm] table → exit 21" "$RC" 21
@@ -1195,6 +1200,204 @@ run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "a [project] table with no version and no dynamic, next to a poetry-dynamic-versioning placeholder → exit 0, as in 2.6.0" "$RC" 0
 hasnt "…and no note says the version comes from git tags (verify R4)" "comes from git tags"
 has "…the placeholder note is printed instead" "placeholder of poetry-dynamic-versioning"
+
+echo "== what sits next to pyproject.toml can take the version over (#48 verify R5)"
+# verify R5: setuptools takes a version that setup.py or setup.cfg states before
+# setuptools-scm supplies one - the wheel carried setup.py's 2.0.0 while the helper went on
+# with --expect. The helper reads neither file, and setup.py is code, so their PRESENCE next
+# to pyproject.toml is enough: [tool.setuptools_scm] then does not count. A setup.py that
+# only calls setup(), or a setup.cfg with no version in it, stops the run as well; 2.6.0
+# stopped on every one of these files. Names are compared without regard to case, because
+# on a file system that ignores case setuptools opens Setup.py as setup.py.
+SCM_OK="$(printf '[build-system]\nrequires = ["setuptools>=64", "setuptools-scm>=8"]\nbuild-backend = "setuptools.build_meta"\n\n'; dyn_pyproject "$PASS_SCM")"
+for L in 'setup.py|from setuptools import setup
+setup(version="2.0.0")|setup.py' 'setup.cfg|[metadata]
+version = 3.0.0|setup.cfg' 'setup.py|from setuptools import setup
+setup()|setup.py' 'setup.cfg|[flake8]
+max-line-length = 100|setup.cfg' 'Setup.py|from setuptools import setup
+setup(version="2.0.0")|setup.py'; do
+  NAME="${L%%|*}"; REST="${L#*|}"; BODY="${REST%|*}"; SHOWN="${REST##*|}"
+  new_repo; put "$W" pyproject.toml "$SCM_OK"; put "$W" "$NAME" "$BODY"; commit "$W"
+  for E in 1.0.0 9.9.9; do
+    run "$W" --dir . --commit HEAD --name-style v --dry-run --expect "$E"
+    check "[tool.setuptools_scm] with $NAME next to it ($(printf '%s' "$BODY" | tail -n 1)), --expect $E → exit 21" "$RC" 21
+  done
+  has "…the message names the file" "the directory also holds $SHOWN"
+  hasnt "…and no note says the version comes from git tags" "comes from git tags"
+done
+new_repo; put "$W" pyproject.toml "$SCM_OK"; put "$W" setup.py 'from setuptools import setup; setup()'; put "$W" setup.cfg '[metadata]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "both setup.py and setup.cfg next to it → exit 21" "$RC" 21
+has "…and both are named" "the directory also holds setup.cfg, setup.py"
+new_repo; put "$W" pyproject.toml "$SCM_OK"; put "$W" tools/setup.py 'from setuptools import setup; setup(version="2.0.0")'; put "$W" docs/setup.cfg '[metadata]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "setup.py and setup.cfg in other directories only → exit 0" "$RC" 0
+has "…with the git-tag note" "comes from git tags (setuptools_scm)"
+new_repo; put "$W" pyproject.toml "$SCM_OK"; put "$W" setup.py/notes.txt 'a directory, not a file'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a DIRECTORY named setup.py is not the file → exit 0" "$RC" 0
+new_repo; put "$W" pkg/pyproject.toml "$SCM_OK"; put "$W" pkg/setup.py 'from setuptools import setup; setup()'; commit "$W"
+run "$W" --dir pkg --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "--dir pkg with pkg/setup.py → exit 21" "$RC" 21
+new_repo; put "$W" pkg/pyproject.toml "$SCM_OK"; put "$W" setup.py 'from setuptools import setup; setup()'; commit "$W"
+run "$W" --dir pkg --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "--dir pkg with setup.py at the repository root only → exit 0: it is not next to pkg/pyproject.toml" "$RC" 0
+# the two reasons a [tool.setuptools_scm] table may not count are each reported
+new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n\n'; dyn_pyproject "$PASS_SCM")"; put "$W" setup.cfg '[metadata]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "setup.cfg next to it AND setuptools-scm missing from requires → exit 21" "$RC" 21
+has "…the requires reason is reported" "has no setuptools-scm entry that counts"
+has "…and so is the file" "the directory also holds setup.cfg"
+# only that one pass is taken away: everything else reads as before
+new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["setuptools>=64", "setuptools-scm>=8"]\nbuild-backend = "setuptools.build_meta"\n\n[project]\nname = "x"\nversion = "1.0.0"\n\n%s\n' "$PASS_SCM")"; put "$W" setup.py 'from setuptools import setup; setup()'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a static [project].version with setup.py next to it → exit 0: the tables are not consulted" "$RC" 0
+has "…from [project]" "sources=pyproject"
+new_repo; put "$W" pyproject.toml "$(bs hatchling.build '"hatchling"'; dyn_pyproject "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; put "$W" setup.py 'from setuptools import setup; setup(version="2.0.0")'; put "$W" setup.cfg '[metadata]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a hatch path under hatchling with setup.py and setup.cfg next to it → exit 0: hatchling does not read them" "$RC" 0
+new_repo; put "$W" pyproject.toml "$(bs poetry.core.masonry.api '"poetry-core>=2"'; dyn_pyproject "$PASS_POETRY2")"; put "$W" setup.cfg '[metadata]
+version = 3.0.0'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "the poetry 2 layout with setup.cfg next to it → exit 0" "$RC" 0
+# a tree with no [project] table is not this case. 2.6.0 went on with the other sources or
+# --expect there, and so does the helper now: setup.py and setup.cfg have never been version
+# sources (a known limit, written in the README). The git-tag note is not printed, though:
+# with setup.cfg in the directory the helper cannot say where the version comes from.
+new_repo; put "$W" pyproject.toml "$(bs setuptools.build_meta '"setuptools", "setuptools-scm"'; printf '[tool.setuptools_scm]\n')"; put "$W" setup.cfg '[metadata]
+name = x
+version = 3.0.0'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.2.3
+check "no [project] table, [tool.setuptools_scm], and a setup.cfg that states a version → exit 0, as in 2.6.0" "$RC" 0
+hasnt "…but no note says the version comes from git tags" "comes from git tags"
+# --at-bump reads the same way at every commit it walks: a bump commit that still had
+# setup.py cannot be told from one whose version setup.py set
+new_repo; plugin_json "$W" "" 1.0.0; put "$W" pyproject.toml "$SCM_OK"; put "$W" setup.py 'from setuptools import setup; setup()'; commit "$W" "bump"
+git -C "$W" rm -q setup.py; commit "$W" "drop setup.py"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "setup.py deleted after the bump: the current commit reads → exit 0" "$RC" 0
+run "$W" --dir . --commit HEAD --name-style v --dry-run --at-bump
+check "…but --at-bump stops at the bump commit, which still had it → exit 21" "$RC" 21
+
+# hatchling merges hatch.toml over [tool.hatch], one top-level key at a time (hatchling
+# metadata/core.py, read 2026-11-15): a `version` key there REPLACES [tool.hatch.version],
+# and a `metadata` key replaces [tool.hatch.metadata]. The wheel carried the 2.0.0 of the
+# path hatch.toml names while pyproject.toml said source = "vcs". The helper reads
+# pyproject.toml only, so a version key in hatch.toml stops the run whenever hatch is the
+# one building (hatchling.build stated, or no backend stated).
+HATCH_VCS_OK="$(bs hatchling.build '"hatchling", "hatch-vcs"'; dyn_pyproject "$PASS_HATCH_VCS")"
+HATCH_PATH_OK="$(bs hatchling.build '"hatchling"'; dyn_pyproject "$PASS_HATCH_PATH")"
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" hatch.toml '[version]
+path = "about.py"'; put "$W" about.py '__version__ = "2.0.0"'; commit "$W"
+for E in 1.0.0 2.0.0; do
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect "$E"
+  check "source = \"vcs\" with a [version] table in hatch.toml, --expect $E → exit 21" "$RC" 21
+done
+has "…the message names hatch.toml" "hatch.toml: has a version key"
+hasnt "…and no note says the version comes from git tags" "comes from git tags"
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" hatch.toml '[envs.default]
+dependencies = ["pytest"]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "source = \"vcs\" with a hatch.toml that has no version key → exit 0" "$RC" 0
+has "…with the git-tag note" "comes from git tags (hatch-vcs)"
+new_repo; put "$W" pyproject.toml "$HATCH_PATH_OK"; put "$W" x.py '__version__ = "1.0.0"'; put "$W" hatch.toml '[version]
+path = "y.py"'; put "$W" y.py '__version__ = "2.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a hatch path with a [version] table in hatch.toml → exit 21 (2.6.0 compared the file hatchling does not use)" "$RC" 21
+has "…the message names hatch.toml" "hatch.toml: has a version key"
+for BAD in '[version|not valid TOML' 'version = "x.py"|has a version key'; do
+  new_repo; put "$W" pyproject.toml "$HATCH_PATH_OK"; put "$W" x.py '__version__ = "1.0.0"'; put "$W" hatch.toml "${BAD%|*}"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+  check "a hatch path with hatch.toml holding: ${BAD%|*} → exit 21" "$RC" 21
+  has "…and the message says why" "hatch.toml: ${BAD##*|}"
+done
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" Hatch.toml '[version]
+path = "about.py"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "the same file named Hatch.toml → exit 21" "$RC" 21
+new_repo; put "$W" pyproject.toml "$(dyn_pyproject "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; put "$W" hatch.toml '[version]
+path = "y.py"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a hatch path with no backend stated and a [version] table in hatch.toml → exit 21" "$RC" 21
+new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["setuptools>=64", "setuptools-scm>=8"]\nbuild-backend = "setuptools.build_meta"\n\n'; dyn_pyproject "$PASS_SCM" "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; put "$W" hatch.toml '[version]
+path = "y.py"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "setuptools stated, with a leftover hatch path and hatch.toml → exit 0: hatch is not the one building" "$RC" 0
+hasnt "…and hatch.toml is not mentioned" "hatch.toml"
+new_repo; put "$W" pyproject.toml "$(bs hatchling.build '"hatchling"'; printf '[project]\nname = "x"\nversion = "1.0.0"\n')"; put "$W" hatch.toml '[version]
+path = "y.py"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a static [project].version with a [version] table in hatch.toml → exit 0: the tables are not consulted" "$RC" 0
+new_repo; put "$W" pyproject.toml "$(bs hatchling.build '"hatchling", "hatch-vcs"'; printf '%s\n' "$PASS_HATCH_VCS")"; put "$W" hatch.toml '[version]
+path = "about.py"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "no [project] table, source = \"vcs\" and a [version] table in hatch.toml → exit 0, as in 2.6.0" "$RC" 0
+hasnt "…but no note says the version comes from git tags" "comes from git tags"
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" docs/hatch.toml '[version]
+path = "about.py"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "hatch.toml in another directory only → exit 0" "$RC" 0
+# a `custom` metadata hook is code in the tree (hatch_build.py) that may set any field
+# listed in dynamic, the version included: the wheel carried the hook's 2.0.0 next to
+# source = "vcs". Like setup.py, its presence is enough for the git-tag declaration not to
+# count. A hook that is a named plugin is not looked at, and a hatch PATH is read as in
+# 2.6.0 whatever hooks there are (both are known limits, written in the README).
+HOOK='[tool.hatch.metadata.hooks.custom]'
+new_repo; put "$W" pyproject.toml "$(printf '%s\n\n%s\n' "$HATCH_VCS_OK" "$HOOK")"; commit "$W"
+for E in 1.0.0 2.0.0; do
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect "$E"
+  check "source = \"vcs\" with a custom metadata hook, --expect $E → exit 21" "$RC" 21
+done
+has "…the message names the hook" "a custom metadata hook"
+hasnt "…and no note says the version comes from git tags" "comes from git tags"
+new_repo; put "$W" pyproject.toml "$(printf '%s\n\n%s\n' "$HATCH_VCS_OK" '[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"')"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "source = \"vcs\" with a metadata hook that is a named plugin → exit 0" "$RC" 0
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" hatch.toml '[metadata.hooks.custom]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "source = \"vcs\" with the custom hook declared in hatch.toml → exit 21" "$RC" 21
+has "…the message names the hook" "a custom metadata hook"
+new_repo; put "$W" pyproject.toml "$(printf '%s\n\n%s\n' "$HATCH_VCS_OK" "$HOOK")"; put "$W" hatch.toml '[metadata]
+allow-direct-references = true'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a [metadata] table in hatch.toml replaces the one in pyproject.toml, its custom hook included → exit 0" "$RC" 0
+new_repo; put "$W" pyproject.toml "$(printf '%s\n\n%s\n' "$HATCH_PATH_OK" "$HOOK")"; put "$W" x.py '__version__ = "1.0.0"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a hatch path with a custom metadata hook → exit 0, as in 2.6.0" "$RC" 0
+
+# poetry-dynamic-versioning reads the version from a FILE when its table has a from-file
+# table (the wheel carried the 2.0.0 of the file it names). The placeholder is still not
+# read, but the declaration no longer says "git tags", so it does not count.
+PDV_OWN="$(bs poetry_dynamic_versioning.backend '"poetry-core>=1.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"'; dyn_pyproject "$PASS_PDV")"
+for FF in '[tool.poetry-dynamic-versioning.from-file]
+source = "VERSION"' '[tool.poetry-dynamic-versioning.from-file]'; do
+  new_repo; put "$W" pyproject.toml "$(printf '%s\n\n%s\n' "$PDV_OWN" "$FF")"; put "$W" VERSION '2.0.0'; commit "$W"
+  for E in 1.0.0 2.0.0; do
+    run "$W" --dir . --commit HEAD --name-style v --dry-run --expect "$E"
+    check "poetry-dynamic-versioning with $(printf '%s' "$FF" | tail -n 1), --expect $E → exit 21" "$RC" 21
+  done
+  has "…the message names the table" "has a from-file table"
+  hasnt "…and no note says the version comes from git tags" "comes from git tags"
+done
+new_repo; put "$W" pyproject.toml "$PDV_OWN"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "the same file without from-file → exit 0" "$RC" 0
+has "…with the git-tag note" "comes from git tags (poetry-dynamic-versioning)"
+new_repo; put "$W" pyproject.toml "$(bs poetry_dynamic_versioning.backend '"poetry-core>=1.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"'; printf '%s\n\n[tool.poetry-dynamic-versioning.from-file]\nsource = "VERSION"\n' "$PASS_PDV")"; put "$W" VERSION '2.0.0'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a poetry 1 file (no [project] table) with from-file → exit 0, as in 2.6.0" "$RC" 0
+hasnt "…but no note says the version comes from git tags" "comes from git tags"
+has "…the placeholder note is printed instead" "placeholder of poetry-dynamic-versioning"
+
+# verify R5: with no [project] table, a [tool.poetry].version that IS read (no placeholder),
+# and a git-tag declaration that would count, the file gave a source - the git-tag note
+# would say the opposite
+new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["setuptools>=64", "setuptools-scm>=8"]\nbuild-backend = "setuptools.build_meta"\n\n%s\n\n%s\n' "$PASS_POETRY2" "$PASS_SCM")"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "no [project] table, a [tool.poetry].version and a [tool.setuptools_scm] table that counts → exit 0" "$RC" 0
+has "…the poetry version is the source" "sources=poetry"
+hasnt "…and no note says the version comes from git tags" "comes from git tags"
 
 echo "== two declarations the helper cannot read: each is reported, neither hides the other (#48 second pre-check)"
 new_repo; put "$W" pyproject.toml "$(dyn_pyproject '[tool.setuptools.dynamic]
