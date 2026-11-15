@@ -1157,11 +1157,44 @@ hasnt "…but the note is not printed: nothing says setuptools is the backend" "
 for R in 'requires = ["setuptools", "setuptools-scm"]|0' 'requires = ["setuptools", "setuptools_scm[toml]>=6.2"]|0' \
          'requires = ["setuptools", "Setuptools.SCM >= 8"]|0' 'requires = ["setuptools"]|21' \
          'requires = ["setuptools", "my-setuptools-scm"]|21' 'requires = ["setuptools", "setuptools-scm-git-archive"]|21' \
-         'requires = "setuptools-scm"|21' 'requires = [["setuptools-scm"]]|21' '|21'; do
+         'requires = "setuptools-scm"|21' 'requires = [["setuptools-scm"]]|21' '|21' \
+         'requires = ["setuptools", "setuptools-scm (>=8)"]|0' \
+         'requires = ["setuptools", "setuptools-scm @ https://example.com/setuptools_scm-8.0.0-py3-none-any.whl"]|0' \
+         "requires = [\"setuptools\", \"setuptools-scm; python_version < '0'\"]|21" \
+         "requires = [\"setuptools\", \"setuptools-scm>=8 ; python_version >= '3.9'\"]|21" \
+         "requires = [\"setuptools\", \"setuptools_scm[toml]>=6.2;python_version>='3.9'\"]|21" \
+         "requires = [\"setuptools\", \"setuptools-scm @ https://example.com/x.whl ; python_version < '0'\"]|21" \
+         'requires = ["setuptools", "setuptools-scm @ https://example.com/a;b.whl"]|21' \
+         "requires = [\"setuptools-scm<8; python_version < '3.9'\", \"setuptools-scm>=8; python_version >= '3.9'\"]|21" \
+         "requires = [\"setuptools-scm; python_version < '0'\", \"setuptools-scm>=8\"]|0"; do
   new_repo; put "$W" pyproject.toml "$(printf '[build-system]\n%s\nbuild-backend = "setuptools.build_meta"\n\n' "${R%|*}"; dyn_pyproject "$PASS_SCM")"; commit "$W"
   run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
   check "a [tool.setuptools_scm] table under setuptools, ${R%|*} → exit ${R##*|}" "$RC" "${R##*|}"
+  # the table and its backend are both there: the message has to name the one thing that is missing
+  [ "${R##*|}" = 0 ] || has "…and the message says what is missing in requires" "has no setuptools-scm entry without an environment marker"
 done
+# verify R4: a requirement with an environment marker (the text after `;`) is installed only
+# where the marker holds, so it does not show that the plugin is part of the build - the
+# helper cannot know the environment a build will run in, and does not evaluate markers. That
+# is the last seven cases of the list above: one marker that never holds, two that normally do,
+# a marker on a URL requirement, a `;` inside a URL (no marker, but the helper does not parse
+# URLs and stops), two entries whose markers cover every case between them
+# (still 21: neither is unconditional), and an unconditional entry next to a conditional one
+# (0: the unconditional one counts). The same file with [tool.setuptools_scm] removed stops
+# with the general message, not with the one about requires.
+new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n\n'; dyn_pyproject)"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "dynamic version under setuptools with no [tool.setuptools_scm] table → exit 21" "$RC" 21
+hasnt "…and the message is not the one about requires" "has no setuptools-scm entry"
+
+# verify R4: a [project] table that neither states a version nor lists it in dynamic, next
+# to a poetry-dynamic-versioning placeholder. No back-end fills a version in there, so the
+# git-tag note would claim what cannot happen; the file gets the placeholder note.
+new_repo; put "$W" pyproject.toml "$(bs poetry.core.masonry.api; printf '[project]\nname = "x"\n\n%s\n' "$PASS_PDV")"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a [project] table with no version and no dynamic, next to a poetry-dynamic-versioning placeholder → exit 0, as in 2.6.0" "$RC" 0
+hasnt "…and no note says the version comes from git tags (verify R4)" "comes from git tags"
+has "…the placeholder note is printed instead" "placeholder of poetry-dynamic-versioning"
 
 echo "== two declarations the helper cannot read: each is reported, neither hides the other (#48 second pre-check)"
 new_repo; put "$W" pyproject.toml "$(dyn_pyproject '[tool.setuptools.dynamic]

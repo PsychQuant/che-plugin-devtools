@@ -347,7 +347,7 @@ binary 對應的獨立 repo（如 `PsychQuant/che-word-mcp`）才是使用者主
 1. `plugins/{name}/.claude-plugin/plugin.json` 的 `version`
 2. `.claude-plugin/marketplace.json` 中對應 plugin 的 `version`
 3. plugin 目錄下**套件自己的版本**——plugin 目錄裡有下列任何一個檔案，就要一起改成同一個版本（封閉列舉，與 `scripts/release-tag.sh` 認得的來源同一份，#42）：
-   - `pyproject.toml` 的 `[project].version` 或 `[tool.poetry].version`；版本是 `dynamic` 時，改 `[tool.hatch.version].path` 指到的檔案裡的 `__version__`（helper 照 hatch 自己的讀法讀：路徑先正規化、嚴格 UTF-8、預設或設定的 pattern、第一個符合的值）
+   - `pyproject.toml` 的 `[project].version` 或 `[tool.poetry].version`；版本是 `dynamic` 時，改 `[tool.hatch.version].path` 指到的檔案裡的 `__version__`（helper 照 hatch 自己的讀法讀：路徑先正規化、嚴格 UTF-8、預設或設定的 pattern、第一個符合的值）。dynamic 版本寫在 `[tool.poetry].version`、或版本來自 git tag 時，`[build-system]` 的 `build-backend` 要寫明那個工具自己的 backend；hatch 的 `path` 在寫明別的 backend 時不算數（細節見 README）
    - `package.json` 的 `version`
    - `Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
    - `mcpb/manifest.json` 的 `version`

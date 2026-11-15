@@ -99,7 +99,8 @@
 #     a. a [tool.setuptools_scm] table           setuptools.build_meta, or
 #                                                setuptools.build_meta:__legacy__ —
 #                                                and setuptools-scm listed in
-#                                                [build-system].requires: the table
+#                                                [build-system].requires, without an
+#                                                environment marker: the table
 #                                                is a plugin's, and an isolated
 #                                                build installs only what is listed
 #     b. [tool.hatch.version] source = "vcs"     hatchling.build
@@ -449,11 +450,17 @@ def required_plugins(doc):
     """The distribution names in [build-system].requires, normalised the way package
     indexes compare them: the name each requirement starts with, lower-cased, runs of
     `-`, `_` and `.` as one `-`. Empty when requires is missing or not a list of
-    strings."""
+    strings. A requirement with an environment marker (`name; python_version < "3"`)
+    is left out: it is installed only where the marker holds, and this helper cannot
+    know the environment a build will run in, so such an entry does not show that the
+    plugin is part of the build (#48 verify R4). Markers are not evaluated: any `;` in
+    the entry is enough to leave it out - also a `;` inside the URL of a `name @ url`
+    requirement, which is no marker; that errs on the side of stopping."""
     names = set()
     requires = dig(doc, "build-system", "requires")
     for item in requires if isinstance(requires, list) else []:
-        m = re.match(r"\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)", item) if isinstance(item, str) else None
+        m = (re.match(r"\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)", item)
+             if isinstance(item, str) and ";" not in item else None)
         if m:
             names.add(re.sub(r"[-_.]+", "-", m.group(1)).lower())
     return names
@@ -686,6 +693,10 @@ def read_sources(commit):
             if not accounted:
                 if valid:
                     explained = True
+                elif "setuptools_scm" in scm and family == GIT_TAG_FAMILY["setuptools_scm"]:
+                    # the table and its backend are both there and `valid` is still empty:
+                    # the one thing missing is the requires entry
+                    problems.append("pyproject.toml: dynamic version: [tool.setuptools_scm] is there and the file states setuptools' backend, but [build-system].requires has no setuptools-scm entry without an environment marker, so the table does not count (a build installs only what requires lists, and an entry with a marker only where the marker holds) - list setuptools-scm in requires without a marker, or state the version in [project]")
                 elif stated:
                     problems.append(f"pyproject.toml: dynamic version: the file states {backend}, and nothing this helper reads stands for the version under that backend (it reads a [tool.hatch.version] path under hatchling.build and [tool.poetry].version under poetry.core.masonry.api; a version taken from git tags needs that tool's own backend) - state the version in [project] instead, or move to one of those layouts")
                 else:
@@ -696,7 +707,10 @@ def read_sources(commit):
             # back-end supplies one, so there is nothing for a git-tag note to explain.
             explained = True
         used = (len(found), len(problems)) != before    # this file gave a source or a problem
-        if explained or (skipped and not used and "poetry-dynamic-versioning" in valid):
+        # the second case is a poetry 1 file - no [project] table - whose only version is
+        # the placeholder; with a [project] table the git-tag note would claim what no
+        # back-end can do there (verify R4), so that file gets the placeholder note
+        if explained or (skipped and not used and "poetry-dynamic-versioning" in valid and "project" not in doc):
             notes.append(f"pyproject.toml: the version comes from git tags ({', '.join(valid)}); not a version source")
         elif skipped:
             notes.append("pyproject.toml: [tool.poetry].version is the placeholder of poetry-dynamic-versioning (enable = true); not read")

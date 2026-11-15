@@ -224,7 +224,7 @@ chmod +x mcpb/server/run.sh
 確保所有地方的版本號一致。下面是 Phase 3 Step 3a（`scripts/release-tag.sh`）會讀的版本來源，封閉列舉，與 helper 同一份；repo 裡有哪個就改哪個，漏改任何一個，推送前的 Step 3（#51）會因版本不一致而不推送，Step 3a 也會停止、不建 release（#42）：
 - `mcpb/manifest.json` 的 `version`
 - Swift：`Sources/*/Server.swift` 的 `version: "x.x.x"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）、`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
-- Python：`pyproject.toml` 的 `[project].version` 或 `[tool.poetry].version`；版本是 `dynamic` 時，`[tool.hatch.version].path` 指到的檔案裡的 `__version__`（`[build-system]` 的 `build-backend` 若寫明不是 `hatchling.build`，那個檔案不代表 dynamic 版本，Step 3a 回 21）。版本來自 git tag 的專案（setuptools_scm、hatch-vcs、poetry-dynamic-versioning）沒有檔案要改。這三種寫法，以及 dynamic 版本寫在 `[tool.poetry].version` 的寫法，要 `[build-system]` 的 `build-backend` 寫明那個工具自己的 backend（setuptools_scm 還要列在 `requires`），helper 才認，否則 Step 3a 回 21
+- Python：`pyproject.toml` 的 `[project].version` 或 `[tool.poetry].version`；版本是 `dynamic` 時，`[tool.hatch.version].path` 指到的檔案裡的 `__version__`（`[build-system]` 的 `build-backend` 若寫明不是 `hatchling.build`，那個檔案不代表 dynamic 版本，Step 3a 回 21）。版本來自 git tag 的專案（setuptools_scm、hatch-vcs、poetry-dynamic-versioning）沒有檔案要改。這三種寫法，以及 dynamic 版本寫在 `[tool.poetry].version` 的寫法，要 `[build-system]` 的 `build-backend` 寫明那個工具自己的 backend（setuptools_scm 還要列在 `requires`，不帶環境標記），helper 才認，否則 Step 3a 回 21
 - TypeScript：`package.json` 的 `version`
 - repo 根目錄若有 `.claude-plugin/plugin.json` 或 `plugin.json`，它的 `version`
 
