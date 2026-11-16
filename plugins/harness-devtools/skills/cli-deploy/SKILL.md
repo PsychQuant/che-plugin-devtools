@@ -446,14 +446,15 @@ echo "→ Step 1.5: $TAG 已在 ${OWNER_REPO}；Step 2 在同一個 repo 用這�
 
 重做 release 時，`release-notes.md` 是上一次失敗時留下的：先確認內容還是這一次要發的。
 
-區塊的 `{binary}` 代入 Phase 0 Step 2 印出的 binary 名稱（`Binary: …` 那一行），代入前核對它只含 `0-9 A-Z a-z . _ -`。每個 Bash 呼叫是新的 shell，Phase 0 設的 `BINARY_NAME` 在這個區塊裡沒有值（#50）。
+區塊的 `{binary}` 代入 Phase 0 Step 2 印出的 binary 名稱（`Binary: …` 那一行）。**代入之前**先核對它只含 `0-9 A-Z a-z . _ -`，不合就停下、不要代入：區塊裡的檢查看的是代入之後的值，值裡的單引號會先結束 `'…'`，後面的內容在檢查之前就被當成指令執行，檢查擋不到（與 `{version}` 相同）。每個 Bash 呼叫是新的 shell，Phase 0 設的 `BINARY_NAME` 在這個區塊裡沒有值（#50）。
 
 ```bash
 VERSION='{version}'   # 與 Step 1.5 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
 case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
-BINARY_NAME='{binary}'   # Phase 0 Step 2 印出的 binary 名稱（Binary: 那一行）；代入前核對只含 0-9 A-Z a-z . _ -
+BINARY_NAME='{binary}'   # Phase 0 Step 2 印出的 binary 名稱（Binary: 那一行）；代入前核對只含 0-9 A-Z a-z . _ -，有單引號時下面的檢查擋不到
 # 每個 Bash 呼叫是新的 shell：Phase 0 設的 BINARY_NAME 不在這裡，名稱由這個區塊自己代入（#50）
-case "$BINARY_NAME" in ''|*[!0-9A-Za-z._-]*) echo "✗ Step 2: BINARY_NAME 未代入或不合法 — 先不建 release，文字檔保留"; exit 1 ;; esac
+# 字元逐一列出、不寫範圍：/bin/bash 3.2 在 en_US.UTF-8 之類的 locale 下，A-Z、a-z 的範圍也會收進 é 這類字母
+case "$BINARY_NAME" in ''|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) echo "✗ Step 2: BINARY_NAME 未代入或不合法 — 先不建 release，文字檔保留"; exit 1 ;; esac
 # 與 Step 1.5 同一個 repo：從推送的 remote 推導，不讓 gh 自己選（#42 verify：fork 工作流兩者可能不同）
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' || { echo "✗ 推不出 owner/repo — 先跑完 Step 1.5"; exit 1; }

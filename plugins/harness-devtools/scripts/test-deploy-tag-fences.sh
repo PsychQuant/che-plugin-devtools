@@ -938,19 +938,29 @@ for sh in $SHELLS; do
   hasnt "…before any release is created ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
   same "…and the notes file is kept ($sh)" "$(left "$D")" "release-notes.md "
 done
-# an empty name, a space, a double quote, a semicolon: the file is there, so only the guard stands in the way
-for name in '' 'B in' 'B"x' 'B;x'; do
+# an empty name, a space, a double quote, a semicolon, a slash, a dollar sign, a backslash, a non-ASCII letter:
+# the file is there (.release/../x is ./x), so only the guard stands in the way. Run under en_US.UTF-8 where
+# the machine has it: /bin/bash 3.2 lets é through a [!A-Za-z] range there, so the guard lists its characters
+UTF8_LOC=""; locale -a 2>/dev/null | grep -qx 'en_US.UTF-8' && UTF8_LOC=en_US.UTF-8
+[ -n "$UTF8_LOC" ] || echo "  - en_US.UTF-8 is not installed: the guard cases run in the current locale only"
+for name in '' 'B in' 'B"x' 'B;x' '../x' 'B$x' 'B\x' 'Bé'; do
   [ -z "$name" ] || put "$W" ".release/$name" x
   fence cli-deploy 'releases" --method POST' "$T/relCn.sh" "VERSION='{version}' ==> VERSION='1.4.0'" "BINARY_NAME='{binary}' ==> BINARY_NAME='$name'"
-  release_texts; rm -f "$D/release-title.txt"
-  run50 bash "$W" "$T/relCn.sh"
-  has "binary name [$name] → stops" "$OUT" "✗ Step 2: BINARY_NAME 未代入或不合法"
-  hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
-  same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
+  for sh in $SHELLS; do
+    release_texts; rm -f "$D/release-title.txt"
+    SAVED_LC_ALL=${LC_ALL-__unset__}
+    [ -z "$UTF8_LOC" ] || export LC_ALL="$UTF8_LOC"
+    run50 "$sh" "$W" "$T/relCn.sh"
+    if [ "$SAVED_LC_ALL" = __unset__ ]; then unset LC_ALL; else export LC_ALL="$SAVED_LC_ALL"; fi
+    has "binary name [$name] → stops ($sh)" "$OUT" "✗ Step 2: BINARY_NAME 未代入或不合法"
+    hasnt "…before any release is created ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+    same "…and the notes file is kept ($sh)" "$(left "$D")" "release-notes.md "
+  done
 done
-# a single quote ends the '…' of the assignment, so the case guard never sees the name (the skill says to check
-# the name before substituting it). What the shells do with this block: a syntax error before any command that
-# reaches gh. This pins that the block, as written, never gets as far as gh with such a name
+# a single quote ends the '…' of the assignment, so the case guard never sees the name: whatever follows the
+# quote runs as code before the guard (a crafted name such as B'; cmd; echo ' does). That is why the skill says
+# to check the name BEFORE substituting it. This case pins only what the shells do with the name B'x in this
+# block (a syntax error before anything reaches gh); it is not a property of the guard
 put "$W" ".release/B'x" x
 fence cli-deploy 'releases" --method POST' "$T/relCq.sh" "VERSION='{version}' ==> VERSION='1.4.0'" "BINARY_NAME='{binary}' ==> BINARY_NAME='B'x'"
 for sh in $SHELLS; do
@@ -1077,6 +1087,81 @@ W="$T/cli-rel"; D=$(deploy_dir "$W"); mkdir -p "$D"
 release_texts; rm -f "$D/release-title.txt"; export GH50_ASSETS="Bin.sha256"; run50 bash "$W" "$T/relC.sh"; unset GH50_ASSETS
 has "cli-deploy: a name that only starts like the binary → stops" "$OUT" "release 上沒有 Bin"
 same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
+
+echo "mcp-deploy Step 4: which file in mcpb/server is the binary (#50, cross-model review round 2)"
+# mcpsrv <name> <swift|other> <entry ...> — an mcp-deploy project with v1.4.0 tagged and a .mcpb; each entry is a
+# file of mcpb/server, or a directory when it ends in /. A Swift project has Package.swift at the repository root
+mcpsrv() {
+  local n=$1 kind=$2 e; shift 2
+  mk "$n"; W="$T/$n"
+  put "$W" mcpb/manifest.json '{
+  "name": "proj",
+  "version": "1.4.0"
+}'
+  put "$W" mcpb/proj.mcpb x
+  [ "$kind" = swift ] && put "$W" Package.swift '// swift-tools-version:5.9'
+  for e in "$@"; do
+    case "$e" in */) put "$W" "mcpb/server/${e}inside" x ;; *) put "$W" "mcpb/server/$e" x ;; esac
+  done
+  ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+  D=$(deploy_dir "$W"); mkdir -p "$D"
+}
+# method B: the assets given to gh release create (what follows --notes-file and its value)
+assetsB() { sed -n '/^--notes-file$/,$p' "$T/rec/create-args" 2>/dev/null | sed '1,2d' | tr '\n' ' '; }
+# names the old grep -v '.sh' dropped ('.' is any character, nothing anchored); a binary that sorts after run.sh
+for BIN in flash publish-tool tool; do
+  mcpsrv "mcp-bin-$BIN" swift "$BIN" run.sh .gitkeep
+  release_texts; export GH50_ASSETS="$BIN proj.mcpb"; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
+  has "method A: a binary named $BIN is uploaded" "$(cat "$T/rec/curl-args" 2>/dev/null)" "assets?name=$BIN --data-binary @mcpb/server/$BIN"
+  hasnt "…run.sh is not taken for the binary" "$(cat "$T/rec/curl-args" 2>/dev/null)" "run.sh"
+  same "…and the release is complete: the text files are removed" "$(left "$D")" ""
+  for sh in $SHELLS; do
+    release_texts; run50 "$sh" "$W" "$T/relB.sh"
+    same "method B: a binary named $BIN is uploaded with the .mcpb ($sh)" "$(assetsB)" "mcpb/server/$BIN mcpb/proj.mcpb "
+  done
+done
+# a Swift project whose mcpb/server holds no binary (only run.sh, .gitkeep and a directory): no release at all
+mcpsrv mcp-swift-nobin swift run.sh .gitkeep lib/
+for sh in $SHELLS; do
+  release_texts; run50 "$sh" "$W" "$T/relB.sh"
+  has "method B: a Swift project without a binary → stops ($sh)" "$OUT" "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary"
+  hasnt "…before gh release create ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+  same "…and the text files are kept ($sh)" "$(left "$D")" "release-notes.md release-title.txt "
+  release_texts; run50 "$sh" "$W" "$T/relA.sh"
+  has "method A: a Swift project without a binary → stops ($sh)" "$OUT" "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary"
+  hasnt "…before any release is created ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "/releases"
+  same "…and the text files are kept ($sh)" "$(left "$D")" "release-notes.md release-title.txt "
+done
+# the mcp server in a subdirectory of the repository, Package.swift only at the repository root: still a Swift
+# project (the block looks in the current directory and at the repository root)
+mk mcp-swift-sub; W="$T/mcp-swift-sub"
+put "$W" Package.swift '// swift-tools-version:5.9'
+put "$W" srv/mcpb/manifest.json '{
+  "name": "proj",
+  "version": "1.4.0"
+}'
+put "$W" srv/mcpb/proj.mcpb x
+put "$W" srv/mcpb/server/run.sh x
+ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+D=$(deploy_dir "$W"); mkdir -p "$D"
+for sh in $SHELLS; do
+  release_texts; run50 "$sh" "$W/srv" "$T/relB.sh"
+  has "method B: run from a subdirectory, Package.swift at the repository root, no binary → stops ($sh)" "$OUT" "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary"
+  hasnt "…before gh release create ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+  release_texts; run50 "$sh" "$W/srv" "$T/relA.sh"
+  has "method A: run from a subdirectory, Package.swift at the repository root, no binary → stops ($sh)" "$OUT" "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary"
+  hasnt "…before any release is created ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "/releases"
+done
+# a project that is not Swift, with run.sh and a directory in mcpb/server: the directory is not a binary, only the .mcpb goes up
+mcpsrv mcp-node-nobin other run.sh node_modules/
+for sh in $SHELLS; do
+  release_texts; run50 "$sh" "$W" "$T/relB.sh"
+  same "method B: not Swift, no binary file → only the .mcpb is uploaded ($sh)" "$(assetsB)" "mcpb/proj.mcpb "
+done
+release_texts; export GH50_ASSETS="proj.mcpb"; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
+hasnt "method A: not Swift, no binary file → the directory is not uploaded" "$(cat "$T/rec/curl-args" 2>/dev/null)" "node_modules"
+has "…the .mcpb is" "$(cat "$T/rec/curl-args" 2>/dev/null)" "@mcpb/proj.mcpb"
+same "…and the release is complete: the text files are removed" "$(left "$D")" ""
 
 echo "a remote URL that still has the repository's old name (#53)"
 # After a rename or a transfer GitHub redirects git and the API calls that were tried, but

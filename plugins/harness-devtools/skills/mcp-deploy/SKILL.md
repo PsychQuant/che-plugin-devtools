@@ -676,7 +676,16 @@ Published as `io.github.{owner}/{project-name}` on the [Official MCP Registry](h
 VERSION='{version}'   # 與 Step 3a 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
 case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
 PROJECT_NAME=$(cat mcpb/manifest.json | grep '"name"' | head -1 | sed 's/.*"\([^"]*\)".*/\1/' | tr -d ' ')
-BINARY_NAME=$(ls mcpb/server/ | grep -v '.sh' | grep -v '.gitkeep' | head -1)
+# binary：mcpb/server 裡第一個一般檔案，名稱以 .sh 結尾的與 .gitkeep 除外（整個名稱比對；以前的 grep -v '.sh' 會把 flash、publish-tool 也濾掉，#50）
+# case 的 pattern 寫成 (…)：/bin/bash 3.2 在 $( ) 裡讀到沒有左括號的 ) 會當成 $( ) 結束，整個區塊語法錯誤
+BINARY_NAME=$(ls mcpb/server/ 2>/dev/null | while IFS= read -r F; do
+  case "$F" in (*.sh|.gitkeep) continue ;; esac
+  [ -f "mcpb/server/$F" ] && { printf '%s\n' "$F"; break; }
+done)
+# Swift 專案一定要上傳 binary：找不到就不建 release（以前會只帶 .mcpb 建出 release，沒有任何訊息，#50）
+if [ -z "$BINARY_NAME" ] && { [ -f Package.swift ] || [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/Package.swift" ]; }; then
+  echo "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary（名稱以 .sh 結尾的與 .gitkeep 不算）— 不建 release，文字檔保留。先照 Phase 1 A3 把 binary 建到 mcpb/server，從 Phase 2 Step 5 重新打包 .mcpb，再重跑這一步"; exit 1
+fi
 MCPB_FILE=$(ls mcpb/*.mcpb | head -1)
 # 與 Step 3a 同一個 repo：從推送的 remote 推導，不讓 gh 自己選（#42 verify：fork 工作流兩者可能不同）
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
@@ -791,8 +800,15 @@ case "$TITLE" in
 esac
 NAME="v$VERSION"; [ -n "$TITLE" ] && NAME="v$VERSION - $TITLE"
 # 要上傳的檔案在這個區塊裡找，與方法 A 相同：每個 Bash 呼叫是新的 shell，前面區塊設的 BINARY_NAME、MCPB_FILE 不在（#50）
-# Python、TypeScript 專案的 mcpb/server 只有 run.sh，BINARY_NAME 是空的：只上傳 .mcpb
-BINARY_NAME=$(ls mcpb/server/ | grep -v '.sh' | grep -v '.gitkeep' | head -1)
+# Python、TypeScript 專案的 mcpb/server 只有 run.sh，BINARY_NAME 是空的：只上傳 .mcpb。Swift 專案沒有 binary 時停下
+# binary：mcpb/server 裡第一個一般檔案，名稱以 .sh 結尾的與 .gitkeep 除外（整個名稱比對；以前的 grep -v '.sh' 會把 flash、publish-tool 也濾掉）
+BINARY_NAME=$(ls mcpb/server/ 2>/dev/null | while IFS= read -r F; do
+  case "$F" in (*.sh|.gitkeep) continue ;; esac
+  [ -f "mcpb/server/$F" ] && { printf '%s\n' "$F"; break; }
+done)
+if [ -z "$BINARY_NAME" ] && { [ -f Package.swift ] || [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/Package.swift" ]; }; then
+  echo "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary（名稱以 .sh 結尾的與 .gitkeep 不算）— 不建 release，文字檔保留。先照 Phase 1 A3 把 binary 建到 mcpb/server，從 Phase 2 Step 5 重新打包 .mcpb，再重跑這一步"; exit 1
+fi
 MCPB_FILE=$(ls mcpb/*.mcpb 2>/dev/null | head -1)
 ASSET_FILES=()
 [ -z "$BINARY_NAME" ] || ASSET_FILES+=("mcpb/server/$BINARY_NAME")
