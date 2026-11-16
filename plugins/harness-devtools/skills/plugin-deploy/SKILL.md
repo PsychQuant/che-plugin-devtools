@@ -351,7 +351,7 @@ binary 對應的獨立 repo（如 `PsychQuant/che-word-mcp`）才是使用者主
    - `package.json` 的 `version`
    - `Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
    - `mcpb/manifest.json` 的 `version`
-   - `Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）
+   - `Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下（回 20 或 21，訊息會寫明原因）：改成具名常數，或移出 Server.swift）
 
    漏改任何一個，Step 7.5 會因版本不一致而不打 tag。
 
@@ -406,14 +406,14 @@ BRANCH=$(git branch --show-current)
 REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
 case "$REMOTE" in ''|.) echo "⚠ Step 7.5: $BRANCH 沒有指向 remote 的 upstream — 沒有打 tag"; exit 0 ;; esac
 git remote | grep -qxF -- "$REMOTE" || { echo "⚠ Step 7.5: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 沒有打 tag"; exit 0; }
-[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: HEAD 還沒推上去（Step 7 沒推成功？）— 沒有打 tag"; exit 0; }
+[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: HEAD 與本機記錄的 upstream 不同（Step 7 沒推成功，或 fetch 之後 upstream 已經前進）— 沒有打 tag"; exit 0; }
 # 預設 branch 看的是 upstream 追蹤的 branch，不是本機 branch 名
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
 DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 [ -n "$DEFAULT" ] && [ "$UPSTREAM_BRANCH" = "$DEFAULT" ] || { echo "⚠ Step 7.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是 $REMOTE 的預設 branch（${DEFAULT:-?}）— 沒有打 tag"; exit 0; }
 # @{u} 是本機記錄的位置；remote 上那個 branch 實際指向哪裡要問 remote（#42 verify 第 7 輪）
 LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
-[ -n "$LIVE" ] && [ "$LIVE" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）— git pull 後重跑這一步，--at-bump 仍會打在升版號的 commit；沒有打 tag"; exit 0; }
+[ -n "$LIVE" ] && [ "$LIVE" = "$(git rev-parse HEAD)" ] || { echo "⚠ Step 7.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）— git pull --ff-only 後重跑這一步。拉進來的 commit 若又升了這個 plugin 的版號，tag 會打在那個較新的版本，這次的版本不會補打：拉完先確認沒有人升過版號；沒有打 tag"; exit 0; }
 bash "$HELPER" --dir "plugins/$PLUGIN_NAME" --commit HEAD --at-bump --remote "$REMOTE" --name-style plugin --plugin "$PLUGIN_NAME"
 echo "→ Step 7.5: release-tag rc=$?（0 已打或已存在；10 同名 tag 在別的 commit；20/21 版本不一致或讀不出；30 推送失敗或 push URL 指向別的 repo，見上方的原因）"
 ```

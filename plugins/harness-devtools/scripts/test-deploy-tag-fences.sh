@@ -381,7 +381,10 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
   run bash "$W" "$T/f2.sh"
   has "local 'work' tracking origin/main → tagged (the upstream branch is what counts)" "$OUT" "→ Step $STEP: v2.0.0 已在 o/r"
 
-  # verify R7: @{u} is a local cache; the remote's branch itself must be at HEAD
+  # #54 (2026-11-10 decision: "HEAD 在 remote 歷史裡就照打"): the remote's main is AHEAD of HEAD -
+  # someone pushed after the release commit - while the local @{u} still says HEAD (verify R7 of #42:
+  # the block asks the remote, not @{u}). HEAD is in the remote's history, so the tag goes on HEAD,
+  # not on the remote's tip, with a line saying how many commits follow it
   mk "$S-stale"; W="$T/$S-stale"
   put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
   git -C "$W" checkout -q -b side; put "$W" side.txt s; ci "$W"; git -C "$W" push -q origin side 2>/dev/null; git -C "$W" checkout -q main
@@ -389,15 +392,51 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
   fence "$S" "Step $STEP: VERSION" "$T/f7.sh" "VERSION='{version}' ==> VERSION='1.0.0'"
   for sh in $SHELLS; do
     run "$sh" "$W" "$T/f7.sh"
-    has "the remote's main was rewritten, the local @{u} still says HEAD → stops ($sh)" "$OUT" "不是 HEAD"
-    has "…and warns not to pull and rerun, which would tag someone else's commit ($sh)" "$OUT" "不要 pull"
+    has "the remote's main is ahead of HEAD, the local @{u} still says HEAD → says one commit follows ($sh)" "$OUT" "在 release commit 之後還有 1 個 commit"
+    has "…and hands over to the release step ($sh)" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
   done
-  # verify R8: after a fetch the local @{u} is ahead of HEAD — not "the push failed"
+  same "…v1.0.0 is on HEAD, not on the remote's tip" "$(rtag "$T/$S-stale.git" v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
+  # #54: the commits after the release commit come from another clone, so their objects are not here
+  # until the block fetches them; and after a fetch the local @{u} is ahead of HEAD (verify R8 of #42)
+  mk "$S-ahead"; W="$T/$S-ahead"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
+  git clone -q "$T/$S-ahead.git" "$T/$S-ahead-other" 2>/dev/null
+  put "$T/$S-ahead-other" o1.txt o; ci "$T/$S-ahead-other" o1; put "$T/$S-ahead-other" o2.txt o; ci "$T/$S-ahead-other" o2
+  git -C "$T/$S-ahead-other" push -q origin main 2>/dev/null
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/f7.sh"
+    has "someone else pushed two commits after the release commit → says two commits follow ($sh)" "$OUT" "在 release commit 之後還有 2 個 commit"
+    has "…and hands over to the release step ($sh)" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
+  done
+  same "…v1.0.0 is on HEAD, the release commit" "$(rtag "$T/$S-ahead.git" v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
   git -C "$W" fetch -q origin
   run bash "$W" "$T/f7.sh"
-  hasnt "after a fetch: HEAD behind upstream is not reported as an unpushed HEAD" "$OUT" "沒推成功？）"
-  has "…it says HEAD differs from the upstream" "$OUT" "HEAD 與 upstream 不同"
-  same "…and no tag pushed" "$(rtag "$T/$S-stale.git" v1.0.0)" ""
+  has "after a fetch (the local @{u} ahead of HEAD) → still hands over to the release step" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
+  # #54: the remote was REWRITTEN - its main no longer holds the release commit → stops, no tag
+  mk "$S-rewr"; W="$T/$S-rewr"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W" a; put "$W" README.md r; ci "$W" b; push "$W"
+  git clone -q "$T/$S-rewr.git" "$T/$S-rewr-other" 2>/dev/null
+  git -C "$T/$S-rewr-other" checkout -q -b alt HEAD~1; put "$T/$S-rewr-other" alt.txt a; ci "$T/$S-rewr-other" alt
+  git -C "$T/$S-rewr-other" push -q origin alt 2>/dev/null
+  git --git-dir="$T/$S-rewr.git" update-ref refs/heads/main "$(git -C "$T/$S-rewr-other" rev-parse HEAD)"
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/f7.sh"
+    has "the remote's main was rewritten and no longer holds HEAD → stops ($sh)" "$OUT" "的歷史裡：release commit 沒推上去，或 remote 被改寫"
+    has "…and warns not to pull and rerun, which would tag someone else's commit ($sh)" "$OUT" "不要 pull"
+    hasnt "…and does not hand over to the release step ($sh)" "$OUT" "已在 o/r；Step"
+  done
+  same "…and no tag pushed" "$(rtag "$T/$S-rewr.git" v1.0.0)" ""
+  # #54: the release commit was never pushed → stops; pushing the tag would carry the commit with it
+  mk "$S-unpushed"; W="$T/$S-unpushed"
+  put "$W" mcpb/manifest.json '{ "version": "0.9.0" }'; ci "$W"; push "$W"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W" release
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/f7.sh"
+    has "a release commit that is not pushed → stops ($sh)" "$OUT" "的歷史裡：release commit 沒推上去，或 remote 被改寫"
+    has "…and sends the user back to the pre-push step ($sh)" "$OUT" "沒推上去時回 Step"
+  done
+  same "…and no tag pushed" "$(rtag "$T/$S-unpushed.git" v1.0.0)" ""
+  same "…and the release commit did not reach the remote" "$(git --git-dir="$T/$S-unpushed.git" rev-parse main)" "$(git -C "$W" rev-parse HEAD~1)"
 
   mk "$S-swift"; W="$T/$S-swift"
   put "$W" Sources/S/Version.swift 'public enum V { public static let version: String = "1.0.0" }'; ci "$W"; push "$W"
@@ -553,6 +592,38 @@ for sh in $SHELLS; do
   has "the remote's main was rewritten, the local @{u} still says HEAD → no tag ($sh)" "$OUT" "不是 HEAD"
 done
 same "…and nothing tagged" "$(rtag "$T/pds.git" foo-v1.0.0)" ""
+
+# #54: HEAD differs from the local upstream - not pushed yet, or the upstream moved after a fetch.
+# (Without this check the next one still stops the run, with a message about the remote; this one
+# had no test of its own.)
+mk pdu; W="$T/pdu"
+put "$W" .claude-plugin/marketplace.json '{ "plugins": [ { "name": "foo", "source": "./plugins/foo" } ] }'
+put "$W" plugins/foo/.claude-plugin/plugin.json '{ "name": "foo", "version": "1.0.0" }'; ci "$W" a; push "$W"
+git -C "$W" config harness-devtools.releaseTag true
+put "$W" plugins/foo/later.txt later; ci "$W" later
+fence plugin-deploy "Step 7.5: PLUGIN_NAME" "$T/pu.sh" "PLUGIN_NAME='{plugin-name}' ==> PLUGIN_NAME='foo'" "MARKETPLACE_ROOT='{marketplace-root}' ==> MARKETPLACE_ROOT='$W'"
+for sh in $SHELLS; do
+  run "$sh" "$T" "$T/pu.sh"
+  has "a HEAD that is not pushed → no tag, and the message says HEAD differs from the upstream ($sh)" "$OUT" "HEAD 與本機記錄的 upstream 不同"
+done
+same "…and nothing tagged" "$(rtag "$T/pdu.git" foo-v1.0.0)" ""
+# the remote is AHEAD: someone pushed after this clone last fetched
+mk pda; W="$T/pda"
+put "$W" .claude-plugin/marketplace.json '{ "plugins": [ { "name": "foo", "source": "./plugins/foo" } ] }'
+put "$W" plugins/foo/.claude-plugin/plugin.json '{ "name": "foo", "version": "1.0.0" }'; ci "$W" a; push "$W"
+git -C "$W" config harness-devtools.releaseTag true
+git clone -q "$T/pda.git" "$T/pda-other" 2>/dev/null; put "$T/pda-other" other.txt o; ci "$T/pda-other" other; git -C "$T/pda-other" push -q origin main 2>/dev/null
+fence plugin-deploy "Step 7.5: PLUGIN_NAME" "$T/pa.sh" "PLUGIN_NAME='{plugin-name}' ==> PLUGIN_NAME='foo'" "MARKETPLACE_ROOT='{marketplace-root}' ==> MARKETPLACE_ROOT='$W'"
+for sh in $SHELLS; do
+  run "$sh" "$T" "$T/pa.sh"
+  has "someone pushed after the last fetch → no tag ($sh)" "$OUT" "不是 HEAD"
+  has "…the advice is a fast-forward pull ($sh)" "$OUT" "git pull --ff-only 後重跑這一步"
+  has "…with the warning that a bump among the pulled commits takes the tag ($sh)" "$OUT" "tag 會打在那個較新的版本"
+done
+git -C "$W" fetch -q origin
+run bash "$T" "$T/pa.sh"
+has "after a fetch HEAD is behind the upstream → no tag, and the message allows for that" "$OUT" "fetch 之後 upstream 已經前進"
+same "…and nothing tagged" "$(rtag "$T/pda.git" foo-v1.0.0)" ""
 
 mk pdn; W="$T/pdn"
 put "$W" .claude-plugin/marketplace.json '{ "plugins": [ { "name": "bar", "source": "./plugins/bar" } ] }'

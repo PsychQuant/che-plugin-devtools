@@ -1997,7 +1997,7 @@ REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
 case "$REMOTE" in ''|.) echo "→ Phase 2.7: skipped — ${BRANCH:-HEAD} 沒有指向 remote 的 upstream"; audit "skipped (no remote upstream)"; exit 0 ;; esac
 git remote | grep -qxF -- "$REMOTE" || { echo "→ Phase 2.7: skipped — ${BRANCH} 的 upstream 不是這個 repo 設定過的 remote 名稱"; audit "skipped (upstream is not a configured remote)"; exit 0; }
 if [ "$(git rev-parse '@{u}' 2>/dev/null)" != "$(git rev-parse HEAD)" ]; then
-    echo "→ Phase 2.7: skipped — HEAD 還沒推到 upstream（只替已推送的 commit 打 tag）"; audit "skipped (HEAD not pushed)"; exit 0
+    echo "→ Phase 2.7: skipped — HEAD 與本機記錄的 upstream 不同：HEAD 還沒推上去，或 fetch 之後 upstream 已經前進（只替已推送的 commit 打 tag）"; audit "skipped (HEAD differs from the upstream)"; exit 0
 fi
 # (2) 只在 remote 的預設 branch 上打——比的是 upstream 追蹤的 branch，不是本機 branch 名
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
@@ -2008,7 +2008,7 @@ fi
 # (2b) @{u} 是本機記錄的位置；remote 上那個 branch 實際指向哪裡要問 remote（#42 verify 第 7 輪）
 LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
 if [ -z "$LIVE" ] || [ "$LIVE" != "$(git rev-parse HEAD)" ]; then
-    echo "→ Phase 2.7: skipped — $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）；git pull 後重跑 plugin-update，--at-bump 仍會打在升版號的 commit"; audit "skipped (the remote branch is not at HEAD)"; exit 0
+    echo "→ Phase 2.7: skipped — $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD（本機記錄的 upstream 可能過期，或有人推了新的 commit）；git pull --ff-only 後重跑 plugin-update。拉進來的 commit 若又升了這個 plugin 的版號，tag 會打在那個較新的版本，這次的版本不會補打：拉完先確認沒有人升過版號"; audit "skipped (the remote branch is not at HEAD)"; exit 0
 fi
 # (3) plugin 目錄與 marketplace 是同一個 git repo
 if [ "$(git -C "$PLUGIN_DIR" rev-parse --show-toplevel 2>/dev/null)" != "$(git rev-parse --show-toplevel)" ]; then

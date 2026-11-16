@@ -674,6 +674,116 @@ new_repo; put "$W" Sources/S/Version.swift 'enum V { static let version = """
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "a version declared as a multi-line string is still not a plain literal → exit 21" "$RC" 21
 
+echo "== Server.swift: a space before the colon (#54)"
+new_repo; put "$W" mcpb/manifest.json '{ "version": "1.1.0" }'
+put "$W" Sources/S/Server.swift 'let s = Server(name: "s", version : "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.1.0
+check "version : \"1.0.0\" is read and disagrees with the manifest → exit 20" "$RC" 20
+has "…Server.swift is among the sources" "Sources/S/Server.swift"
+new_repo; put "$W" Sources/S/Server.swift 'let s = Server(name: "s", version
+    :
+    "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "the colon on a line of its own is read too → exit 20, --expect does not stand in" "$RC" 20
+
+echo "== Swift raw strings are strings: what is inside is not code, and what follows is still read (#54)"
+new_repo; put "$W" Sources/S/Version.swift 'let quote = #"say """hi""" now"#
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "a raw string holding \"\"\" does not blank the rest of the file → exit 20" "$RC" 20
+has "…the declaration after it is the source" "Sources/S/Version.swift"
+new_repo; put "$W" Sources/S/Version.swift 'let doc = #"""
+static let version = "0.9.0"
+"""#
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a declaration inside a multi-line raw string does not count → exit 0" "$RC" 0
+has "…version 1.0.0" "version=1.0.0"
+new_repo; put "$W" Sources/S/Version.swift 'let a = ##"one "# two"##
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "a raw string ends at its own number of # → exit 20" "$RC" 20
+new_repo; put "$W" Sources/S/Version.swift '#if DEBUG
+let flag = #available(macOS 14, *)
+#endif
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "#if, #available and #endif are not strings → exit 0" "$RC" 0
+has "…version 1.0.0" "version=1.0.0"
+# Swift reads #"""x"# as a ONE-line raw string (""x) because "# closes it on the same line. Taken for
+# a multi-line one, it would run to the next """# and swallow the declaration in between, and --expect
+# would stand in for it
+new_repo; put "$W" Sources/S/Version.swift 'let a = #"""x"#
+enum V { static let version = "1.0.0" }
+let b = #"""
+text
+"""#'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "#\"\"\"x\"# closes on its own line, the declaration after it is read → exit 20, --expect does not stand in" "$RC" 20
+has "…Version.swift is the source" "sources=Sources/S/Version.swift"
+# an escape does not close a string: \#" in a #"…"# string, \""" in a multi-line string
+new_repo; put "$W" Sources/S/Version.swift 'let c = #"a \#"# static let version = "9.9.9" "#
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "\\#\" inside a raw string does not close it; the text after it is still inside → exit 0" "$RC" 0
+has "…version 1.0.0" "version=1.0.0"
+new_repo; put "$W" Sources/S/Version.swift 'let d = """
+He said \"""hi
+static let version = "9.9.9"
+"""
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "\\\"\"\" inside a multi-line string does not close it → exit 0" "$RC" 0
+has "…version 1.0.0" "version=1.0.0"
+# a backslash at the end of a one-line string does not carry the string onto the next line
+new_repo; put "$W" Sources/S/Version.swift 'let x = "trailing\
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "a one-line string ends at its line break even after a backslash → the declaration is read, exit 20" "$RC" 20
+
+echo "== text inside a one-line string is not a declaration (#54)"
+new_repo; put "$W" Sources/S/Version.swift 'let help = "write static let version = in Version.swift"
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "static let version inside a string is not a declaration → exit 0, not 21" "$RC" 0
+has "…version 1.0.0" "version=1.0.0"
+new_repo; put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'
+put "$W" Sources/S/Server.swift 'let help = #"pass version: "9.9.9" to the server"#
+let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "version: \"9.9.9\" inside a raw string is not a version → exit 0, not 21" "$RC" 0
+has "…version 1.0.0" "version=1.0.0"
+new_repo; put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'
+put "$W" Sources/S/Server.swift 'let s = Server(name: "s", version: #"1.0.0"#)'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a version given as a raw string literal is not a plain literal → exit 21, not skipped" "$RC" 21
+new_repo; put "$W" Sources/S/Version.swift 'enum V { static let version = #"1.0.0"# }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "Version.swift: a version declared as a raw string literal → exit 21, not skipped" "$RC" 21
+has "…not a string literal" "not as a string literal"
+new_repo; put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'
+put "$W" Sources/S/Server.swift 'let help = "pass version: \"9.9.9\" to the server"
+let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "version: \\\"9.9.9\\\" with escaped quotes inside a string is not a version → exit 0" "$RC" 0
+has "…version 1.0.0" "version=1.0.0"
+
+echo "== a string that is never closed makes the file unreadable (#54)"
+for OPEN in 'let doc = """
+static let version = "0.9.0"' 'let doc = #"""
+text' 'let x = #"no end'; do
+  new_repo; put "$W" Sources/S/Version.swift "$OPEN
+enum V { static let version = \"1.0.0\" }"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+  check "Version.swift with an unclosed $(printf '%s' "$OPEN" | sed -n '1s/^[^=]*= *//p' | cut -c1-4) string → exit 21" "$RC" 21
+  has "…and the message says a string is not closed" "not closed"
+done
+new_repo; put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'
+put "$W" Sources/S/Server.swift 'let doc = """
+Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "Server.swift with an unclosed multi-line string → exit 21" "$RC" 21
+
 echo "== deeply nested JSON or TOML is a problem line, not a traceback (verify R8)"
 new_repo; put "$W" package.json "$(printf '%*s' 200000 '' | tr ' ' '[')"; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run

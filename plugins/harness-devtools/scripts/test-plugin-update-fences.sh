@@ -699,7 +699,7 @@ run_both "tagfx: repo is the plugin, HEAD already pushed (Phase 2 had nothing to
 assert_contains "tagfx: the remote has v<version> (repo is the plugin)" "v1.4.0" "$(remote_tags tagfx)"
 printf 'x\n' > "$T/dev/fx-tagfx/NOTES"; commit_fx tagfx notes
 prep01 tagfx
-run_both "tagfx: unpushed HEAD → skipped, nothing tagged" "$TAG_MARK" tagfx "→ Phase 2.7: skipped — HEAD 還沒推到 upstream"
+run_both "tagfx: unpushed HEAD → skipped, nothing tagged" "$TAG_MARK" tagfx "→ Phase 2.7: skipped — HEAD 與本機記錄的 upstream 不同"
 ( cd "$T/dev/fx-tagfx" && git push -q origin HEAD 2>/dev/null )
 prep01 tagfx
 run_both "tagfx: pushed, version not bumped → exists (the tag stays on the bump commit)" "$TAG_MARK" tagfx "done — exists name=v1.4.0"
@@ -733,6 +733,22 @@ mk_tag_fx tagstale 1.0.0
 prep01 tagstale
 run_both "tagstale: the remote's default branch was rewritten, the local @{u} still says HEAD → skipped" "$TAG_MARK" tagstale "不是 HEAD"
 if [ -z "$(remote_tags tagstale | tr -d ' ')" ]; then PASS=$((PASS+1)); echo "  ✓ tagstale: nothing tagged"; else FAIL=$((FAIL+1)); echo "  ✗ tagstale: tags reached the remote: $(remote_tags tagstale)"; fi
+
+# #54: the remote is AHEAD - someone pushed after this clone last fetched. Same stop; the advice is a
+# fast-forward pull, with the warning that a bump among the pulled commits moves the tag to that version
+mk_tag_fx tagahead 1.0.0
+( git clone -q "$T/remote-tagahead.git" "$T/other-tagahead" 2>/dev/null && cd "$T/other-tagahead" && printf 'o\n' > OTHER && git add -A \
+    && git -c user.name=t -c user.email=t@t commit -qm other && git push -q origin HEAD 2>/dev/null )
+prep01 tagahead
+run_both "tagahead: someone pushed after the last fetch → skipped" "$TAG_MARK" tagahead "不是 HEAD"
+prep01 tagahead
+run_both "tagahead: …the advice is a fast-forward pull" "$TAG_MARK" tagahead "git pull --ff-only 後重跑 plugin-update"
+prep01 tagahead
+run_both "tagahead: …with the warning that a bump among the pulled commits takes the tag" "$TAG_MARK" tagahead "tag 會打在那個較新的版本"
+( cd "$T/dev/fx-tagahead" && git fetch -q origin )
+prep01 tagahead
+run_both "tagahead: after a fetch HEAD is behind the upstream → skipped, and the message allows for that" "$TAG_MARK" tagahead "fetch 之後 upstream 已經前進"
+if [ -z "$(remote_tags tagahead | tr -d ' ')" ]; then PASS=$((PASS+1)); echo "  ✓ tagahead: nothing tagged"; else FAIL=$((FAIL+1)); echo "  ✗ tagahead: tags reached the remote: $(remote_tags tagahead)"; fi
 
 # opt-in (#42, 2026-11-10): without harness-devtools.releaseTag = true nothing is tagged
 mk_tag_fx tagoff 1.0.0

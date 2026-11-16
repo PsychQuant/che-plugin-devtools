@@ -104,7 +104,7 @@ echo "→ Phase 1 Step 0: 版本來源檔與 README.md 沒有未 commit 的修�
 - `Sources/*/Version.swift` — 更新版本字串
 - 其他可能的位置由 Phase 0 Step 3 決定
 
-Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`）、`Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（`[project].version`、`[tool.poetry].version`，或 hatch `path` 指到的檔案，照 hatch 自己的讀法；dynamic 版本寫在 `[tool.poetry].version`、或版本來自 git tag（setuptools_scm、hatch-vcs、poetry-dynamic-versioning）時，`[build-system]` 的 `build-backend` 要寫明那個工具自己的 backend（setuptools_scm 還要列在 `requires`，不帶環境標記，`pyproject.toml` 旁邊沒有 `setup.py`、`setup.cfg`、`PKG-INFO`，檔案裡也沒有 `[tool.distutils.egg_info]`（任何拼法）；hatch-vcs 不能有自訂的 metadata hook；poetry-dynamic-versioning 不能有 `from-file`。hatch 建置時（`hatchling.build`，或沒寫 backend），`hatch.toml` 有 `version` 鍵、不是合法的 TOML、有兩個檔名只差大小寫的 `hatch.toml`，或旁邊有 `PKG-INFO`，hatch 的 `path` 與 `source = "vcs"` 都回 21。這些條件都過了，只表示 helper 認得這個寫法，不保證建出來的版本等於 tag），hatch 的 `path` 在寫明別的 backend 時不算數，細節見 README）、`.claude-plugin/plugin.json` 或根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。Phase 3 Step 1 會把清單裡改過的檔案都 stage 進 release commit；改了 hatch `path` 指到的檔案時，那個檔案要自己 `git add`；它不在 Phase 1 Step 0 的清單裡，Step 0 擋不到它，所以加之前先 `git diff -- <那個檔案>` 看一眼，有這次版本以外的修改就用 `git add -p` 只收版本那一行。
+Phase 3 Step 1.5（`scripts/release-tag.sh`）會讀的版本來源是封閉列舉：`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`）、`Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下（回 20 或 21，訊息會寫明原因）：改成具名常數，或移出 Server.swift）、`mcpb/manifest.json`、`package.json`、`pyproject.toml`（`[project].version`、`[tool.poetry].version`，或 hatch `path` 指到的檔案，照 hatch 自己的讀法；dynamic 版本寫在 `[tool.poetry].version`、或版本來自 git tag（setuptools_scm、hatch-vcs、poetry-dynamic-versioning）時，`[build-system]` 的 `build-backend` 要寫明那個工具自己的 backend（setuptools_scm 還要列在 `requires`，不帶環境標記，`pyproject.toml` 旁邊沒有 `setup.py`、`setup.cfg`、`PKG-INFO`，檔案裡也沒有 `[tool.distutils.egg_info]`（任何拼法）；hatch-vcs 不能有自訂的 metadata hook；poetry-dynamic-versioning 不能有 `from-file`。hatch 建置時（`hatchling.build`，或沒寫 backend），`hatch.toml` 有 `version` 鍵、不是合法的 TOML、有兩個檔名只差大小寫的 `hatch.toml`，或旁邊有 `PKG-INFO`，hatch 的 `path` 與 `source = "vcs"` 都回 21。這些條件都過了，只表示 helper 認得這個寫法，不保證建出來的版本等於 tag），hatch 的 `path` 在寫明別的 backend 時不算數，細節見 README）、`.claude-plugin/plugin.json` 或根目錄的 `plugin.json`。repo 裡有的都要改成同一個版本，漏改一個 Step 1.5 就會停止、不建 release（#42）。樹裡沒有任何版本字串（build 時才算）也可以，Step 1.5 會直接用這次的 `{version}`。Phase 3 Step 1 會把清單裡改過的檔案都 stage 進 release commit；改了 hatch `path` 指到的檔案時，那個檔案要自己 `git add`；它不在 Phase 1 Step 0 的清單裡，Step 0 擋不到它，所以加之前先 `git diff -- <那個檔案>` 看一眼，有這次版本以外的修改就用 `git add -p` 只收版本那一行。
 
 ### Step 2: 更新 CHANGELOG.md
 
@@ -376,6 +376,7 @@ echo "→ Step 1 推送: release commit 已推到 $REMOTE 的 ${UPSTREAM_BRANCH}
 - `Version.swift` 裡沒有 `static let|var version|current` 宣告時（例如只在 `run()` 裡 print 版本），不算版本來源；有宣告但值不是字串常值時停下（rc 21）。
 - 打完確認 tag 在 release 要建的那個 GitHub repo 上，並且名稱就是 `v{version}`。
 - **只在 remote 的預設 branch 上發版**：看的是目前 branch 追蹤的 upstream branch，不是本機 branch 名。feature branch 上打的 `v{version}` 會指向還沒合併的 commit，而且 tag 不會移動（#42 verify 第 2 輪）。
+- **HEAD 要在 remote 上預設 branch 的歷史裡**（#54，2026-11-10 決定「HEAD 在 remote 歷史裡就照打」）：區塊向 remote 抓那個 branch（只抓那一個 ref，不抓 tag），確認 HEAD 就是它、或是它的祖先。release commit 之後有人推了 commit 時照打在 HEAD，並印一行說明之後還有幾個 commit；HEAD 不在那個歷史裡（release commit 沒推上去，或 remote 被改寫）時停下。這時不要 pull 之後重跑：這一步打在 HEAD，pull 之後 HEAD 是別人的 commit。
 - owner/repo 從 upstream remote 的網址推出，只認 `github.com` 的網址；ssh host alias、GitHub Enterprise 會停下（不印網址，網址可能帶憑證）。
 - 區塊會向 GitHub 問這個 repo 現在的正式名稱（`gh api repos/<owner>/<repo> --jq .full_name`），讀不到就停下，這一步不打 tag（#53）。repo 在同一個 owner 底下改過名、remote 的網址還是舊名稱時，後面的 API 與上傳都用正式名稱，並提醒用 `git remote set-url` 更新網址。正式名稱的 owner 與網址推出的不同時（repo 轉移到別的 owner；不分大小寫比較），區塊停下：照這樣做 release 會建在新的 owner 底下。訊息列出兩個名稱（不印網址），請使用者確認那就是要發版的 repo，用 `git remote set-url` 改網址後再重跑（2026-11-16 決定）。只差大小寫不算改名，也不算轉移。這兩項檢查在 Step 1 推送之前先做一次，所以 `gh` 沒登入、連不上或 repo 已經轉移時，release commit 不會先推出去；Step 2 也再查一次。這個查詢只處理 GitHub 還在轉址的舊名稱：舊名稱已經被另一個 repo 取用時，GitHub 不再轉址，查到的是那個 repo 自己的名稱，區塊分不出來（`git push` 也一樣會推到那個 repo）。
 
@@ -392,17 +393,23 @@ BRANCH=$(git branch --show-current)
 REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
 case "$REMOTE" in ''|.) echo "✗ Step 1.5: $BRANCH 沒有指向 remote 的 upstream — 停止，不建 release。不要直接 git push：回 Step 1 推送（推送前檢查），設定 upstream 的做法與推送前的檢查都在那裡"; exit 1 ;; esac
 git remote | grep -qxF -- "$REMOTE" || { echo "✗ Step 1.5: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 停止，不建 release"; exit 1; }
-[ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 1.5: HEAD 與 upstream 不同（Step 1 沒推成功，或 fetch 之後 upstream 已經前進）— 停止，不建 release"; exit 1; }
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
 DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
 if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
     echo "✗ Step 1.5: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT:-讀不到}）— 合併到預設 branch 後再發版；停止，不建 release"; exit 1
 fi
-# @{u} 是本機記錄的位置；remote 上那個 branch 實際指向哪裡要問 remote（#42 verify 第 7 輪）
+# HEAD（release commit）必須在 remote 上預設 branch 的歷史裡：就是它，或是它的祖先（#54，2026-11-10 決定「HEAD 在 remote 歷史裡就照打」）。
+# 本機的 @{u} 可能過期（#42 verify 第 7 輪）：先問 remote 那個 branch 現在指向哪個 commit，再抓那一個 ref 讓它的歷史在本機
+# （--no-tags：remote 的 tag 不先落到本機），然後用 merge-base 判斷。不靠 FETCH_HEAD（fetch.writeFetchHead 可以關掉它）。問不到、抓不到或判斷不了都停下
 LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
-if [ -z "$LIVE" ] || [ "$LIVE" != "$(git rev-parse HEAD)" ]; then
-    echo "✗ Step 1.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 目前是 ${LIVE:-讀不到}，不是 HEAD：有人在 release commit 之後推了 commit，或 remote 被改寫。不要 pull 之後重跑這一步——這一步打在 HEAD，tag 會落在別人的 commit；先確認要發的是哪一個 commit。停止，不建 release"; exit 1
+[ -n "$LIVE" ] && git fetch -q --no-tags "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null \
+  || { echo "✗ Step 1.5: 讀不到 $REMOTE 上的 ${UPSTREAM_BRANCH}（連線或權限的問題）— 停止，這一步沒有打 tag，不建 release；連得上之後重跑這一步"; exit 1; }
+if ! git merge-base --is-ancestor HEAD "$LIVE" 2>/dev/null; then
+    echo "✗ Step 1.5: HEAD（release commit）不在 $REMOTE 的 ${UPSTREAM_BRANCH}（目前是 ${LIVE}）的歷史裡：release commit 沒推上去，或 remote 被改寫、release commit 已經不在上面。沒推上去時回 Step 1 推送（推送前檢查）；remote 被改寫時先確認要發的是哪一個 commit。不要 pull 之後重跑這一步：這一步打在 HEAD。停止，這一步沒有打 tag，不建 release"; exit 1
 fi
+# remote 領先（release commit 之後有人推了 commit）時照打在 HEAD，印一行說明
+AHEAD=$(git rev-list --count "HEAD..$LIVE" 2>/dev/null)
+[ "$AHEAD" = 0 ] || echo "→ Step 1.5: $REMOTE 上的 ${UPSTREAM_BRANCH} 在 release commit 之後還有 ${AHEAD:-?} 個 commit（有人在 release commit 之後推了 commit）；tag 打在 HEAD，也就是 release commit，不包含那些 commit"
 OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
   || { echo "✗ Step 1.5: 從 remote $REMOTE 的網址推不出 github.com 的 owner/repo（ssh host alias、GitHub Enterprise 不支援）— 停止，不建 release"; exit 1; }
