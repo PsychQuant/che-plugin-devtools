@@ -1253,6 +1253,7 @@ new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["setupt
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "a static [project].version with setup.py next to it → exit 0: the tables are not consulted" "$RC" 0
 has "…from [project]" "sources=pyproject"
+hasnt "…and no note about a missing [project] table" "no [project] table"
 new_repo; put "$W" pyproject.toml "$(bs hatchling.build '"hatchling"'; dyn_pyproject "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; put "$W" setup.py 'from setuptools import setup; setup(version="2.0.0")'; put "$W" setup.cfg '[metadata]'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "a hatch path under hatchling with setup.py and setup.cfg next to it → exit 0: hatchling does not read them" "$RC" 0
@@ -1270,6 +1271,7 @@ version = 3.0.0'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.2.3
 check "no [project] table, [tool.setuptools_scm], and a setup.cfg that states a version → exit 0, as in 2.6.0" "$RC" 0
 hasnt "…but no note says the version comes from git tags" "comes from git tags"
+has "…and a note says setup.cfg is not read" "setup.cfg next to it can state the version"
 # --at-bump reads the same way at every commit it walks: a bump commit that still had
 # setup.py cannot be told from one whose version setup.py set
 new_repo; plugin_json "$W" "" 1.0.0; put "$W" pyproject.toml "$SCM_OK"; put "$W" setup.py 'from setuptools import setup; setup()'; commit "$W" "bump"
@@ -1398,6 +1400,134 @@ run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "no [project] table, a [tool.poetry].version and a [tool.setuptools_scm] table that counts → exit 0" "$RC" 0
 has "…the poetry version is the source" "sources=poetry"
 hasnt "…and no note says the version comes from git tags" "comes from git tags"
+
+echo "== known overrides found in round 6: PKG-INFO, [tool.distutils.egg_info], two spellings of hatch.toml (#48 verify R6)"
+# What exit 0 promises for a git-tag declaration (written on the issue on 2026-11-16): the
+# helper recognises the declaration and found none of the known overrides
+# below; it does not promise that the wheel carries the tag's version. Round 6 found three
+# more overrides, each measured with a real build (tag v1.2.3).
+#
+# PKG-INFO next to pyproject.toml: hatchling takes every field `dynamic` lists from it, the
+# version included (hatchling metadata/core.py core_raw_metadata): the wheel was 6.6.6 for
+# source = "vcs" and for a hatch path that said 1.2.3. setuptools-scm took it too when it did
+# not find the git repository (pyproject.toml in a subdirectory). poetry-core did not read it
+# (both poetry layouts built 1.2.3).
+PKGINFO='Metadata-Version: 2.1
+Name: x
+Version: 6.6.6'
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" PKG-INFO "$PKGINFO"; commit "$W"
+for E in 1.0.0 6.6.6; do
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect "$E"
+  check "source = \"vcs\" with PKG-INFO next to it, --expect $E → exit 21" "$RC" 21
+done
+has "…the message names PKG-INFO" "PKG-INFO"
+hasnt "…and no note says the version comes from git tags" "comes from git tags"
+new_repo; put "$W" pyproject.toml "$SCM_OK"; put "$W" PKG-INFO "$PKGINFO"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "[tool.setuptools_scm] with PKG-INFO next to it → exit 21" "$RC" 21
+has "…the message names PKG-INFO" "the directory also holds PKG-INFO"
+new_repo; put "$W" pkg/pyproject.toml "$SCM_OK"; put "$W" pkg/PKG-INFO "$PKGINFO"; commit "$W"
+run "$W" --dir pkg --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "--dir pkg with pkg/PKG-INFO next to [tool.setuptools_scm] → exit 21" "$RC" 21
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" pkg-info "$PKGINFO"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "the same file named pkg-info → exit 21" "$RC" 21
+new_repo; put "$W" pyproject.toml "$HATCH_PATH_OK"; put "$W" x.py '__version__ = "1.0.0"'; put "$W" PKG-INFO "$PKGINFO"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a hatch path under hatchling with PKG-INFO next to it → exit 21 (2.6.0 compared the file hatchling does not use)" "$RC" 21
+has "…the message names PKG-INFO" "PKG-INFO: "
+new_repo; put "$W" pyproject.toml "$(dyn_pyproject "$PASS_HATCH_PATH")"; put "$W" x.py '__version__ = "1.0.0"'; put "$W" PKG-INFO "$PKGINFO"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a hatch path with no backend stated and PKG-INFO → exit 21" "$RC" 21
+new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["setuptools>=64", "setuptools-scm>=8"]\nbuild-backend = "setuptools.build_meta"\n\n[project]\nname = "x"\nversion = "1.0.0"\n\n%s\n' "$PASS_SCM")"; put "$W" PKG-INFO "$PKGINFO"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a static [project].version with PKG-INFO → exit 0: only fields in dynamic are taken from it" "$RC" 0
+new_repo; put "$W" pyproject.toml "$PDV_OWN"; put "$W" PKG-INFO "$PKGINFO"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "poetry-dynamic-versioning with PKG-INFO → exit 0: poetry-core does not read it" "$RC" 0
+has "…with the git-tag note" "comes from git tags (poetry-dynamic-versioning)"
+new_repo; put "$W" pyproject.toml "$(bs poetry.core.masonry.api '"poetry-core>=2"'; dyn_pyproject "$PASS_POETRY2")"; put "$W" PKG-INFO "$PKGINFO"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "the poetry 2 layout with PKG-INFO → exit 0" "$RC" 0
+new_repo; put "$W" pyproject.toml "$(bs hatchling.build '"hatchling", "hatch-vcs"'; printf '%s\n' "$PASS_HATCH_VCS")"; put "$W" PKG-INFO "$PKGINFO"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "no [project] table, source = \"vcs\" and PKG-INFO → exit 0, as in 2.6.0" "$RC" 0
+hasnt "…but no note says the version comes from git tags" "comes from git tags"
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" dist/x-1.0/PKG-INFO "$PKGINFO"; put "$W" x.egg-info/PKG-INFO "$PKGINFO"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "PKG-INFO in other directories only (an unpacked sdist, an egg-info) → exit 0" "$RC" 0
+
+# [tool.distutils.egg_info] in pyproject.toml: setuptools adds its tag_build or tag_date to
+# the version setuptools-scm computes (the wheel was 1.2.3.post9, and 1.2.3<date>). It is the
+# pyproject spelling of setup.cfg's [egg_info], which stops the run by presence already.
+for EG in 'tag_build = ".post9"' 'tag_date = true' ''; do
+  new_repo; put "$W" pyproject.toml "$(printf '%s\n\n[tool.distutils.egg_info]\n%s\n' "$SCM_OK" "$EG")"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+  check "[tool.setuptools_scm] with [tool.distutils.egg_info] ${EG:-(empty)} → exit 21" "$RC" 21
+  has "…the message names the table" "[tool.distutils.egg_info]"
+  hasnt "…and no note says the version comes from git tags" "comes from git tags"
+done
+new_repo; put "$W" pyproject.toml "$(printf '%s\n\n[tool.distutils.bdist_wheel]\nuniversal = true\n' "$SCM_OK")"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "[tool.setuptools_scm] with another distutils command's table → exit 0" "$RC" 0
+new_repo; put "$W" pyproject.toml "$(printf '%s\n\n[tool.distutils.egg_info]\ntag_build = ".post9"\n' "$HATCH_VCS_OK")"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "source = \"vcs\" with [tool.distutils.egg_info] → exit 0: hatchling does not use it" "$RC" 0
+
+# Two files whose names differ only in letter case (a case-sensitive file system allows it,
+# and git keeps both): hatchling opens the exact name hatch.toml, while on a file system that
+# ignores case only one of the two is checked out. The helper used to read the first one git
+# lists (Hatch.toml) and never saw a version key in hatch.toml. Built with update-index,
+# because this file system cannot hold both.
+two_names() {   # two_names <work> <name1> <text1> <name2> <text2>: commit both without a work tree
+  local b1 b2
+  b1=$(printf '%s\n' "$3" | git -C "$1" hash-object -w --stdin)
+  b2=$(printf '%s\n' "$5" | git -C "$1" hash-object -w --stdin)
+  git -C "$1" update-index --add --cacheinfo "100644,$b1,$2" --cacheinfo "100644,$b2,$4"
+  git -C "$1" commit -qm two-names && git -C "$1" push -q origin main 2>/dev/null
+}
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; git -C "$W" add pyproject.toml
+two_names "$W" Hatch.toml '[envs.default]' hatch.toml '[version]
+path = "about.py"'
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "source = \"vcs\" with both Hatch.toml and hatch.toml → exit 21" "$RC" 21
+has "…the message says why" "letter case"
+new_repo; put "$W" pyproject.toml "$HATCH_PATH_OK"; put "$W" x.py '__version__ = "1.0.0"'; git -C "$W" add pyproject.toml x.py
+two_names "$W" HATCH.TOML '[envs.default]' hatch.toml '[envs.lint]'
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a hatch path with HATCH.TOML and hatch.toml, neither with a version key → exit 21: which one is built from is not known" "$RC" 21
+
+# round 6's mutation tests: three conditions no test pinned
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" hatch.toml 'version = ""'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "hatch.toml with an empty version value → exit 21: the key's presence is enough" "$RC" 21
+has "…and the message says why" "hatch.toml: has a version key"
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" hatch.toml "x = $(printf '%*s' 5000 '' | tr ' ' '[')"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "hatch.toml nested 5000 deep → exit 21" "$RC" 21
+has "…as TOML that cannot be read" "hatch.toml: not valid TOML"
+if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
+new_repo; put "$W" pyproject.toml "$(printf '[build-system]\nrequires = ["setuptools>=64", "setuptools-scm>=8"]\nbuild-backend = "setuptools.build_meta"\n\n[project]\nname = "x"\n\n%s\n' "$PASS_SCM")"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a [project] table with neither a version nor dynamic, and [tool.setuptools_scm] → exit 0" "$RC" 0
+hasnt "…and no git-tag note: no back-end supplies a version there" "comes from git tags"
+
+# an integer too long for Python to convert is a ValueError that is not a TOMLDecodeError
+for WHERE in pyproject.toml hatch.toml; do
+  new_repo
+  if [ "$WHERE" = hatch.toml ]; then put "$W" pyproject.toml "$HATCH_VCS_OK"; fi
+  put "$W" "$WHERE" "n = $(printf '%*s' 5000 '' | tr ' ' '9')"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+  check "$WHERE with a 5000-digit integer → exit 21" "$RC" 21
+  has "…as TOML that cannot be read" "$WHERE: not valid TOML"
+  if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
+done
+
+# what the git-tag note says, now that the promise is written down
+new_repo; put "$W" pyproject.toml "$SCM_OK"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "[tool.setuptools_scm] alone → exit 0" "$RC" 0
+has "…the note says what is not checked" "what the build makes of the tag is not checked"
 
 echo "== two declarations the helper cannot read: each is reported, neither hides the other (#48 second pre-check)"
 new_repo; put "$W" pyproject.toml "$(dyn_pyproject '[tool.setuptools.dynamic]
