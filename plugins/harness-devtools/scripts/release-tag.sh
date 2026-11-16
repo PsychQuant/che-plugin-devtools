@@ -107,8 +107,10 @@
 #                                                or PKG-INFO next to pyproject.toml
 #                                                (see below), and no
 #                                                [tool.distutils.egg_info] table
-#                                                (setuptools adds its tag_build or
-#                                                tag_date to the version)
+#                                                in any spelling setuptools reads
+#                                                (egg-info, EGG_INFO): setuptools
+#                                                adds its tag_build or tag_date to
+#                                                the version
 #     b. [tool.hatch.version] source = "vcs"     hatchling.build — and no custom
 #                                                metadata hook, no PKG-INFO, and no
 #                                                hatch.toml that replaces the version
@@ -169,8 +171,8 @@
 #   (pyproject.toml specification, `dynamic`). With a static [project].version, or
 #   with "version" not listed, they are not consulted, as in 2.6.0.
 #
-#   What exit 0 promises for such a declaration (written on the issue on
-#   2026-11-16): the helper recognised the declaration, under its own backend, and
+#   What exit 0 promises for such a declaration (the author's choice, written on
+#   the issue on 2026-11-16; the maintainer has not ratified it): the helper recognised the declaration, under its own backend, and
 #   found none of the overrides it knows — the conditions in the list above and the
 #   four things below. It does NOT promise that the wheel will carry the tag's
 #   version: that would need the build itself, and a build is not run here. The
@@ -182,7 +184,8 @@
 #   the tables above speak of. The helper looks at four things, in the directory
 #   of pyproject.toml, at the commit it reads — a closed list; do not add a fifth
 #   by resemblance:
-#     1. setup.py, setup.cfg (names compared without regard to case). setuptools
+#     1. setup.py, setup.cfg (names compared the way a file system that ignores
+#        case compares them: NFC, then casefold). setuptools
 #        takes a version stated in either before setuptools-scm supplies one. The
 #        helper reads neither, and setup.py is code, so presence is enough: (a)
 #        does not count, and the run is unreadable with a message naming the file.
@@ -199,7 +202,8 @@
 #        [metadata.hooks.custom] in hatch.toml, merged as in 2.): code in the tree
 #        that may set the version. With one, (b) does not count.
 #     4. PKG-INFO (the metadata file an sdist carries; name compared without regard
-#        to case). hatchling takes every field [project].dynamic lists from it,
+#        to case, as for every name here). hatchling takes every field
+#        [project].dynamic lists from it,
 #        the version included, so it stops the run whenever hatch is the one
 #        building, as in 2. — a hatch path too. setuptools-scm takes it when it
 #        does not find the git repository, so (a) does not count. poetry-core does
@@ -217,7 +221,8 @@
 #       version sources, so a version stated there is not compared and the run
 #       goes on with the other sources or --expect, as in 2.6.0. With one of the
 #       two files in the directory the helper prints a note that it does not read
-#       them, and not the git-tag note.
+#       them; (a) does not count there, so it gets no git-tag note
+#       (poetry-dynamic-versioning is not affected and keeps its note).
 #       The same goes for a poetry 1 file whose placeholder is not read: what
 #       poetry-dynamic-versioning then produces is not compared;
 #     - how a tag becomes a version. The helper does not check that the tag it is
@@ -312,7 +317,7 @@ case "$MAX_WALK" in ''|*[!0-9]*|0) MAX_WALK=500 ;; esac
 # Read into a variable from a TOP-LEVEL heredoc, then run with -c: bash 3.2 cannot
 # parse a heredoc inside $( … ) when its text contains quotes (#42 verify R2).
 IFS= read -r -d '' PYSRC <<'PY' || true
-import json, os, posixpath, re, subprocess, sys
+import json, os, posixpath, re, subprocess, sys, unicodedata
 
 top, sha, prefix, at_bump = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 MAX_WALK = int(sys.argv[5])
@@ -614,18 +619,20 @@ def read_sources(commit):
         return [p[len(prefix):] for p in r.stdout.split("\0") if p]
 
     def root_files():
-        """{lower-cased name: [names]} of the files directly in the version root at this
+        """{folded name: [names]} of the files directly in the version root at this
         commit. Blobs only (a symbolic link is one), not directories or submodules.
-        Lower-cased, because on a file system that ignores case a build tool opens
-        Setup.py when it asks for setup.py. Every spelling is kept: git can hold
-        Hatch.toml and hatch.toml side by side, and keeping only the first one git
-        lists once hid the hatch.toml that hatchling reads (#48 verify R6)."""
+        Folded (NFC, then casefold), because a file system that ignores case opens
+        Setup.py, or a setup.py spelled with U+017F, when a build tool asks for
+        setup.py (#48 verify R7: str.lower() left U+017F alone, and the wheel took that
+        file's version). Every spelling is kept: git can hold Hatch.toml and hatch.toml
+        side by side, and keeping only the first one git lists once hid the hatch.toml
+        that hatchling reads (#48 verify R6)."""
         r = git("ls-tree", "-z", f"{commit}:{prefix.rstrip('/')}")
         names = {}
         for entry in (r.stdout.split("\0") if r.returncode == 0 else []):
             meta, _, name = entry.partition("\t")
             if name and meta.split()[1:2] == ["blob"]:
-                names.setdefault(name.lower(), []).append(name)
+                names.setdefault(unicodedata.normalize("NFC", name).casefold(), []).append(name)
         return names
 
     def add(name, value, rel):
@@ -752,7 +759,13 @@ def read_sources(commit):
         # [tool.distutils.egg_info] is the pyproject spelling of setup.cfg's [egg_info]:
         # setuptools adds its tag_build or tag_date to the version setuptools-scm computes
         # (verify R6, measured: 1.2.3 became 1.2.3.post9, and 1.2.3 followed by the date).
-        egg_info = dig(doc, "tool", "distutils", "egg_info") is not None
+        # setuptools reads every command name in [tool.distutils] lower-cased with "-"
+        # turned into "_" (config/_apply_pyprojecttoml.py, _copy_command_options), so
+        # egg-info, EGG_INFO and Egg-Info are the same table (verify R7: only egg_info
+        # was seen, and the wheel was 1.2.3.post9).
+        distutils = dig(doc, "tool", "distutils")
+        egg_info = isinstance(distutils, dict) and any(
+            isinstance(k, str) and k.lower().replace("-", "_") == "egg_info" for k in distutils)
         # poetry-dynamic-versioning reads the version from a FILE, not from git tags, when
         # its table has a from-file table (measured: the wheel carried the 2.0.0 of the
         # file it names). The placeholder is still a placeholder then, but the

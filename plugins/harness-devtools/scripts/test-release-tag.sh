@@ -1523,6 +1523,38 @@ for WHERE in pyproject.toml hatch.toml; do
   if printf '%s' "$OUT" | grep -q 'Traceback'; then bad "…printed a Python traceback" "$OUT"; else ok "…without a Python traceback"; fi
 done
 
+# verify R7: setuptools reads every [tool.distutils] command name lower-cased with "-" as "_"
+# (_apply_pyprojecttoml.py, _copy_command_options), so these are the same table (measured:
+# wheel 1.2.3.post9 while the helper exited 0 for egg-info)
+for EGN in egg-info EGG_INFO Egg-Info; do
+  new_repo; put "$W" pyproject.toml "$(printf '%s\n\n[tool.distutils.%s]\ntag_build = ".post9"\n' "$SCM_OK" "$EGN")"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+  check "[tool.setuptools_scm] with [tool.distutils.$EGN] → exit 21" "$RC" 21
+  has "…the message names the table" "[tool.distutils.egg_info]"
+done
+new_repo; put "$W" pyproject.toml "$(printf '%s\n\n[tool.distutils.egg_info]\ntag_build = ".post9"\n' "$PDV_OWN")"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "poetry-dynamic-versioning with [tool.distutils.egg_info] → exit 0: poetry does not use it" "$RC" 0
+# verify R7: str.lower() left U+017F (long s) alone, and a file system that ignores case
+# opens that file as setup.py (measured on APFS: wheel 9.9.9)
+new_repo; put "$W" pyproject.toml "$SCM_OK"; put "$W" "$(printf '\305\277')etup.py" 'from setuptools import setup; setup(version="9.9.9")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "[tool.setuptools_scm] with setup.py spelled with U+017F → exit 21" "$RC" 21
+# a symbolic link named PKG-INFO is read by hatchling like the file it points to
+new_repo; put "$W" pyproject.toml "$HATCH_VCS_OK"; put "$W" meta.txt "$PKGINFO"; ln -s meta.txt "$W/PKG-INFO"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "source = \"vcs\" with a symbolic link named PKG-INFO → exit 21" "$RC" 21
+# the no-[project] note names both files, and poetry-dynamic-versioning keeps its git-tag note
+new_repo; put "$W" pyproject.toml "$(bs setuptools.build_meta '"setuptools", "setuptools-scm"'; printf '[tool.setuptools_scm]\n')"; put "$W" setup.py 'from setuptools import setup; setup()'; put "$W" setup.cfg '[metadata]'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "no [project] table, [tool.setuptools_scm], setup.py and setup.cfg → exit 0, as in 2.6.0" "$RC" 0
+has "…the note names both files" "setup.cfg, setup.py next to it can state the version, and this helper does not read them"
+new_repo; put "$W" pyproject.toml "$(bs poetry_dynamic_versioning.backend '"poetry-core>=1.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"'; printf '%s\n' "$PASS_PDV")"; put "$W" setup.py 'from setuptools import setup; setup()'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a poetry 1 file with poetry-dynamic-versioning and a setup.py → exit 0" "$RC" 0
+has "…its git-tag note stays" "comes from git tags (poetry-dynamic-versioning)"
+has "…next to the note about setup.py" "setup.py next to it can state the version"
+
 # what the git-tag note says, now that the promise is written down
 new_repo; put "$W" pyproject.toml "$SCM_OK"; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
