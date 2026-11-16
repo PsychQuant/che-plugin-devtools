@@ -1786,6 +1786,196 @@ git -C "$W" config --unset tag.gpgSign; git -C "$W" config tag.forceSignAnnotate
 run "$W" --dir . --commit HEAD --name-style v --dry-run
 has "tag.forceSignAnnotated on → the same note" "cannot check that signing works"
 
+# ---- --list-bumps (#55) ----
+TAB=$(printf '\t')
+# list_run <work> [helper args...]: stdout alone in LIST, stdout and stderr in OUT, the exit code in RC.
+# Every list run also checks that no ref changed, in the work repo or in its bare remote.
+list_run() {
+  local w="$1"; shift
+  local before; before=$(refs_snapshot "$w")
+  LIST=$(cd "$w" && "${RT_BASH:-bash}" "$HELPER" "$@" 2>"$T/list.err"); RC=$?
+  OUT="$LIST
+$(cat "$T/list.err")"
+  check "…no ref created, moved or deleted, locally or on the remote" "$(refs_snapshot "$w")" "$before"
+}
+refs_snapshot() {   # every ref of the work repo and of its origin (a bare repo on disk)
+  local remote_dir; remote_dir=$(git -C "$1" remote get-url origin); remote_dir=${remote_dir#file://}
+  git -C "$1" for-each-ref --format='%(objectname) %(refname)'
+  echo --
+  git --git-dir="$remote_dir" for-each-ref --format='%(objectname) %(refname)' || echo "cannot read $remote_dir"
+}
+# every stdout line has one of the three fixed shapes
+list_format_ok() {
+  local badl
+  badl=$(printf '%s\n' "$LIST" | grep -vE "^BUMP${TAB}(version${TAB}[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?${TAB}([0-9a-f]{40}|-)${TAB}[A-Za-z0-9._+-]+${TAB}(same-commit|other-commit|no-tag|ambiguous)|skipped${TAB}[0-9]+|incomplete${TAB}(walk-limit|shallow))\$")
+  if [ -z "$badl" ]; then ok "every stdout line is a BUMP line of a fixed shape"; else bad "lines of another shape on stdout" "$badl"; fi
+}
+bl() { local IFS=$TAB; printf 'BUMP%s%s\n' "$TAB" "$*"; }   # bl version 1.0.0 <sha> v1.0.0 no-tag → one expected line
+sha_of() { git -C "$W" rev-parse "$1"; }
+
+echo "== --list-bumps: three versions in a linear history, each with the oldest commit of its run (#55)"
+new_repo
+plugin_json "$W" "" 1.0.0; commit "$W" c1; L1=$(sha_of HEAD)
+put "$W" .claude-plugin/plugin.json '{ "name": "q", "version": "1.0.0" }'; commit "$W" "c2 same version"
+put "$W" a.txt 1; commit "$W" wip
+plugin_json "$W" "" 1.1.0; commit "$W" c4; L4=$(sha_of HEAD)
+put "$W" .claude-plugin/plugin.json '{ "name": "q", "version": "1.1.0" }'; commit "$W" "c5 same version"
+plugin_json "$W" "" 1.2.0; commit "$W" c6; L6=$(sha_of HEAD)
+put "$W" .claude-plugin/plugin.json '{ "name": "r", "version": "1.2.0" }'; commit "$W" "c7 same version"; LW=$(sha_of HEAD)
+put "$W" b.txt 2; commit "$W" wip2
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "exit 0" "$RC" 0
+check "one line per version, newest first, the oldest commit of each run; then the skipped count" "$LIST" \
+  "$(bl version 1.2.0 "$L6" v1.2.0 no-tag; bl version 1.1.0 "$L4" v1.1.0 no-tag; bl version 1.0.0 "$L1" v1.0.0 no-tag; bl skipped 0)"
+list_format_ok
+hasnt "…no incomplete line" "incomplete"
+run "$W" --dir . --commit "$L4" --name-style v
+check "back-filling one listed commit with a normal run → exit 0" "$RC" 0
+check "…the tag is on that commit" "$(remote_commit "$W" v1.1.0)" "$L4"
+git -C "$W" tag v1.0.0 "$L1"; git -C "$W" push -q origin refs/tags/v1.0.0
+git -C "$W" tag -a v1.2.0 -m x "$LW"; git -C "$W" push -q origin refs/tags/v1.2.0   # annotated, on a later commit of the same run
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "the remote has tags: on the run's oldest commit (annotated or not) → same-commit; on another commit, even a later one of the same run → other-commit" "$LIST" \
+  "$(bl version 1.2.0 "$L6" v1.2.0 other-commit; bl version 1.1.0 "$L4" v1.1.0 same-commit; bl version 1.0.0 "$L1" v1.0.0 same-commit; bl skipped 0)"
+has "…the note says where the other tag is" "v1.2.0 on origin points at ${LW:0:7}, not at ${L6:0:7}"
+git -C "$W" tag -d v1.0.0 >/dev/null
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "a tag only on the remote counts; the state is the remote's" "$(printf '%s\n' "$LIST" | grep "${TAB}1.0.0${TAB}" | cut -f6)" same-commit
+list_run "$W" --dir . --commit "$L4" --name-style v --list-bumps
+check "--commit is where the walk starts" "$LIST" \
+  "$(bl version 1.1.0 "$L4" v1.1.0 same-commit; bl version 1.0.0 "$L1" v1.0.0 same-commit; bl skipped 0)"
+
+echo "== --list-bumps: a commit that belongs to no version ends the run and is counted (#55)"
+new_repo
+plugin_json "$W" "" 1.0.0; commit "$W" c1; U1=$(sha_of HEAD)
+put "$W" .claude-plugin/plugin.json '{ "name": "p", "version": '; commit "$W" broken; UB=$(sha_of HEAD)
+plugin_json "$W" "" 1.1.0; commit "$W" c3; U3=$(sha_of HEAD)
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "unreadable between two versions → both listed, skipped 1" "$LIST" \
+  "$(bl version 1.1.0 "$U3" v1.1.0 no-tag; bl version 1.0.0 "$U1" v1.0.0 no-tag; bl skipped 1)"
+has "…the note names the skipped commit and why" "skipped $(git -C "$W" rev-parse --short=7 "$UB"): a version source cannot be read"
+new_repo
+put "$W" .claude-plugin/plugin.json '{ "name": "p" }'; commit "$W" "no version yet"
+plugin_json "$W" "" 1.0.0; commit "$W" c1
+put "$W" .claude-plugin/plugin.json '{ "name": "p", "version": '; commit "$W" broken
+plugin_json "$W" "" 1.0.0; commit "$W" fixed
+plugin_json "$W" "" 2.0.0; put "$W" package.json '{ "version": "1.0.0" }'; commit "$W" "sources disagree"
+put "$W" package.json '{ "version": "2.0.0" }'; commit "$W" agree; V2=$(sha_of HEAD)
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "the same version on both sides of an unreadable commit → two runs, both ambiguous, no commit" "$LIST" \
+  "$(bl version 2.0.0 "$V2" v2.0.0 no-tag; bl version 1.0.0 - v1.0.0 ambiguous; bl version 1.0.0 - v1.0.0 ambiguous; bl skipped 3)"
+list_format_ok
+has "…sources that disagree are skipped" "the version sources disagree (1.0.0, 2.0.0)"
+has "…so is a commit with no version source" "no version source"
+check "…the ambiguity is explained once" "$(printf '%s\n' "$OUT" | grep -c '1.0.0 appears in 2 separate runs')" 1
+new_repo
+plugin_json "$W" "" 1.0.0; put "$W" Sources/S/Version.swift 'enum V { static let version = "1.0.0" }'; commit "$W" c1
+put "$W" Sources/S/Version.swift 'enum V { static var version: String { "1.0.0" } }'; commit "$W" "one source unreadable"
+put "$W" Sources/S/Version.swift 'enum V { static let version = "1.0.0" }'; commit "$W" fixed
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "one source unreadable while the readable one keeps the version → still skipped, so two runs" "$LIST" \
+  "$(bl version 1.0.0 - v1.0.0 ambiguous; bl version 1.0.0 - v1.0.0 ambiguous; bl skipped 1)"
+new_repo
+plugin_json "$W" "" 1.0.0; commit "$W" c1; G1=$(sha_of HEAD)
+plugin_json "$W" "" '1.0.0-a..b'; commit "$W" "no tag name"
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "a version git refuses as a tag name is skipped" "$LIST" "$(bl version 1.0.0 "$G1" v1.0.0 no-tag; bl skipped 1)"
+has "…and the note says why" "v1.0.0-a..b is not a valid git tag name"
+
+echo "== --list-bumps: bumped, reverted and bumped again → ambiguous (#55)"
+new_repo
+plugin_json "$W" "" 1.0.0; commit "$W" c1; R1=$(sha_of HEAD)
+plugin_json "$W" "" 2.0.0; commit "$W" c2
+plugin_json "$W" "" 1.0.0; commit "$W" revert
+plugin_json "$W" "" 2.0.0; commit "$W" again
+plugin_json "$W" "" 2.1.0; commit "$W" c5; R5=$(sha_of HEAD)
+git -C "$W" tag v1.0.0 "$R1"; git -C "$W" push -q origin refs/tags/v1.0.0
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "every run of a version that comes back is ambiguous, with no commit, even when the remote has its tag" "$LIST" \
+  "$(bl version 2.1.0 "$R5" v2.1.0 no-tag; bl version 2.0.0 - v2.0.0 ambiguous; bl version 1.0.0 - v1.0.0 ambiguous; bl version 2.0.0 - v2.0.0 ambiguous; bl version 1.0.0 - v1.0.0 ambiguous; bl skipped 0)"
+list_format_ok
+
+echo "== --list-bumps follows the first-parent history across a merge (#55)"
+new_repo
+dated() { GIT_AUTHOR_DATE="$1" GIT_COMMITTER_DATE="$1" git -C "$W" "${@:2}"; }
+plugin_json "$W" "" 1.0.0; git -C "$W" add -A; dated 2026-01-01T00:00:00+0000 commit -qm C0; M0=$(sha_of HEAD)
+git -C "$W" checkout -qb feat
+plugin_json "$W" "" 1.1.0; git -C "$W" add -A; dated 2026-01-02T00:00:00+0000 commit -qm F1; MF=$(sha_of HEAD)
+git -C "$W" checkout -q main
+put "$W" a.txt 1; git -C "$W" add -A; dated 2026-01-03T00:00:00+0000 commit -qm M1
+dated 2026-01-04T00:00:00+0000 merge -q --no-ff --no-edit feat; MM=$(sha_of HEAD)
+git -C "$W" push -q origin main 2>/dev/null
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "the merge commit sets 1.1.0 on this branch; the feature branch's commit is not listed" "$LIST" \
+  "$(bl version 1.1.0 "$MM" v1.1.0 no-tag; bl version 1.0.0 "$M0" v1.0.0 no-tag; bl skipped 0)"
+if printf '%s' "$OUT" | grep -qF "$MF"; then bad "…the feature branch's commit appears" "$OUT"; else ok "…the feature branch's commit does not appear"; fi
+
+echo "== --list-bumps with --name-style plugin (#55)"
+new_repo
+plugin_json "$W" "plugins/foo/" 1.0.0; commit "$W" c1; P1=$(sha_of HEAD)
+plugin_json "$W" "plugins/bar/" 7.0.0; commit "$W" "another plugin"
+plugin_json "$W" "plugins/foo/" 1.1.0; commit "$W" c3; P3=$(sha_of HEAD)
+git -C "$W" tag foo-v1.0.0 "$P1"; git -C "$W" tag v1.1.0 "$P3"; git -C "$W" push -q origin refs/tags/foo-v1.0.0 refs/tags/v1.1.0
+list_run "$W" --dir plugins/foo --commit HEAD --name-style plugin --plugin foo --list-bumps
+check "tags are named <plugin>-v<version>; a v<version> tag is someone else's; another plugin's versions are not listed" "$LIST" \
+  "$(bl version 1.1.0 "$P3" foo-v1.1.0 no-tag; bl version 1.0.0 "$P1" foo-v1.0.0 same-commit; bl skipped 0)"
+list_format_ok
+
+echo "== --list-bumps at the walk limit says the list is incomplete (#55)"
+new_repo
+plugin_json "$W" "" 1.0.0; commit "$W" c1; K1=$(sha_of HEAD)
+plugin_json "$W" "" 1.1.0; commit "$W" c2; K2=$(sha_of HEAD)
+put "$W" .claude-plugin/plugin.json '{ "name": "q", "version": "1.1.0" }'; commit "$W" c3
+plugin_json "$W" "" 1.2.0; commit "$W" c4; K4=$(sha_of HEAD)
+plugin_json "$W" "" 1.3.0; commit "$W" c5; K5=$(sha_of HEAD)
+RELEASE_TAG_MAX_WALK=3 list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "limit 3 of 5 → exit 0" "$RC" 0
+check "…the run cut by the limit gets no commit, and the last line says incomplete" "$LIST" \
+  "$(bl version 1.3.0 "$K5" v1.3.0 no-tag; bl version 1.2.0 "$K4" v1.2.0 no-tag; bl version 1.1.0 - v1.1.0 ambiguous; bl skipped 0; bl incomplete walk-limit)"
+list_format_ok
+has "…the note names the limit" "limit of 3 commits"
+RELEASE_TAG_MAX_WALK=5 list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "limit 5 of 5 → the whole list, no incomplete line" "$LIST" \
+  "$(bl version 1.3.0 "$K5" v1.3.0 no-tag; bl version 1.2.0 "$K4" v1.2.0 no-tag; bl version 1.1.0 "$K2" v1.1.0 no-tag; bl version 1.0.0 "$K1" v1.0.0 no-tag; bl skipped 0)"
+put "$W" .claude-plugin/plugin.json '{ "name": "p", "version": ' ; commit "$W" broken
+plugin_json "$W" "" 1.4.0; commit "$W" c7; K7=$(sha_of HEAD)
+RELEASE_TAG_MAX_WALK=2 list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "the walk ends on a skipped commit: the run before it keeps its commit; still incomplete" "$LIST" \
+  "$(bl version 1.4.0 "$K7" v1.4.0 no-tag; bl skipped 1; bl incomplete walk-limit)"
+
+echo "== --list-bumps in a shallow clone says the list is incomplete (#55)"
+new_repo
+plugin_json "$W" "" 1.0.0; commit "$W" c1; H1=$(sha_of HEAD)
+plugin_json "$W" "" 2.0.0; commit "$W" c2; H2=$(sha_of HEAD)
+put "$W" a.txt 1; commit "$W" c3; put "$W" b.txt 2; commit "$W" c4
+git clone -q --branch main --depth 2 "file://$T/r$N/remote.git" "$T/r$N/shallow"
+list_run "$T/r$N/shallow" --dir . --commit HEAD --name-style v --list-bumps
+check "the shallow edge looks like the first commit: no commit for its version, and the last line says incomplete" "$LIST" \
+  "$(bl version 2.0.0 - v2.0.0 ambiguous; bl skipped 0; bl incomplete shallow)"
+has "…the note says how to get the whole list" "git fetch --unshallow"
+git clone -q --branch main "file://$T/r$N/remote.git" "$T/r$N/full"
+list_run "$T/r$N/full" --dir . --commit HEAD --name-style v --list-bumps
+check "a full clone → the whole list" "$LIST" "$(bl version 2.0.0 "$H2" v2.0.0 no-tag; bl version 1.0.0 "$H1" v1.0.0 no-tag; bl skipped 0)"
+
+echo "== --list-bumps: the remote cannot be queried → 30, no BUMP lines (#55)"
+new_repo; plugin_json "$W" "" 1.0.0; commit "$W"
+git -C "$W" remote set-url origin "$T/no-such-remote.git"
+LIST=$(cd "$W" && "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --list-bumps 2>"$T/list.err"); RC=$?
+OUT="$LIST
+$(cat "$T/list.err")"
+check "exit 30" "$RC" 30
+check "…nothing on stdout" "$LIST" ""
+has "…and says why" "cannot query remote"
+check "…no tag created" "$(git -C "$W" tag -l)" ""
+
+echo "== --list-bumps: usage (#55)"
+new_repo; plugin_json "$W" "" 1.0.0; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --list-bumps --at-bump;        check "with --at-bump → 2" "$RC" 2
+run "$W" --dir . --commit HEAD --name-style v --list-bumps --expect 1.0.0;   check "with --expect → 2" "$RC" 2
+run "$W" --dir . --commit HEAD --name-style plugin --list-bumps;             check "plugin style without --plugin → 2" "$RC" 2
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps --dry-run
+check "with --dry-run (it creates nothing either) → still a list" "$LIST" "$(bl version 1.0.0 "$(sha_of HEAD)" v1.0.0 no-tag; bl skipped 0)"
+
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"
 run "$W" --dir . --name-style v;                                   check "missing --commit" "$RC" 2

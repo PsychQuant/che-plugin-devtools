@@ -170,6 +170,9 @@ bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v
      [--remote <remote>] [--expect <x.y.z>] [--at-bump] [--dry-run]
 # → RELEASE_TAG: <tagged|exists|not-bumped|mismatch|unreadable|push-failed|dry-run> name=… commit=… version=… sources=…
 # --dry-run 不建立任何東西，但會查 remote 與本機的同名 tag、檢查有 git 身分；這些查詢的結束碼與真的執行時相同（#51）。簽章與 hook 會不會擋，它預測不了
+bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v|plugin [--plugin <name>] \
+     [--remote <remote>] --list-bumps
+# → 每個版本一行 BUMP、被跳過的 commit 數，必要時最後一行寫明清單不完整（#55，見下方「補打舊版本的 tag」）
 ```
 
 - **版本從 commit 讀，不讀工作樹**；八種來源（封閉列舉）全部一致才打：plugin.json、pyproject 靜態版本、hatch `path` 指到的檔案（照 hatchling 的 regex source 讀：路徑先正規化、嚴格 UTF-8、預設或設定的 pattern、第一個符合的值；tag 是 hatch 讀到的版本字串，預發行版建 wheel 時 packaging 會再正規化，例如 `1.0.0-beta` 建成 `1.0.0b0`；其他 hatch source → 21，`vcs` 見下方）、pyproject 的 `[tool.poetry].version`、package.json、`Sources/*/Version.swift`（`static let|var version|current`，可帶 `: String`；初始值必須整個是一個字串常值）、`mcpb/manifest.json`、`Sources/*/Server.swift`（`version: "x"` 必須是整個引數；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下——它是檔案裡唯一的 `version:` 時回 20（不一致），與真正的版本並存時回 21（兩個不同的值）：改成具名常數，或移出 Server.swift）。JSON 來源沒有 `version` 欄位、`Version.swift` 沒有這種宣告時都不算來源；Swift 的值不是一整個字串常值 → 21。Swift 先去掉註解（區塊註解可巢狀）。
@@ -200,7 +203,7 @@ bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v
 - **這些表什麼時候算數**：只在 `[project].dynamic` 列了 `version`、而且 `[project]` 沒有靜態版本的時候。依 pyproject.toml 規格，build backend 只能補上 `dynamic` 列出的欄位，`version` 同時寫了靜態值又列在 `dynamic` 則必須報錯；所以其餘情況下 helper 不看 `[tool.hatch.version]` 與 `[tool.setuptools.dynamic]`，和 2.6.0 相同。`[tool.poetry].version` 不受這個條件限制，有就讀（poetry 1 的專案沒有 `[project]` 表）。
 - **bash 3.2 可用**：helper 在 macOS 內建的 `/bin/bash` 下也能跑，測試會在 `/bin/bash` 下把整套重跑一次。
 - **打在哪個 commit**：
-  - `plugin-update`、`plugin-deploy` 帶 `--at-bump`：從 HEAD 往回找（封閉列舉的路徑全部算，已刪除的來源也算），打在版本來源最後一次一起變成目前版本的那個 commit。沒升版號的發版因此得到 `exists`，tag 不會跟著每次推送往前移。找不到確定的 commit 時 → 21，不打在推測的 commit 上：往回走了 500 個 commit 還沒找到、shallow clone 的歷史在升版號之前就斷了（先 `git fetch --unshallow`）、或某個 commit 的來源讀不出值。之後若還有改動 plugin 目錄的 commit，stderr 會印出筆數：tag 不包含那些改動（squash merge 時兩者是同一個 commit）。還沒有版號 tag 的 plugin，第一次跑時會替目前版本補打；更早的版本不補。
+  - `plugin-update`、`plugin-deploy` 帶 `--at-bump`：從 HEAD 往回找（封閉列舉的路徑全部算，已刪除的來源也算），打在版本來源最後一次一起變成目前版本的那個 commit。沒升版號的發版因此得到 `exists`，tag 不會跟著每次推送往前移。找不到確定的 commit 時 → 21，不打在推測的 commit 上：往回走了 500 個 commit 還沒找到、shallow clone 的歷史在升版號之前就斷了（先 `git fetch --unshallow`）、或某個 commit 的來源讀不出值。之後若還有改動 plugin 目錄的 commit，stderr 會印出筆數：tag 不包含那些改動（squash merge 時兩者是同一個 commit）。還沒有版號 tag 的 plugin，第一次跑時會替目前版本補打；更早的版本不補，要補的話見下方「補打舊版本的 tag」。
   - `mcp-deploy`、`cli-deploy` 打在 HEAD，並帶 `--expect <release 的版本>`：檔案裡的版本與要發的版本不同 → 20，不打也不建 release；repo 沒有任何版本來源時用 `--expect` 的值。
 - **什麼時候打**：四個 skill 都要 HEAD 已推到 upstream，而且 remote 上那個 branch 實際指向 HEAD（先比本機的 `@{u}`，再以 `git ls-remote` 問 remote；remote 被改寫或有人推了新 commit 時停下：`plugin-update`、`plugin-deploy` 可以 `git pull` 後重跑，`--at-bump` 仍會打在升版號的 commit；`mcp-deploy`、`cli-deploy` 打在 HEAD，pull 之後重跑會把 tag 打在別人的 commit，要先確認要發的是哪一個 commit），而且目前 branch 追蹤的 upstream branch 是 remote 的預設 branch（看 upstream，不看本機 branch 名）；feature branch 上 `plugin-update`、`plugin-deploy` 跳過，`mcp-deploy`、`cli-deploy` 停下不建 release。`plugin-update`、`plugin-deploy` 另外要求 plugin 目錄與 marketplace 是同一個 git repo。
 - **owner/repo**：`mcp-deploy`、`cli-deploy` 從 upstream remote 的網址推出，host 必須正好是 `github.com`；ssh host alias、GitHub Enterprise 會停下，且不印出網址（可能帶憑證）。建 release 前確認 GitHub 上的 tag 就是剛推的那一個 tag 物件。兩個 skill 向 GitHub 查這個 repo 現在的正式名稱（`gh api repos/<owner>/<repo> --jq .full_name`）；查不到（`gh` 沒登入、沒有權限、連不上）就停下，推送 release commit 之前也先查一次。repo 在同一個 owner 底下改過名、remote 的網址還是舊名稱時，API、asset 上傳與 `gh release` 都用正式名稱。正式名稱的 owner 與網址推出的不同時（repo 已轉移；不分大小寫比較），推送前檢查不推送、打 tag 的步驟不打 tag、建 release 的步驟不建 release：訊息列出兩個名稱（不印網址），說明 release 會建在新的 owner 底下，請使用者確認後用 `git remote set-url` 改網址再重跑。只差大小寫不算改名也不算轉移。舊名稱已經被另一個 repo 取用時，GitHub 不再轉址，這個查詢分不出來。
@@ -213,6 +216,46 @@ bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v
 - 不移動、不刪除 tag，不用 `--force`。
 
 `plugin-update`、`plugin-deploy` 沒打成 tag 不中止（branch 已推送）；`mcp-deploy`、`cli-deploy` 沒打成就不建 release——沒有 tag 時 GitHub 會在 main 上自動建一個，那正是 #42 要避免的情況。
+
+#### 補打舊版本的 tag
+
+`--list-bumps`（#55）只列出、不建立任何東西：不打 tag、不推送，唯一問 remote 的是它有哪些 tag（`git ls-remote`）。它沿 `--commit` 的 first-parent 歷史走過每個動到版本來源的 commit（與 `--at-bump` 同一個走訪、同一套讀法），把連續、所有來源都讀得出而且一致的 commit 分成一段，每段印一行：
+
+```text
+BUMP	version	1.2.0	<該段最舊的 commit>	v1.2.0	no-tag
+BUMP	version	1.1.0	-	v1.1.0	ambiguous
+BUMP	skipped	1
+BUMP	incomplete	walk-limit
+```
+
+- 每行以 `BUMP` 開頭、TAB 分隔，值都經過 helper 的 `safe()`；新的版本在前。commit 是完整的 SHA，tag 名稱照上方「tag 名稱」的 `--name-style`。
+- 最後一欄是 remote 上的狀態，封閉的四種：`same-commit`（remote 已有這個 tag，在這個 commit 上）、`other-commit`（在別的 commit 上，stderr 會寫是哪一個）、`no-tag`、`ambiguous`。
+- `ambiguous` 的 commit 是 `-`，原因封閉列舉兩種，不依性質相似類推第三種：同一個版本出現在不相連的兩段（升了又退回再升；中間夾著被跳過的 commit 也算），這個版本的每一段都是 ambiguous；或這一段碰到不完整走訪的盡頭，它最舊的 commit 只是走訪停下的地方。這兩種情況下，哪一個 commit 設了這個版本，從看得到的歷史分不出來。
+- 來源讀不出、互相不一致、沒有任何版本來源，或版本做不成合法 tag 名稱的 commit，不屬於任何版本，是段的邊界。`BUMP skipped <數目>` 一定會印；每個被跳過的 commit 與原因印在 stderr。舊 commit 是用現在的讀法讀的，當年的寫法讀不出時，那個版本就不在清單上，只會算進這個數目。
+- 走訪上限是 `RELEASE_TAG_MAX_WALK`（預設 500 個動到版本來源的 commit）。碰到上限（`walk-limit`）或 shallow clone 的邊界（`shallow`）時，最後一行是 `BUMP incomplete …`：更舊的版本沒有列出，列出的版本也可能在邊界之外還出現過。**不要照不完整的清單補打**：先用較大的 `RELEASE_TAG_MAX_WALK=<數目>` 重跑，或先 `git fetch --unshallow`。
+- 結束碼：0 列出 / 21 走訪不了歷史 / 30 查不到 remote（不印任何 BUMP 行：狀態不知道）/ 2 引數錯誤（不能與 `--at-bump`、`--expect` 一起用）。
+
+補打的步驟：
+
+1. 先列：`bash scripts/release-tag.sh --dir <版本根目錄> --commit <預設 branch> --name-style v|plugin [--plugin <name>] --list-bumps`。最後一行是 `BUMP incomplete` 時照上面重跑，不要往下做。
+2. 逐行核對。只有 `no-tag` 的行要補。`same-commit` 已經有了。`other-commit` 不必補：`mcp-deploy`、`cli-deploy` 把 tag 打在 HEAD，tag 不在升版號的那個 commit 上是正常的；那個 tag 若真的打錯了，要不要刪由人決定，helper 不移動也不刪除 tag。`ambiguous` 由人看歷史決定，清單不給 commit。`no-tag` 那一段最舊的 commit 是不是當時真正發出去的那一個，歷史也分不出來，要和 CHANGELOG、release notes 對過。
+3. 每個要補的 commit 各跑一次既有的指令：先 `--dry-run`，再真的跑。不帶 `--at-bump`，版本照 `--commit` 那個 commit 讀，tag 也打在那裡：
+
+   ```bash
+   bash scripts/release-tag.sh --dir <版本根目錄> --commit <清單上的 commit> --name-style v|plugin [--plugin <name>] --dry-run
+   bash scripts/release-tag.sh --dir <版本根目錄> --commit <清單上的 commit> --name-style v|plugin [--plugin <name>]
+   ```
+
+4. **每個 tag 推出去就是公開的、收不回**（helper 不移動、不刪除 tag），推舊版本的 tag 也會觸發 `on: push: tags` 的 workflow。所以一次一個，每一個都由人確認之後才跑第二行。helper 沒有一次推多個 tag 的指令（#55 的決定）。
+
+#### 手動發版之後
+
+不經四個發版 skill 發的版本（自己改版號、推送、建 release），沒有任何步驟會替它打 tag 或檢查 tag；四個 skill 之後也只替**目前**的版本打 tag，手動發的版本一旦又升了版號，就不會再被補到。所以手動發版之後：
+
+1. 跑一次 `--list-bumps`，看剛發的版本是不是 `no-tag`。
+2. 是的話，照上一段第 2 至 4 步補打那一個：核對 commit，`--dry-run`，由人確認後再推。
+
+binary repo 的手動發版，照 `rules/mcp-binary-distribution.md` 的範例在建 release 之前就用 helper 打 tag，再 `gh release create --verify-tag`（#49），不讓 GitHub 自己建 tag；照那個範例做的版本不需要補。
 
 ## 參考資源
 

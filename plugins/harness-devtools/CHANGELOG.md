@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/release-tag.sh --list-bumps`：列出歷史裡的每個版本、設了它的 commit，以及 remote 上有沒有它的 tag，給人手動補打舊版本的 tag（#55）。它和 `--dry-run` 一樣不建立任何東西（不打 tag、不推送），唯一問 remote 的是它有哪些 tag。沿 `--commit` 的 first-parent 歷史走過每個動到版本來源的 commit（與 `--at-bump` 同一個走訪），把連續、來源都讀得出而且一致的 commit 分成一段，每段印一行（每行以 `BUMP` 開頭、TAB 分隔、值經過 `safe()`）：`BUMP version <版本> <該段最舊的 commit> <tag 名稱> <狀態>`；狀態是封閉的四種：`same-commit`、`other-commit`、`no-tag`、`ambiguous`（commit 是 `-`：同一個版本出現在不相連的兩段，或這一段碰到不完整走訪的盡頭）。讀不出、互相不一致、沒有版本或版本做不成 tag 名稱的 commit 是段的邊界，數目印在 `BUMP skipped <數目>`。碰到走訪上限（`RELEASE_TAG_MAX_WALK`）或 shallow clone 的邊界時，最後一行是 `BUMP incomplete walk-limit|shallow`。查不到 remote 時回 30、不印 BUMP 行；不能和 `--at-bump`、`--expect` 一起用。實際補打仍用既有的 `--commit <sha>` 一次一個，由人逐一確認；README 新增「補打舊版本的 tag」與「手動發版之後」兩段。`--at-bump` 與一般執行的行為不變（歷史走訪抽成兩者共用的函式）。
 - `scripts/release-tag.sh`：新增第 8 種版本來源，`pyproject.toml` 的 `[tool.poetry].version`（#48）。它和其他來源一樣要全部一致。`[project].dynamic` 列了 `version`、版本寫在 `[tool.poetry]` 的寫法（poetry 2）也認，條件是 `[build-system]` 的 `build-backend` 寫明 poetry 的 backend（`poetry.core.masonry.api` 或 `poetry_dynamic_versioning.backend`）；沒寫時回 21，和 2.6.0 相同。
 
 ### Changed

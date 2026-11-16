@@ -9,6 +9,8 @@
 #   release-tag.sh --dir <version-root> --commit <rev> --name-style v|plugin
 #                  [--plugin <name>] [--remote <remote>] [--expect <x.y.z>]
 #                  [--at-bump] [--dry-run]
+#   release-tag.sh --dir <version-root> --commit <rev> --name-style v|plugin
+#                  [--plugin <name>] [--remote <remote>] --list-bumps
 #
 #   --dir         directory whose version files are read (a plugin directory, or
 #                 a binary repo's root); must be inside a git work tree
@@ -42,6 +44,41 @@
 #                 tag succeeds when tag.gpgSign is on (it says so), or whether a hook
 #                 on the remote or a local pre-push hook refuses the push: those
 #                 show up only in a real run.
+#   --list-bumps  list every version in the history of --commit and the commit that
+#                 set it, for back-filling tags by hand (#55). Like --dry-run it
+#                 creates nothing: no tag, no push; the one thing it asks the remote
+#                 is its list of tags (git ls-remote). Not with --at-bump or
+#                 --expect. It walks the first-parent history of --commit over the
+#                 commits that touch a version source - the walk of --at-bump - and
+#                 reads each with the rules below. Consecutive commits whose sources
+#                 can all be read and agree form a run; each run is one line, with
+#                 the run's OLDEST commit. A commit whose sources cannot be read,
+#                 disagree, give no version, or give a version that makes no valid
+#                 tag name belongs to no version: it ends the run, and the count of
+#                 such commits is printed. Back-filling is then done one tag at a
+#                 time with a normal run on the listed commit (no --at-bump); the
+#                 list itself tags nothing.
+#                 Output, stdout only, every line TAB-separated and every value
+#                 passed through safe() (newest version first):
+#                   BUMP version <x.y.z> <commit>|- <tag name> <state>
+#                   BUMP skipped <count>
+#                   BUMP incomplete walk-limit|shallow
+#                 <state> is a CLOSED set of four: same-commit (the remote has the
+#                 tag, on this commit); other-commit (the remote has it on another
+#                 commit); no-tag; ambiguous (the commit is "-"). Ambiguous has a
+#                 closed list of two causes: the version appears in two runs that
+#                 are not next to each other (set, changed or unreadable, set again
+#                 - every one of its lines is ambiguous), or the run reaches the end
+#                 of an incomplete walk, so its oldest commit is only where the walk
+#                 stopped. The skipped line is always printed. The incomplete line
+#                 is the last line, printed only when the walk reached its limit
+#                 (RELEASE_TAG_MAX_WALK, default 500 commits; a larger value lists
+#                 more) or the edge of a shallow clone: older versions are then
+#                 missing, and a version listed with a commit may also appear past
+#                 the edge, so such a list is not one to back-fill from.
+#                 Exit: 0 listed; 21 the history cannot be walked; 30 the remote
+#                 cannot be queried (no BUMP lines then: the state is not known);
+#                 2 usage error.
 #
 # Version sources — a CLOSED list of eight, read relative to --dir. Do not add a
 # ninth by resemblance. Every source found must agree, and a source that is
@@ -242,10 +279,10 @@
 # variable from a top-level heredoc, because bash 3.2 mis-parses a heredoc inside
 # $( … ) whose text has quotes in it (#42 verify R2).
 #
-# Output: one decision line on stdout, details on stderr:
+# Output: one decision line on stdout, details on stderr (--list-bumps: see above):
 #   RELEASE_TAG: <status> name=<tag> commit=<short> version=<x.y.z> sources=<a,b,…>
 #
-# Exit codes:
+# Exit codes (--list-bumps has its own, above):
 #   0   tagged and pushed (status tagged), the remote already has this tag on
 #       this commit (status exists), or --dry-run with nothing in the way
 #       (status dry-run)
@@ -271,7 +308,7 @@ PROG="release-tag.sh"
 SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 die_usage() { printf '%s: %s\n' "$PROG" "$1" >&2; exit 2; }
 
-DIR=""; COMMIT=""; STYLE=""; PLUGIN=""; REMOTE="origin"; EXPECT=""; AT_BUMP=0; DRY=0
+DIR=""; COMMIT=""; STYLE=""; PLUGIN=""; REMOTE="origin"; EXPECT=""; AT_BUMP=0; DRY=0; LIST=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dir)        [ $# -ge 2 ] || die_usage "--dir needs a value";        DIR=$2; shift 2 ;;
@@ -282,12 +319,18 @@ while [ $# -gt 0 ]; do
     --expect)     [ $# -ge 2 ] || die_usage "--expect needs a value";     EXPECT=$2; shift 2 ;;
     --at-bump)    AT_BUMP=1; shift ;;
     --dry-run)    DRY=1; shift ;;
+    --list-bumps) LIST=1; shift ;;
     *)            die_usage "unknown argument: $1" ;;
   esac
 done
 
 [ -n "$DIR" ]    || die_usage "--dir is required"
 [ -n "$COMMIT" ] || die_usage "--commit is required"
+if [ "$LIST" = 1 ]; then
+  # --list-bumps lists every version; it picks no commit and compares with no release
+  [ "$AT_BUMP" = 0 ] || die_usage "--list-bumps cannot be combined with --at-bump"
+  [ -z "$EXPECT" ]   || die_usage "--list-bumps cannot be combined with --expect"
+fi
 case "$STYLE" in
   v) ;;
   plugin)
@@ -320,6 +363,7 @@ IFS= read -r -d '' PYSRC <<'PY' || true
 import json, os, posixpath, re, subprocess, sys, unicodedata
 
 top, sha, prefix, at_bump = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+list_bumps = sys.argv[4] == "list"     # --list-bumps (#55): argv 6-8 are remote, style, plugin
 MAX_WALK = int(sys.argv[5])
 
 def toml_parser():
@@ -942,6 +986,161 @@ def read_sources(commit):
     json_version("mcpb/manifest.json", "mcpb/manifest.json")
     return found, problems, notes, paths
 
+def version_history(extra_paths, count):
+    """(ok, commits): the commits on the FIRST-PARENT history of sha that touch any
+    path of the closed list (deleted sources included), any of extra_paths, or any
+    hatch path a pyproject.toml in the history named; newest first, at most `count`.
+    The walk of --at-bump, shared with --list-bumps (#55)."""
+    # every hatch path the pyproject.toml ever named, so a renamed version file's
+    # history is walked too (#42 verify R5)
+    old_hatch = []
+    rp = git("rev-list", f"--max-count={MAX_WALK}", sha, "--", literal(prefix + "pyproject.toml"))
+    for c in (rp.stdout.split() if rp.returncode == 0 else []):
+        r_pp = git("cat-file", "blob", f"{c}:{prefix}pyproject.toml")
+        hp = hatch_path(r_pp.stdout) if r_pp.returncode == 0 else None
+        if hp:
+            old_hatch.append(prefix + hp)
+    # pathspec magic: the directory part is literal even when its name has [ ] * ?
+    # (#42 verify R6); the Sources/*/ part keeps its one-level wildcard
+    specs = list(dict.fromkeys(
+        [(":(glob)" + glob_escape(prefix) + s) if "*" in s else literal(prefix + s) for s in SOURCE_SPECS]
+        + [literal(x) for x in extra_paths + old_hatch]))
+    # --first-parent: the branch's own history. Across a merge, rev-list would
+    # interleave both sides by date and the run could end on the other branch's bump
+    # commit (#42 verify R7); with merge-commit PRs the tag lands on the merge commit,
+    # the first commit on this branch whose sources agree.
+    r = git("rev-list", "--first-parent", f"--max-count={count}", sha, "--", *specs)
+    return r.returncode == 0, (r.stdout.split() if r.returncode == 0 else [])
+
+# --list-bumps (#55): the versions in the history and the commit that set each one,
+# for back-filling tags by hand. It creates nothing: the only thing it asks the remote
+# is its list of tags. Every line on stdout starts with BUMP and is TAB-separated, and
+# every value goes through safe():
+#   BUMP version <x.y.z> <commit>|- <tag name> same-commit|other-commit|no-tag|ambiguous
+#   BUMP skipped <count>
+#   BUMP incomplete walk-limit|shallow           (last line, only when it applies)
+def tag_name(version):
+    return f"{list_style_plugin}-v{version}" if list_style == "plugin" else f"v{version}"
+
+def remote_tags(remote):
+    """{tag name: commit} on the remote (peeled for annotated tags), or None when the
+    remote cannot be queried. One read-only ls-remote; nothing is fetched."""
+    r = git("ls-remote", "--tags", remote)
+    if r.returncode != 0:
+        return None
+    direct, peeled = {}, {}
+    for line in r.stdout.splitlines():
+        obj, _, ref = line.partition("\t")
+        if not ref.startswith("refs/tags/"):
+            continue
+        name = ref[len("refs/tags/"):]
+        if name.endswith("^{}"):
+            peeled[name[:-3]] = obj
+        else:
+            direct[name] = obj
+    return {n: peeled.get(n, direct[n]) for n in direct}
+
+def list_versions(remote):
+    """Print the BUMP lines (and NOTE/PROBLEM lines) and return the exit code."""
+    out = []
+    walked, candidates = version_history([], MAX_WALK + 1)
+    if not walked:
+        print("PROBLEM\tcannot walk the history of the version sources")
+        return 21
+    # The walk stops at MAX_WALK commits, or at the edge of a shallow clone, which
+    # looks like the start of history. Either way older versions may be missing, and
+    # the oldest run seen may go on past the edge.
+    if len(candidates) > MAX_WALK:
+        incomplete = "walk-limit"
+    elif git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+        incomplete = "shallow"
+    else:
+        incomplete = None
+    candidates = candidates[:MAX_WALK]
+    # Runs of consecutive commits whose sources are all readable and agree. A commit
+    # whose sources cannot be read, disagree, give no version at all, or give a
+    # version that is no valid tag name belongs to no version: it is counted as
+    # skipped and ends the run, so the same version on both sides of it makes two runs.
+    runs, skipped, valid = [], [], {}
+    last = None                   # version of the previous commit; None after a skipped one
+    for c in candidates:
+        f, p, _, _ = read_sources(c)
+        vals = sorted({v for _, v in f})
+        why = None
+        if p:
+            why = "a version source cannot be read"
+        elif not f:
+            why = "no version source"
+        elif len(vals) > 1:
+            why = "the version sources disagree (" + ", ".join(safe(v) for v in vals) + ")"
+        else:
+            if vals[0] not in valid:
+                valid[vals[0]] = git("check-ref-format", "refs/tags/" + tag_name(vals[0])).returncode == 0
+            if not valid[vals[0]]:
+                why = safe(tag_name(vals[0])) + " is not a valid git tag name"
+        if why:
+            skipped.append((c, why))
+            last = None
+            continue
+        if vals[0] == last:
+            runs[-1]["commits"].append(c)
+        else:
+            runs.append({"version": vals[0], "commits": [c]})
+        last = vals[0]
+    # The oldest run reaches the edge of an incomplete walk unless a skipped commit
+    # closed it: its oldest commit is only where the walk stopped.
+    cut = runs[-1] if incomplete and runs and last is not None else None
+    seen = {}
+    for run in runs:
+        seen[run["version"]] = seen.get(run["version"], 0) + 1
+    tags = None
+    if any(seen[run["version"]] == 1 and run is not cut for run in runs):
+        tags = remote_tags(remote)
+        if tags is None:
+            print(f"PROBLEM\tcannot query remote {safe(remote)!r} for its tags")
+            return 30
+    noted = set()
+    for run in runs:
+        v, name, oldest = run["version"], tag_name(run["version"]), run["commits"][-1]
+        if seen[v] > 1:
+            # set, changed and set again (or a skipped commit in between): which run
+            # was released cannot be told from the history. One line per run, as for
+            # every other version; the note is printed once.
+            out.append(f"BUMP\tversion\t{safe(v)}\t-\t{safe(name)}\tambiguous")
+            if v not in noted:
+                noted.add(v)
+                print(f"NOTE\t{safe(v)} appears in {seen[v]} separate runs of commits; which one was released cannot be told from the history")
+            continue
+        if run is cut:
+            out.append(f"BUMP\tversion\t{safe(v)}\t-\t{safe(name)}\tambiguous")
+            print(f"NOTE\tthe commits of {safe(v)} reach the end of the walk; the commit that set it is not in what was walked")
+            continue
+        at = tags.get(name)
+        if at is None:
+            state = "no-tag"
+        elif at == oldest:
+            state = "same-commit"
+        else:
+            state = "other-commit"
+            print(f"NOTE\t{safe(name)} on {safe(remote)} points at {safe(at[:7])}, not at {safe(oldest[:7])}")
+        out.append(f"BUMP\tversion\t{safe(v)}\t{safe(oldest)}\t{safe(name)}\t{safe(state)}")
+    for c, why in skipped:
+        print(f"NOTE\tskipped {safe(c[:7])}: {oneline(why)}")
+    out.append(f"BUMP\tskipped\t{safe(len(skipped))}")
+    if incomplete == "walk-limit":
+        print(f"NOTE\tthe walk stopped at its limit of {MAX_WALK} commits; older versions are not listed (RELEASE_TAG_MAX_WALK raises the limit)")
+    elif incomplete == "shallow":
+        print("NOTE\tthis is a shallow clone and the walk stopped where its history ends; run git fetch --unshallow for the whole list")
+    if incomplete:
+        out.append(f"BUMP\tincomplete\t{safe(incomplete)}")
+    for line in out:
+        print(line)
+    return 0
+
+if list_bumps:
+    list_style, list_style_plugin = sys.argv[7], sys.argv[8]
+    sys.exit(list_versions(sys.argv[6]))
+
 found, problems, notes, paths = read_sources(sha)
 for name, value in found:
     print(f"SOURCE\t{safe(name)}\t{safe(value)}")
@@ -959,26 +1158,7 @@ for n in notes:
 values = {v for _, v in found}
 if at_bump and found and not problems and len(values) == 1:
     current = next(iter(values))
-    # every hatch path the pyproject.toml ever named, so a renamed version file's
-    # history is walked too (#42 verify R5)
-    old_hatch = []
-    rp = git("rev-list", f"--max-count={MAX_WALK}", sha, "--", literal(prefix + "pyproject.toml"))
-    for c in (rp.stdout.split() if rp.returncode == 0 else []):
-        r_pp = git("cat-file", "blob", f"{c}:{prefix}pyproject.toml")
-        hp = hatch_path(r_pp.stdout) if r_pp.returncode == 0 else None
-        if hp:
-            old_hatch.append(prefix + hp)
-    # pathspec magic: the directory part is literal even when its name has [ ] * ?
-    # (#42 verify R6); the Sources/*/ part keeps its one-level wildcard
-    specs = list(dict.fromkeys(
-        [(":(glob)" + glob_escape(prefix) + s) if "*" in s else literal(prefix + s) for s in SOURCE_SPECS]
-        + [literal(x) for x in paths + old_hatch]))
-    # --first-parent: the branch's own history. Across a merge, rev-list would
-    # interleave both sides by date and the run could end on the other branch's bump
-    # commit (#42 verify R7); with merge-commit PRs the tag lands on the merge commit,
-    # the first commit on this branch whose sources agree.
-    r = git("rev-list", "--first-parent", f"--max-count={MAX_WALK + 1}", sha, "--", *specs)
-    candidates = r.stdout.split() if r.returncode == 0 else []
+    walked, candidates = version_history(paths, MAX_WALK + 1)
     release, stopped, unclear = None, False, None
     for c in candidates:
         f2, p2, _, _ = read_sources(c)
@@ -996,7 +1176,7 @@ if at_bump and found and not problems and len(values) == 1:
             unclear = c
         break
     shallow = git("rev-parse", "--is-shallow-repository").stdout.strip() == "true"
-    if r.returncode != 0:
+    if not walked:
         print(f"PROBLEM\tcannot walk the history of the version sources")
     elif unclear:
         print(f"PROBLEM\t--at-bump: the version sources at {unclear[:7]} cannot all be read, so it cannot tell whether {safe(current)} was already set there; not tagging a guess")
@@ -1041,6 +1221,16 @@ if ! python3 -I -c 'import tomllib' >/dev/null 2>&1; then
   done <<PY_CANDS_EOF
 $PY_CANDS
 PY_CANDS_EOF
+fi
+# ---- --list-bumps (#55): list, create nothing, and stop here ----
+if [ "$LIST" = 1 ]; then
+  LIST_OUT=$("$PY_BIN" -I -c "$PYSRC" "$TOP" "$SHA" "$PREFIX" list "$MAX_WALK" "$REMOTE" "$STYLE" "$PLUGIN"); LIST_RC=$?
+  printf '%s\n' "$LIST_OUT" | awk -F'\t' -v p="$PROG" '$1=="NOTE"{print p ": note: " $2} $1=="PROBLEM"{print p ": " $2}' >&2
+  case "$LIST_RC" in
+    0)     printf '%s\n' "$LIST_OUT" | awk -F'\t' '$1=="BUMP"'; exit 0 ;;
+    21|30) exit "$LIST_RC" ;;
+    *)     echo "$PROG: python3 failed while listing the versions" >&2; exit 21 ;;
+  esac
 fi
 SOURCES_OUT=$("$PY_BIN" -I -c "$PYSRC" "$TOP" "$SHA" "$PREFIX" "$AT_BUMP" "$MAX_WALK") \
   || { echo "RELEASE_TAG: unreadable name=? commit=$(git -C "$TOP" rev-parse --short "$SHA") version=? sources=?"; echo "$PROG: python3 failed while reading versions" >&2; exit 21; }
