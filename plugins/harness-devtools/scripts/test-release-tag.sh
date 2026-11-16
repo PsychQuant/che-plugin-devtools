@@ -784,6 +784,85 @@ Server(name: "s", version: "1.0.0")'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "Server.swift with an unclosed multi-line string → exit 21" "$RC" 21
 
+echo "== regex literals and interpolations: read, or 21 - never --expect in place of a version (#54 verify R1)"
+# Each of these once hid the version written after it or inside it, and --expect stood in for it
+# (exit 0 with a "using --expect" note). Each is valid Swift (swiftc -parse; the bare /"/ in Swift 6).
+new_repo; put "$W" Sources/S/Server.swift 'let r = #/a"b/#; let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "a quote inside #/…/# does not open a string: the version after it is read → exit 20" "$RC" 20
+has "…Server.swift is the source" "sources=Sources/S/Server.swift"
+hasnt "…--expect does not stand in" "using --expect"
+new_repo; put "$W" Sources/S/Server.swift 'let r = /"/; let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "a bare /\"/ can be a regex literal or division, and the two readings differ → exit 21" "$RC" 21
+has "…and the message says why" "can be division or open a regex literal"
+hasnt "…--expect does not stand in" "using --expect"
+new_repo; put "$W" Sources/S/Server.swift 'let x = 1
+let c = "a \(x == 1 ? "\"" : "q") d"; let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "quotes inside an interpolation do not end the string: the version after it is read → exit 20" "$RC" 20
+hasnt "…--expect does not stand in" "using --expect"
+new_repo; put "$W" Sources/S/Server.swift 'let a = "x \(Server(name: "s", version: "1.0.0"))"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "the code of an interpolation is code: the version: inside it is read → exit 20" "$RC" 20
+hasnt "…--expect does not stand in" "using --expect"
+# the interpolation ends at the ) that closes it, not at the first ): with the first, the string would end
+# early and the version would be in a string again
+new_repo; put "$W" Sources/S/Server.swift 'let a = "x \(g(f(1), Server(name: "s", version: "1.0.0")))"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "an interpolation with nested parentheses is read to its own ) → exit 20" "$RC" 20
+new_repo; put "$W" Sources/S/Server.swift 'let a = #"x \#(Server(name: "s", version: "1.0.0")) y"#'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "\\#( ) in a raw string is an interpolation too → exit 20" "$RC" 20
+new_repo; put "$W" Sources/S/Server.swift 'let d = """
+x \(Server(name: "s", version: "1.0.0"))
+"""'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "an interpolation in a multi-line string → exit 20" "$RC" 20
+new_repo; put "$W" Sources/S/Version.swift 'let r = #/
+  a"b
+/#
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "a multi-line #/…/# regex literal with a quote in it → the declaration after it is read, exit 20" "$RC" 20
+# a / bound to what stands before it is division in Swift, never a regex literal: here the regex
+# literal is the second /, and reading a/b as the start of one would hide the version again
+new_repo; put "$W" Sources/S/Server.swift 'let x = a/b; let r = /"/; let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "a/b before a bare /\"/ on the same line → the readings still differ, exit 21" "$RC" 21
+hasnt "…--expect does not stand in" "using --expect"
+for LEFT in '`a`/b' 'a!/b' 'a?/b' 'f(1)/2' '[1][0]/2' '"q"/b'; do
+  new_repo; put "$W" Sources/S/Server.swift "let x = $LEFT; let r = /\"/; let s = Server(name: \"s\", version: \"1.0.0\")"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+  check "$LEFT before a bare /\"/: Swift reads that / as division → the readings differ, exit 21" "$RC" 21
+done
+new_repo; put "$W" Sources/S/Server.swift 'let m = "\(used/1024)/\(total/1024)"
+let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "division inside interpolations is not a regex literal → the version is read, exit 20" "$RC" 20
+# no false stops: a bare regex literal without quotes, and division, read the same both ways
+new_repo; put "$W" Sources/S/Version.swift 'let r = /\d+\.\d+/
+let x = a/b/c
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run
+check "a regex literal without quotes and a/b/c → exit 0" "$RC" 0
+has "…version 1.0.0" "version=1.0.0"
+# what cannot be read stops
+new_repo; put "$W" Sources/S/Version.swift 'enum V { static let version = "1.0.0" }
+let r = /"""/'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "/\"\"\"/ read as division opens a multi-line string that never closes → the readings differ, exit 21" "$RC" 21
+new_repo; put "$W" Sources/S/Version.swift 'let r = #/abc
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "#/ with no /# on its line → exit 21" "$RC" 21
+has "…a regex literal is not closed" "a regex literal is not closed"
+new_repo; put "$W" Sources/S/Version.swift 'let s = "a \(y +
+ 1) b"
+enum V { static let version = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "an interpolation in a one-line string that runs past its line (not Swift) → exit 21" "$RC" 21
+
 echo "== deeply nested JSON or TOML is a problem line, not a traceback (verify R8)"
 new_repo; put "$W" package.json "$(printf '%*s' 200000 '' | tr ' ' '[')"; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run

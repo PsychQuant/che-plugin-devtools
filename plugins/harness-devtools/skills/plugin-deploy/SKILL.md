@@ -351,7 +351,7 @@ binary 對應的獨立 repo（如 `PsychQuant/che-word-mcp`）才是使用者主
    - `package.json` 的 `version`
    - `Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
    - `mcpb/manifest.json` 的 `version`
-   - `Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下（回 20 或 21，訊息會寫明原因）：改成具名常數，或移出 Server.swift）
+   - `Sources/*/Server.swift` 的 `version: "…"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）也會被比對，值不同時發版停下（回 20 或 21；訊息只列出各來源的值，不會指出哪一個不是套件版本）：改成具名常數，或移出 Server.swift）
 
    漏改任何一個，Step 7.5 會因版本不一致而不打 tag。
 

@@ -92,6 +92,28 @@ case "$2" in
 esac
 SH
 chmod +x "$T/bin/gh" "$T/bin/gh-full-name"
+# git stand-in for the race tests of #54 (put first on PATH only there): just before a `git fetch`, move the
+# bare remote RACE_REMOTE's main to RACE_TO (someone force-pushed); right after it, write RACE_FETCH_HEAD
+# into FETCH_HEAD (a background fetch); with RACE_LSREMOTE set, `git ls-remote` of a refs/heads/ ref
+# answers with that text. Everything else goes to the real git
+REAL_GIT=$(command -v git)
+mkdir -p "$T/race"
+cat > "$T/race/git" <<'SH'
+#!/bin/sh
+case "$1" in
+  fetch) [ -z "${RACE_TO:-}" ] || "$REAL_GIT" --git-dir="$RACE_REMOTE" update-ref refs/heads/main "$RACE_TO"
+         if [ -n "${RACE_FETCH_HEAD:-}" ]; then
+           "$REAL_GIT" "$@"; rc=$?
+           printf '%s\t\tbranch '"'"'other'"'"' of elsewhere\n' "$RACE_FETCH_HEAD" > "$("$REAL_GIT" rev-parse --git-dir)/FETCH_HEAD"
+           exit "$rc"
+         fi ;;
+  ls-remote) if [ -n "${RACE_LSREMOTE:-}" ]; then
+               case " $* " in *" refs/heads/"*) printf '%s\trefs/heads/main\n' "$RACE_LSREMOTE"; exit 0 ;; esac
+             fi ;;
+esac
+exec "$REAL_GIT" "$@"
+SH
+chmod +x "$T/race/git"
 
 # mk <name> [url] — work repo $T/<name> on main, pushed with upstream to bare $T/<name>.git,
 # whose remote URL is <url> (default https://github.com/o/r.git) rewritten to the bare path
@@ -409,6 +431,8 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
     has "…and hands over to the release step ($sh)" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
   done
   same "…v1.0.0 is on HEAD, the release commit" "$(rtag "$T/$S-ahead.git" v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
+  same "…the block's fetch does not move the remote-tracking ref (#54 verify R1)" "$(git -C "$W" rev-parse refs/remotes/origin/main)" "$(git -C "$W" rev-parse HEAD)"
+  same "…and leaves no temporary ref behind" "$(git -C "$W" for-each-ref refs/harness-deploy)" ""
   git -C "$W" fetch -q origin
   run bash "$W" "$T/f7.sh"
   has "after a fetch (the local @{u} ahead of HEAD) → still hands over to the release step" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
@@ -437,6 +461,50 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
   done
   same "…and no tag pushed" "$(rtag "$T/$S-unpushed.git" v1.0.0)" ""
   same "…and the release commit did not reach the remote" "$(git --git-dir="$T/$S-unpushed.git" rev-parse main)" "$(git -C "$W" rev-parse HEAD~1)"
+  # #54 verify R1: the block reads the commit it fetched from its own temporary ref, not from FETCH_HEAD. A
+  # stand-in git plays a background fetch (an editor's) that rewrites FETCH_HEAD right after the block's
+  # fetch, and the remote is ahead: the block still hands over. (`fetch.writeFetchHead=false` cannot stand
+  # in for this: git 2.55 does not know the setting and writes FETCH_HEAD anyway.) The block fetches no
+  # tags either: a tag that is only on the remote, on a commit the block fetches, does not appear here
+  mk "$S-fh"; W="$T/$S-fh"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
+  git clone -q "$T/$S-fh.git" "$T/$S-fh-other" 2>/dev/null
+  put "$T/$S-fh-other" o.txt o; ci "$T/$S-fh-other" o; git -C "$T/$S-fh-other" tag -a remote-only -m x
+  git -C "$T/$S-fh-other" push -q origin main remote-only 2>/dev/null
+  export REAL_GIT RACE_FETCH_HEAD="$(git -C "$W" rev-parse HEAD)"
+  for sh in $SHELLS; do
+    OLDPATH=$PATH; PATH="$T/race:$PATH"; run "$sh" "$W" "$T/f7.sh"; PATH=$OLDPATH
+    has "a background fetch rewrites FETCH_HEAD right after the block's fetch, the remote ahead → still hands over ($sh)" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
+  done
+  unset RACE_FETCH_HEAD
+  same "…v1.0.0 is on HEAD" "$(rtag "$T/$S-fh.git" v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
+  same "…and the tag that is only on the remote did not come with the fetch (--no-tags)" "$(git -C "$W" tag -l remote-only)" ""
+  # #54 verify R1: the remote moves between ls-remote and the fetch - force-pushed to a commit without HEAD.
+  # A stand-in git moves it just before the block's fetch. The check must use what it fetched, and a
+  # fetched commit that is not the one ls-remote named stops the block; no tag
+  mk "$S-race"; W="$T/$S-race"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W" a; put "$W" README.md r; ci "$W" b; push "$W"
+  git -C "$W" checkout -q -b alt HEAD~1; put "$W" alt.txt a; ci "$W" alt; git -C "$W" push -q origin alt 2>/dev/null
+  ALT=$(git -C "$W" rev-parse HEAD); git -C "$W" checkout -q main
+  export REAL_GIT RACE_REMOTE="$T/$S-race.git" RACE_TO="$ALT"
+  for sh in $SHELLS; do
+    git --git-dir="$T/$S-race.git" update-ref refs/heads/main "$(git -C "$W" rev-parse HEAD)"
+    OLDPATH=$PATH; PATH="$T/race:$PATH"; run "$sh" "$W" "$T/f7.sh"; PATH=$OLDPATH
+    has "the remote moved between ls-remote and the fetch → stops ($sh)" "$OUT" "在檢查途中動了"
+    hasnt "…and does not hand over to the release step ($sh)" "$OUT" "已在 o/r；Step"
+  done
+  same "…and no tag pushed" "$(rtag "$T/$S-race.git" v1.0.0)" ""
+  unset RACE_TO
+  # …and ls-remote answering with something that is not a commit id stops the block before any fetch:
+  # not hex at all, 39 hex digits, 40 characters that are not all hex
+  git --git-dir="$T/$S-race.git" update-ref refs/heads/main "$(git -C "$W" rev-parse HEAD)"
+  for RACE_LSREMOTE in notacommit "$(printf '%039d' 0 | tr 0 a)" "$(printf '%040d' 0 | tr 0 g)"; do
+    export RACE_LSREMOTE
+    OLDPATH=$PATH; PATH="$T/race:$PATH"; run bash "$W" "$T/f7.sh"; PATH=$OLDPATH
+    has "ls-remote answers ${RACE_LSREMOTE} (not a commit id) → stops" "$OUT" "remote 回的不是 commit 編號"
+  done
+  same "…and no tag pushed" "$(rtag "$T/$S-race.git" v1.0.0)" ""
+  unset RACE_LSREMOTE RACE_REMOTE
 
   mk "$S-swift"; W="$T/$S-swift"
   put "$W" Sources/S/Version.swift 'public enum V { public static let version: String = "1.0.0" }'; ci "$W"; push "$W"

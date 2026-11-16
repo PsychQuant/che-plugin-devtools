@@ -116,18 +116,28 @@
 #                                                        → unreadable). Only a string that starts
 #                                                        with digits.digits counts: "v1.2.3" or "dev"
 #                                                        is not a source. Every such `version:` in
-#                                                        the file counts, so one that is not the
-#                                                        package version (a response field, say)
-#                                                        stops the run (20 or 21; the message
-#                                                        says which and why). Give it a named
-#                                                        constant or move it out of Server.swift.
-#                                                        White space before the colon is allowed
-#                                                        (`version : "1.0.0"`, #54)
+#                                                        the file counts, inside an interpolation
+#                                                        too, so one that is not the package
+#                                                        version (a response field, or the
+#                                                        `version : "1.2.3"` of `cond ? version :
+#                                                        "1.2.3"`) is compared as well: a different
+#                                                        value stops the run (20 or 21; the message
+#                                                        lists the values and does not say which
+#                                                        one is not the package version). Give it
+#                                                        a named constant or move it out of
+#                                                        Server.swift. White space before the
+#                                                        colon is allowed (`version : "1.0.0"`,
+#                                                        #54). Not read, so not a source: a value
+#                                                        written as a multi-line string, and the
+#                                                        label in backticks (`version`)
 #   A JSON source (1, 5, 7) without a "version" field is not a source. The Swift
 #   sources are read with comments removed (block comments nest) and with strings
 #   recognised the way Swift reads them, raw strings and escapes included: text
-#   inside a string is never a declaration, and a multi-line or raw string that is
-#   never closed makes the file unreadable (#54).
+#   inside a string is never a declaration, the code of an interpolation \( … ) is
+#   code, and the text of a regex literal (#/…/#) is not. A multi-line string, raw
+#   string, regex literal or interpolation that is never closed makes the file
+#   unreadable. A bare /…/ can be a regex literal or division; when the file reads
+#   differently the two ways, it is unreadable too (#54).
 #
 #   pyproject.toml (2, 3, 4) needs a TOML parser (#48). The helper runs under
 #   python3 when it has tomllib (python 3.11+; /usr/bin/python3 on macOS is 3.9),
@@ -457,34 +467,41 @@ def swift_one_line_raw(text, q, hashes):
         j += 1
     return False
 
-def swift_string_end(text, at, close, escape, multiline):
-    # (index, True) of the closing delimiter of the string whose text starts at `at`,
-    # or (index, False) when it has none: the line break that ends a one-line string,
-    # or the end of the text. An escape - a backslash, followed in a raw string by its
-    # # - takes the character after it, so an escaped quote never closes the string; a
-    # line break still ends a one-line string (#54).
-    j, n = at, len(text)
-    while j < n:
-        if text.startswith(escape, j):
-            j += len(escape)
-            if j < n and (multiline or text[j] != "\n"):
-                j += 1
-        elif text.startswith(close, j):
-            return j, True
-        elif text[j] == "\n" and not multiline:
-            return j, False
+class SwiftUnreadable(Exception):
+    pass
+
+def swift_bare_regex_end(text, i):
+    # A `/` that can open a bare regex literal (/…/: Swift 6, or Swift 5 with bare-slash
+    # regex literals): not // or /*; at the start of the file or right after white space
+    # or one of ( [ { , ; : - after anything else (a/b, `a`/b, a!/b, x)/2, "q"/"r") Swift
+    # reads it as division, and after an operator character it is part of that operator
+    # (r=/x/ does not parse; checked with swiftc 6.4 -swift-version 6); no white space
+    # right after it; and an unescaped `/` later on the same line. Returns the index of
+    # that `/`, or -1. Whether such a `/` does open one is not decided here: swift_read
+    # reads the file both ways (#54).
+    n = len(text)
+    if i + 1 >= n or text[i + 1] in "/* \t\r\n":
+        return -1
+    if i > 0 and text[i - 1] not in " \t\r\n([{,;:":
+        return -1
+    j = i + 1
+    while j < n and text[j] not in "\r\n":
+        if text[j] == "\\" and j + 1 < n and text[j + 1] not in "\r\n":
+            j += 2
+        elif text[j] == "/":
+            return j
         else:
             j += 1
-    return n, False
+    return -1
 
-def swift_lex(text):
-    # Returns (code, mask, problem) for Swift source.
+def swift_lex(text, slash_regex, seen):
+    # Returns (code, mask) for Swift source, or raises SwiftUnreadable.
     # code: the source with // and /* */ comments removed (block comments nest, #42
     #   verify R6). One-line strings, raw ones included, are kept as written, so a
     #   value can be read from them. A multi-line string keeps its delimiters and line
     #   breaks but its text becomes blanks: a version written as a multi-line string is
     #   not a plain literal (#42 verify R8).
-    # mask: the same text, position for position, with the inside of EVERY string
+    # mask: the same text, position for position, with the text of EVERY string
     #   blanked. Declarations are looked for here, so text inside a string is never
     #   taken for one (#54: `static let version` in a help string made the file
     #   unreadable), and a string never ends early or late: raw strings - one or more #
@@ -492,55 +509,161 @@ def swift_lex(text):
     #   multi-line - are recognised (#54: a raw string holding three quotes in a row
     #   once blanked the rest of the file, and the declaration after it was not seen),
     #   and so are escapes (\" in a string, \#" in a #"…"# string).
-    # problem: a multi-line or raw string that is never closed - the rest of the file
-    #   cannot be told apart from text, so the file is unreadable rather than guessed at.
-    #   A plain one-line string that is not closed ends at its line break, as before.
-    code, mask, i, n = [], [], 0, len(text)
+    # In both, the code of an interpolation \( … ) (\#( … ) in a #"…"# string) is code:
+    #   it is read up to the ) that closes it, strings inside it included (#54: a quote
+    #   inside one once ended the string early and hid the declaration after it), and the
+    #   text of a regex literal is blanked: #/…/# always, a bare /…/ when slash_regex is
+    #   true (seen["slash"] records that the file has a `/` that can open one).
+    # SwiftUnreadable: a multi-line string, raw string, regex literal or interpolation that
+    #   is never closed - the rest of the file cannot be told apart from text, so the file
+    #   is unreadable rather than guessed at. A plain one-line string that is not closed
+    #   ends at its line break, as before.
+    code, mask, n = [], [], len(text)
 
-    def keep(piece):
-        code.append(piece); mask.append(piece)
+    def emit(c, m=None):
+        code.append(c); mask.append(c if m is None else m)
 
-    while i < n:
-        hashes = 0
-        while i + hashes < n and text[i + hashes] == "#":
-            hashes += 1
-        q = i + hashes
-        if text.startswith('"', q):
-            # a string; # before the quote make it a raw string, which ends at the same
-            # quotes followed by as many # and has \ plus as many # as its escape
-            delim = "#" * hashes
-            multiline = text.startswith('"""', q) and not (hashes and swift_one_line_raw(text, q, hashes))
-            quotes = '"""' if multiline else '"'
-            body_at = q + len(quotes)
-            end, closed = swift_string_end(text, body_at, quotes + delim, "\\" + delim, multiline)
-            if not closed and (multiline or hashes):
-                problem = "a raw string is not closed" if hashes else "a multi-line string is not closed"
-                return "".join(code), "".join(mask), problem
-            body = text[body_at:end]
-            blank = re.sub(r"[^\n]", " ", body)
-            opening, closing = delim + quotes, (quotes + delim if closed else "")
-            code.append(opening + (blank if multiline else body) + closing)
-            mask.append(opening + blank + closing)
-            i = end + len(closing)
-        elif hashes:
-            keep(text[i:q]); i = q                  # #if, #available, #selector, …
-        elif text.startswith("//", i):
-            j = text.find("\n", i)
-            i = n if j < 0 else j
-        elif text.startswith("/*", i):
-            # Swift block comments nest (#42 verify R6)
-            depth, j = 1, i + 2
-            while j < n and depth:
-                if text.startswith("/*", j):
-                    depth += 1; j += 2
-                elif text.startswith("*/", j):
-                    depth -= 1; j += 2
+    def blank(s):
+        return re.sub(r"[^\n]", " ", s)
+
+    def lex_code(i, interpolation, one_line):
+        # code from i; in an interpolation, up to the ) that closes it (its index is
+        # returned), and within one line when the string is a one-line string
+        depth = 0
+        while i < n:
+            hashes = 0
+            while i + hashes < n and text[i + hashes] == "#":
+                hashes += 1
+            q, c = i + hashes, text[i]
+            if q < n and text[q] == '"':
+                i = lex_string(i, hashes)
+            elif hashes and q < n and text[q] == "/":
+                i = lex_regex(i, hashes)
+            elif hashes:
+                emit(text[i:q]); i = q                  # #if, #available, #selector, …
+            elif text.startswith("//", i):
+                j = text.find("\n", i)
+                i = n if j < 0 else j
+            elif text.startswith("/*", i):
+                # Swift block comments nest (#42 verify R6)
+                depth_c, j = 1, i + 2
+                while j < n and depth_c:
+                    if text.startswith("/*", j):
+                        depth_c += 1; j += 2
+                    elif text.startswith("*/", j):
+                        depth_c -= 1; j += 2
+                    else:
+                        j += 1
+                emit(" "); i = j
+            elif c == "/" and swift_bare_regex_end(text, i) >= 0:
+                seen["slash"] = True
+                if slash_regex:
+                    end = swift_bare_regex_end(text, i)
+                    emit("/" + blank(text[i + 1:end]) + "/"); i = end + 1
                 else:
-                    j += 1
-            keep(" "); i = j
-        else:
-            keep(text[i]); i += 1
-    return "".join(code), "".join(mask), None
+                    emit("/"); i += 1
+            elif interpolation and c == ")" and depth == 0:
+                return i
+            else:
+                if interpolation:
+                    if c == "(":
+                        depth += 1
+                    elif c == ")":
+                        depth -= 1
+                    elif c == "\n" and one_line:
+                        raise SwiftUnreadable("an interpolation in a one-line string runs past its line")
+                emit(c); i += 1
+        if interpolation:
+            raise SwiftUnreadable("an interpolation is not closed")
+        return i
+
+    def lex_string(i, hashes):
+        # a string; # before the quote make it a raw string, which ends at the same quotes
+        # followed by as many # and has \ plus as many # as its escape
+        delim = "#" * hashes
+        q = i + hashes
+        multiline = text.startswith('"""', q) and not (hashes and swift_one_line_raw(text, q, hashes))
+        quotes = '"""' if multiline else '"'
+        close, escape = quotes + delim, "\\" + delim
+
+        def literal(a, b):
+            emit(blank(text[a:b]) if multiline else text[a:b], blank(text[a:b]))
+
+        emit(delim + quotes)
+        start = j = q + len(quotes)
+        while True:
+            if j >= n or (text[j] == "\n" and not multiline):
+                if multiline or hashes:
+                    raise SwiftUnreadable("a raw string is not closed" if hashes else "a multi-line string is not closed")
+                literal(start, j)       # a plain one-line string with no closing quote ends at its line break
+                return j
+            if text.startswith(escape, j):
+                k = j + len(escape)
+                if k < n and text[k] == "(":
+                    # an interpolation: its code is code; the ) that closes it is the string's again
+                    literal(start, k + 1)
+                    start = lex_code(k + 1, True, not multiline)
+                    j = start + 1
+                elif k < n and (multiline or text[k] != "\n"):
+                    j = k + 1           # the escaped character never closes the string
+                else:
+                    j = k
+            elif text.startswith(close, j):
+                literal(start, j)
+                emit(close)
+                return j + len(close)
+            else:
+                j += 1
+
+    def lex_regex(i, hashes):
+        # #/…/# (any number of #): a regex literal. It ends at a / followed by as many #;
+        # a backslash escapes the next character; it spans lines only when #/ ends its line
+        delim = "#" * hashes
+        start = j = i + hashes + 1
+        multiline = text.startswith("\n", start) or text.startswith("\r\n", start)
+        while j < n:
+            if text[j] == "\\" and j + 1 < n and (multiline or text[j + 1] != "\n"):
+                j += 2
+            elif text.startswith("/" + delim, j):
+                emit(delim + "/" + blank(text[start:j]) + "/" + delim)
+                return j + 1 + hashes
+            elif text[j] == "\n" and not multiline:
+                break
+            else:
+                j += 1
+        raise SwiftUnreadable("a regex literal is not closed")
+
+    lex_code(0, False, False)
+    return "".join(code), "".join(mask)
+
+def swift_read(text, find):
+    # ("ok", find(code, mask)) for a Swift file, or ("unreadable", why). A `/` that can open
+    # a bare regex literal may also be division, and this lexer does not decide which: the
+    # file is then read both ways, and when the two readings find different declarations it
+    # is unreadable - never read one way at a guess (#54: in `let r = /"/; let s =
+    # Server(name: "s", version: "1.0.0")` the quote in the regex once hid the version).
+    readings = []
+    for slash_regex in (False, True):
+        seen = {"slash": False}
+        try:
+            code, mask = swift_lex(text, slash_regex, seen)
+            readings.append(("ok", find(code, mask)))
+        except SwiftUnreadable as e:
+            readings.append(("unreadable", str(e)))
+        except RecursionError:
+            readings.append(("unreadable", "its strings and interpolations nest too deeply"))
+        if not slash_regex and not seen["slash"]:
+            return readings[0]
+    if readings[0] == readings[1]:
+        return readings[0]
+    return ("unreadable", "a / in it can be division or open a regex literal, and the two readings find different versions")
+
+def swift_version_decls(code, mask):
+    # Version.swift: (number of declarations, the plain string values among them); a
+    # declaration is found in the mask - outside every string - and its value is read from
+    # the code at the same position (#54)
+    decls = [m.start() for m in SWIFT_DECL.finditer(mask)]
+    return len(decls), tuple(m.group(1) for m in (SWIFT_VALUE.match(code, at) for at in decls) if m)
 
 def dig(d, *keys):
     """d[k1][k2]... when every level is a table; None otherwise."""
@@ -697,6 +820,12 @@ def cannot_declare_version(pp_text):
 SERVER_START = re.compile(r'\bversion\s*:\s*#*"')
 SERVER_ANY = re.compile(r'\bversion\s*:\s*#*"(?=[0-9]+\.[0-9]+)')
 SERVER_VALUE = re.compile(r'\bversion\s*:\s*"([^"\\\n]*)"(?=\s*[,)\]}])')
+
+def server_version_args(code, mask):
+    # Server.swift: (number of `version:` arguments whose string starts like a version, the
+    # plain whole values among them)
+    starts = [m.start() for m in SERVER_START.finditer(mask) if SERVER_ANY.match(code, m.start())]
+    return len(starts), tuple(m.group(1) for m in (SERVER_VALUE.match(code, at) for at in starts) if m)
 
 def oneline(s):
     """A message line: control characters out, ASCII only (a non-UTF-8 locale must not
@@ -1048,17 +1177,14 @@ def read_sources(commit):
         if len(parts) != 3:
             continue
         if parts[2] == "Version.swift":
-            code, mask, unclosed = swift_lex(show(path) or "")
-            # a declaration is found in the mask - outside every string - and its
-            # value is read from the code at the same position (#54)
-            decls = [m.start() for m in SWIFT_DECL.finditer(mask)]
-            literals = [m.group(1) for m in (SWIFT_VALUE.match(code, at) for at in decls) if m]
+            state, got = swift_read(show(path) or "", swift_version_decls)
+            n_decls, literals = got if state == "ok" else (0, ())
             vals = sorted(set(literals))
-            if unclosed:
-                problems.append(f"{safe(path)}: {unclosed}, so the file cannot be read")
+            if state != "ok":
+                problems.append(f"{safe(path)}: {got}, so the file cannot be read")
             elif len(vals) > 1:
                 problems.append(f"{safe(path)}: several different versions {[safe(v) for v in vals]}")
-            elif len(decls) > len(literals):
+            elif n_decls > len(literals):
                 # a version/current declaration whose value is not a string literal:
                 # skipping it would let --expect stand in for a version the file
                 # does state (#42 verify R2)
@@ -1068,13 +1194,12 @@ def read_sources(commit):
             else:
                 notes.append(f"{safe(path)}: no static version/current declaration; not a version source")
         elif parts[2] == "Server.swift":
-            code, mask, unclosed = swift_lex(show(path) or "")
-            starts = [m.start() for m in SERVER_START.finditer(mask) if SERVER_ANY.match(code, m.start())]
-            whole = [m.group(1) for m in (SERVER_VALUE.match(code, at) for at in starts) if m]
+            state, got = swift_read(show(path) or "", server_version_args)
+            n_starts, whole = got if state == "ok" else (0, ())
             vals = sorted(set(whole))
-            if unclosed:
-                problems.append(f"{safe(path)}: {unclosed}, so the file cannot be read")
-            elif len(starts) > len(whole):
+            if state != "ok":
+                problems.append(f"{safe(path)}: {got}, so the file cannot be read")
+            elif n_starts > len(whole):
                 problems.append(f"{safe(path)}: version: is not a plain string literal")
             elif len(vals) > 1:
                 problems.append(f"{safe(path)}: several different versions {[safe(v) for v in vals]}")

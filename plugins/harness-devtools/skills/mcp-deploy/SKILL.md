@@ -223,7 +223,7 @@ chmod +x mcpb/server/run.sh
 
 確保所有地方的版本號一致。下面是 Phase 3 Step 3a（`scripts/release-tag.sh`）會讀的版本來源，封閉列舉，與 helper 同一份；repo 裡有哪個就改哪個，漏改任何一個，推送前的 Step 3（#51）會因版本不一致而不推送，Step 3a 也會停止、不建 release（#42）：
 - `mcpb/manifest.json` 的 `version`
-- Swift：`Sources/*/Server.swift` 的 `version: "x.x.x"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）會讓發版停下（回 20 或 21，訊息會寫明原因）：改成具名常數，或移出 Server.swift）、`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
+- Swift：`Sources/*/Server.swift` 的 `version: "x.x.x"`（字串必須是整個引數，不能串接或插值；只計以「數字.數字」開頭的字串，`"v1.2.3"`、`"dev"` 不算來源。檔案裡每個這種 `version:` 都算，不是套件版本的（例如回應結構的欄位）也會被比對，值不同時發版停下（回 20 或 21；訊息只列出各來源的值，不會指出哪一個不是套件版本）：改成具名常數，或移出 Server.swift）、`Sources/*/Version.swift` 的 `static let|var version|current`（可帶 `: String`；有這個宣告就必須是字串常值）
 - Python：`pyproject.toml` 的 `[project].version` 或 `[tool.poetry].version`；版本是 `dynamic` 時，`[tool.hatch.version].path` 指到的檔案裡的 `__version__`（`[build-system]` 的 `build-backend` 若寫明不是 `hatchling.build`，那個檔案不代表 dynamic 版本，Step 3a 回 21）。版本來自 git tag 的專案（setuptools_scm、hatch-vcs、poetry-dynamic-versioning）沒有檔案要改。這三種寫法，以及 dynamic 版本寫在 `[tool.poetry].version` 的寫法，要 `[build-system]` 的 `build-backend` 寫明那個工具自己的 backend（setuptools_scm 還要列在 `requires`，不帶環境標記，`pyproject.toml` 旁邊沒有 `setup.py`、`setup.cfg`、`PKG-INFO`，檔案裡也沒有 `[tool.distutils.egg_info]`（任何拼法）；hatch-vcs 不能有自訂的 metadata hook；poetry-dynamic-versioning 不能有 `from-file`。hatch 建置時（`hatchling.build`，或沒寫 backend），`hatch.toml` 有 `version` 鍵、不是合法的 TOML、有兩個檔名只差大小寫的 `hatch.toml`，或旁邊有 `PKG-INFO`，hatch 的 `path` 與 `source = "vcs"` 都回 21。這些條件都過了，只表示 helper 認得這個寫法，不保證建出來的版本等於 tag），helper 才認，否則 Step 3a 回 21（細節見 plugin 的 README「版本來自 git tag 的專案」）
 - TypeScript：`package.json` 的 `version`
 - repo 根目錄若有 `.claude-plugin/plugin.json` 或 `plugin.json`，它的 `version`
@@ -564,7 +564,7 @@ echo "→ Step 3: release commit 已推到 $REMOTE 的 ${UPSTREAM_BRANCH}；Step
 - 樹裡沒有版本、版本是 build 時才算出來的 repo，就直接用 `{version}`。
 - 打完確認 tag 在 **release 要建的那個 GitHub repo** 上，並且名稱就是 `v{version}`。
 - **只在 remote 的預設 branch 上發版**：看的是目前 branch 追蹤的 upstream branch，不是本機 branch 名。feature branch 上打的 `v{version}` 會指向還沒合併的 commit，而且 tag 不會移動（#42 verify 第 2 輪）。
-- **HEAD 要在 remote 上預設 branch 的歷史裡**（#54，2026-11-10 決定「HEAD 在 remote 歷史裡就照打」）：區塊向 remote 抓那個 branch（只抓那一個 ref，不抓 tag），確認 HEAD 就是它、或是它的祖先。release commit 之後有人推了 commit 時照打在 HEAD，並印一行說明之後還有幾個 commit；HEAD 不在那個歷史裡（release commit 沒推上去，或 remote 被改寫）時停下。這時不要 pull 之後重跑：這一步打在 HEAD，pull 之後 HEAD 是別人的 commit。
+- **HEAD 要在 remote 上預設 branch 的歷史裡**（#54，2026-11-10 決定「HEAD 在 remote 歷史裡就照打」）：區塊先以 `ls-remote` 問那個 branch 指向哪個 commit，再把那一個 ref 抓進暫存的 `refs/harness-deploy/live`（不抓 tag、不寫 FETCH_HEAD、不動 remote-tracking ref，用完就刪），確認 HEAD 就是抓到的 commit、或是它的祖先。抓到的與 `ls-remote` 讀到的不同時（remote 在檢查途中動了）停下，重跑這一步即可。release commit 之後有人推了 commit 時照打在 HEAD，並印一行說明之後還有幾個 commit；HEAD 不在那個歷史裡（release commit 沒推上去，或 remote 被改寫）時停下。這時不要 pull 之後重跑：這一步打在 HEAD，pull 之後 HEAD 是別人的 commit。
 - owner/repo 從 upstream remote 的網址推出，只認 `github.com` 的網址；ssh host alias、GitHub Enterprise 會停下（不印網址，網址可能帶憑證）。
 - 區塊會向 GitHub 問這個 repo 現在的正式名稱（`gh api repos/<owner>/<repo> --jq .full_name`），讀不到就停下，這一步不打 tag（#53）。repo 在同一個 owner 底下改過名、remote 的網址還是舊名稱時，後面的 API 與上傳都用正式名稱，並提醒用 `git remote set-url` 更新網址。正式名稱的 owner 與網址推出的不同時（repo 轉移到別的 owner；不分大小寫比較），區塊停下：照這樣做 release 會建在新的 owner 底下。訊息列出兩個名稱（不印網址），請使用者確認那就是要發版的 repo，用 `git remote set-url` 改網址後再重跑（2026-11-16 決定）。只差大小寫不算改名，也不算轉移。這兩項檢查在 Step 3 推送之前先做一次，所以 `gh` 沒登入、連不上或 repo 已經轉移時，release commit 不會先推出去；Step 4 的兩個方法也各自再查一次。這個查詢只處理 GitHub 還在轉址的舊名稱：舊名稱已經被另一個 repo 取用時，GitHub 不再轉址，查到的是那個 repo 自己的名稱，區塊分不出來（`git push` 也一樣會推到那個 repo）。
 
@@ -587,16 +587,26 @@ if [ -z "$DEFAULT" ] || [ "$UPSTREAM_BRANCH" != "$DEFAULT" ]; then
     echo "✗ Step 3a: ${BRANCH} 追蹤的是 $REMOTE 的 ${UPSTREAM_BRANCH:-?}，不是預設 branch（${DEFAULT:-讀不到}）— 合併到預設 branch 後再發版；停止，不建 release"; exit 1
 fi
 # HEAD（release commit）必須在 remote 上預設 branch 的歷史裡：就是它，或是它的祖先（#54，2026-11-10 決定「HEAD 在 remote 歷史裡就照打」）。
-# 本機的 @{u} 可能過期（#42 verify 第 7 輪）：先問 remote 那個 branch 現在指向哪個 commit，再抓那一個 ref 讓它的歷史在本機
-# （--no-tags：remote 的 tag 不先落到本機），然後用 merge-base 判斷。不靠 FETCH_HEAD（fetch.writeFetchHead 可以關掉它）。問不到、抓不到或判斷不了都停下
+# 本機的 @{u} 可能過期（#42 verify 第 7 輪）：先以 ls-remote 問 remote 那個 branch 指向哪個 commit（只收 40 或 64 位的十六進位），再把那一個 ref
+# 抓進這個區塊專用的暫存 ref（不抓 tag、不碰 submodule、不寫 FETCH_HEAD、不動 remote-tracking ref），用完就刪。判斷用的是抓到的 commit；
+# 它與 ls-remote 讀到的不同，表示 remote 在檢查途中動了，停下重跑（#54 verify 第 1 輪）。問不到、抓不到或判斷不了都停下
+TMPREF=refs/harness-deploy/live
+git update-ref -d "$TMPREF" 2>/dev/null
 LIVE=$(git ls-remote "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk -F'\t' -v r="refs/heads/$UPSTREAM_BRANCH" '$(2)==r{print $(1)}')
-[ -n "$LIVE" ] && git fetch -q --no-tags "$REMOTE" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null \
-  || { echo "✗ Step 3a: 讀不到 $REMOTE 上的 ${UPSTREAM_BRANCH}（連線或權限的問題）— 停止，這一步沒有打 tag，不建 release；連得上之後重跑這一步"; exit 1; }
-if ! git merge-base --is-ancestor HEAD "$LIVE" 2>/dev/null; then
-    echo "✗ Step 3a: HEAD（release commit）不在 $REMOTE 的 ${UPSTREAM_BRANCH}（目前是 ${LIVE}）的歷史裡：release commit 沒推上去，或 remote 被改寫、release commit 已經不在上面。沒推上去時回 Step 3（推送前檢查）；remote 被改寫時先確認要發的是哪一個 commit。不要 pull 之後重跑這一步：這一步打在 HEAD。停止，這一步沒有打 tag，不建 release"; exit 1
+case "$LIVE" in ''|*[!0-9a-f]*) LIVE= ;; esac
+case "${#LIVE}" in 40|64) ;; *) LIVE= ;; esac
+[ -n "$LIVE" ] && git fetch -q --no-tags --no-write-fetch-head --no-recurse-submodules --no-auto-maintenance --refmap= "$REMOTE" "+refs/heads/$UPSTREAM_BRANCH:$TMPREF" 2>/dev/null
+FETCHED=$(git rev-parse -q --verify "$TMPREF^0" 2>/dev/null)
+git update-ref -d "$TMPREF" 2>/dev/null
+[ -n "$LIVE" ] && [ -n "$FETCHED" ] \
+  || { echo "✗ Step 3a: 讀不到 $REMOTE 上的 ${UPSTREAM_BRANCH}（連線或權限的問題，或 remote 回的不是 commit 編號）— 停止，這一步沒有打 tag，不建 release；連得上之後重跑這一步"; exit 1; }
+[ "$FETCHED" = "$LIVE" ] \
+  || { echo "✗ Step 3a: $REMOTE 上的 ${UPSTREAM_BRANCH} 在檢查途中動了（先讀到 ${LIVE}，抓到的是 ${FETCHED}）— 停止，這一步沒有打 tag，不建 release；重跑這一步"; exit 1; }
+if ! git merge-base --is-ancestor HEAD "$FETCHED" 2>/dev/null; then
+    echo "✗ Step 3a: HEAD（release commit）不在 $REMOTE 的 ${UPSTREAM_BRANCH}（目前是 ${FETCHED}）的歷史裡：release commit 沒推上去，或 remote 被改寫、release commit 已經不在上面。沒推上去時回 Step 3（推送前檢查）；remote 被改寫時先確認要發的是哪一個 commit。不要 pull 之後重跑這一步：這一步打在 HEAD。停止，這一步沒有打 tag，不建 release"; exit 1
 fi
 # remote 領先（release commit 之後有人推了 commit）時照打在 HEAD，印一行說明
-AHEAD=$(git rev-list --count "HEAD..$LIVE" 2>/dev/null)
+AHEAD=$(git rev-list --count "HEAD..$FETCHED" 2>/dev/null)
 [ "$AHEAD" = 0 ] || echo "→ Step 3a: $REMOTE 上的 ${UPSTREAM_BRANCH} 在 release commit 之後還有 ${AHEAD:-?} 個 commit（有人在 release commit 之後推了 commit）；tag 打在 HEAD，也就是 release commit，不包含那些 commit"
 OWNER_REPO=$(git config --get "remote.$REMOTE.url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' \
