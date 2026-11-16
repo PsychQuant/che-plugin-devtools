@@ -144,6 +144,9 @@ for b in blocks:
     elif q is None or q < d: why = "no lookup after the derivation"
     elif not ("wc -l" in lines[q + 1] and "grep -qxE" in lines[q + 1] and "exit 1" in lines[q + 2]):
         why = "the lookup is not followed by the one-line and strict-pattern check that stops"
+    elif not (q + 4 < len(lines) and "${CANON%%/*}" in lines[q + 3] and "${OWNER_REPO%%/*}" in lines[q + 3]
+              and "tr 'A-Z' 'a-z'" in lines[q + 3] and "exit 1" in lines[q + 4]):
+        why = "the check is not followed by the owner comparison that stops (a transferred repository, #53 2026-11-16)"
     elif push is not None and push < q: why = "pushes before the lookup"
     elif uses and (a is None or not (q < a < min(uses))): why = "names the repository before OWNER_REPO=$CANON"
     if why: bad.append(lines[0][:40] + ": " + why)
@@ -163,7 +166,8 @@ for s in mcp-deploy cli-deploy; do
   # #53: every block that works out owner/repo asks GitHub for the repository's current name,
   # in this order: derivation, lookup, (the push, in the blocks that push), `OWNER_REPO=$CANON`,
   # and only then the first call that names the repository - in any spelling of that call.
-  # The lookup's answer is checked on the next line: one line only, and the strict pattern.
+  # The lookup's answer is checked on the next line: one line only, and the strict pattern; the
+  # line after that compares the owners and stops when they differ (a transfer, 2026-11-16).
   REPORT=$(lookup_order "$PLUGIN_ROOT/skills/$s/SKILL.md")
   case "$s" in mcp-deploy) WANT=4 ;; *) WANT=3 ;; esac
   same "$s: the blocks that work out owner/repo ($WANT: the push block, the tag block, the release blocks) all look up the current name, in order (#53)" "$REPORT" "$WANT "
@@ -1079,14 +1083,16 @@ echo "a remote URL that still has the repository's old name (#53)"
 # the asset upload host was not confirmed to follow, and an upload that fails leaves a
 # release with no assets. So every block that talks to the API first asks GitHub for the
 # repository's current name and uses that from there on. "o/r" is the current name;
-# GH_STUB_OLD_NAME is the former one.
+# GH_STUB_OLD_NAME is the former one. A former name under the same owner (o/name) is a rename and
+# the blocks go on; a former name under another owner (old/name) is a transfer and they stop
+# (maintainer decision on #53, 2026-11-16).
 for SK in mcp-deploy:3a cli-deploy:1.5; do
   S=${SK%%:*}; STEP=${SK#*:}
-  mk "$S-renamed" "https://github.com/old/name.git"; W="$T/$S-renamed"
+  mk "$S-renamed" "https://github.com/o/name.git"; W="$T/$S-renamed"
   put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
   fence "$S" "Step $STEP: VERSION" "$T/ren.sh" "VERSION='{version}' ==> VERSION='1.0.0'"
   # the needle is the new message itself: the block has other messages that say 讀不到
-  NONAME="✗ Step $STEP: 讀不到 old/name 在 GitHub 上的正式名稱"
+  NONAME="✗ Step $STEP: 讀不到 o/name 在 GitHub 上的正式名稱"
   export GH_STUB_NO_NAME=1
   run bash "$W" "$T/ren.sh"
   has "$S: the current name cannot be read → stops" "$OUT" "$NONAME"
@@ -1104,13 +1110,28 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
     same "$S: …before any tag is pushed ($sh)" "$(rtag "$T/$S-renamed.git" v1.0.0)" ""
   done
   unset GH_STUB_MULTILINE
+  export GH_STUB_OLD_NAME=o/name
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/ren.sh"
+    has "$S: the old name in the URL, same owner (a rename) → goes on under the current name ($sh)" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
+    has "$S: …and says the URL has the old name ($sh)" "$OUT" "舊名稱 o/name"
+  done
+  same "$S: …and v1.0.0 is on HEAD" "$(rtag "$T/$S-renamed.git" v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
+  unset GH_STUB_OLD_NAME
+  # a transfer: the URL's owner is not the owner GitHub answers with → stops before the tag. The URL
+  # carries a token, and the message names the two names, never the URL
+  mk "$S-moved" "https://user:sekret@github.com/old/name.git"; W="$T/$S-moved"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
   export GH_STUB_OLD_NAME=old/name
   for sh in $SHELLS; do
     run "$sh" "$W" "$T/ren.sh"
-    has "$S: the old name in the URL → goes on under the current name ($sh)" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
-    has "$S: …and says the URL has the old name ($sh)" "$OUT" "舊名稱 old/name"
+    has "$S: the repository was transferred to another owner → stops ($sh)" "$OUT" "✗ Step $STEP: remote 的網址指的是 old/name，GitHub 上這個 repo 現在是 o/r：repo 已經轉移到別的 owner"
+    has "$S: …says the release would be created under the new owner ($sh)" "$OUT" "release 會建在 o/r 底下"
+    has "$S: …and to confirm, change the URL and run the step again ($sh)" "$OUT" "確認這就是要發版的 repo 之後，用 git remote set-url origin <新的網址> 把網址的 owner/repo 改成 o/r ，再重跑這一步"
+    hasnt "$S: …without printing the URL ($sh)" "$OUT" "sekret"
+    hasnt "$S: …and does not hand over to the release step ($sh)" "$OUT" "已在 o/r"
   done
-  same "$S: …and v1.0.0 is on HEAD" "$(rtag "$T/$S-renamed.git" v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
+  same "$S: …and no tag on the remote" "$(rtag "$T/$S-moved.git" v1.0.0)" ""
   unset GH_STUB_OLD_NAME
   mk "$S-case" "https://github.com/O/R.git"; W="$T/$S-case"
   put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"; push "$W"
@@ -1119,15 +1140,19 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
   hasnt "$S: …and is not called an old name" "$OUT" "舊名稱"
 done
 # the release blocks: the API call, the uploads and gh release create all get the current name
-mk mcp-rel-old "https://github.com/old/name.git"; W="$T/mcp-rel-old"
-put "$W" mcpb/manifest.json '{
+# mcprel <name> <url> — an mcp-deploy project with v1.4.0 tagged and both assets built
+mcprel() {
+  mk "$1" "$2"; W="$T/$1"
+  put "$W" mcpb/manifest.json '{
   "name": "proj",
   "version": "1.4.0"
 }'
-put "$W" mcpb/server/Bin x; put "$W" mcpb/proj.mcpb x
-ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
-D=$(deploy_dir "$W"); mkdir -p "$D"
-NONAME="✗ Step 4: 讀不到 old/name 在 GitHub 上的正式名稱"
+  put "$W" mcpb/server/Bin x; put "$W" mcpb/proj.mcpb x
+  ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+  D=$(deploy_dir "$W"); mkdir -p "$D"
+}
+mcprel mcp-rel-old "https://github.com/o/name.git"
+NONAME="✗ Step 4: 讀不到 o/name 在 GitHub 上的正式名稱"
 # three ways the name cannot be had: gh fails with nothing on stdout (not logged in), gh prints
 # the body of a 404 (a name GitHub does not know), an answer of several lines
 for HOW in "GH_STUB_NO_NAME:the current name cannot be read" "-:a name GitHub does not know" "GH_STUB_MULTILINE:an answer of several lines"; do
@@ -1143,28 +1168,53 @@ for HOW in "GH_STUB_NO_NAME:the current name cannot be read" "-:a name GitHub do
   hasnt "…before gh release create" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
   [ "$VAR" = - ] || unset "$VAR"
 done
-export GH_STUB_OLD_NAME=old/name
+export GH_STUB_OLD_NAME=o/name
 for sh in $SHELLS; do
   release_texts
   run50 "$sh" "$W" "$T/relA.sh"
-  has "method A: the release is created under the current name ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
-  hasnt "…never under the old one ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "repos/old/name/"
+  has "method A: a rename under the same owner → the release is created under the current name ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+  hasnt "…never under the old one ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "repos/o/name/"
   has "…and the assets are uploaded to the current name ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "uploads.github.com/repos/o/r/releases/"
-  hasnt "…never to the old one ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "old/name"
+  hasnt "…never to the old one ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "o/name"
   # gh release view decides whether the text files are deleted: it has to look at the same repository
   same "…and every gh release view is given the current name ($sh)" "$(sort -u "$T/rec/repos" 2>/dev/null)" "o/r"
-  has "…and the block says the URL has the old name ($sh)" "$OUT" "→ Step 4: remote 的網址用的是舊名稱 old/name"
+  has "…and the block says the URL has the old name ($sh)" "$OUT" "→ Step 4: remote 的網址用的是舊名稱 o/name"
   release_texts
   run50 "$sh" "$W" "$T/relB.sh"
   same "method B: gh release create and gh release view are given the current name ($sh)" "$(sort -u "$T/rec/repos" 2>/dev/null)" "o/r"
-  has "…and the block says the URL has the old name ($sh)" "$OUT" "→ Step 4: remote 的網址用的是舊名稱 old/name"
+  has "…and the block says the URL has the old name ($sh)" "$OUT" "→ Step 4: remote 的網址用的是舊名稱 o/name"
 done
 unset GH_STUB_OLD_NAME
-mk cli-rel-old "https://github.com/old/name.git"; W="$T/cli-rel-old"; put "$W" README.md x; ci "$W"; push "$W"
+# a transfer (another owner) stops both methods before the release; the URL carries a token that is never printed
+mcprel mcp-rel-moved "https://user:sekret@github.com/old/name.git"
+export GH_STUB_OLD_NAME=old/name
+for sh in $SHELLS; do
+  for blk in relA relB; do
+    release_texts
+    run50 "$sh" "$W" "$T/$blk.sh"
+    has "$blk: the repository was transferred to another owner → stops ($sh)" "$OUT" "✗ Step 4: remote 的網址指的是 old/name，GitHub 上這個 repo 現在是 o/r：repo 已經轉移到別的 owner"
+    has "…says the release would be created under the new owner, and how to go on ($sh)" "$OUT" "release 會建在 o/r 底下 — 停止，不建 release，文字檔保留。確認這就是要發版的 repo 之後，用 git remote set-url <remote> <新的網址>"
+    hasnt "…before any release is created ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "release"
+    hasnt "…and nothing is uploaded ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "curl"
+    hasnt "…without printing the URL ($sh)" "$OUT" "sekret"
+    same "…and the text files are kept ($sh)" "$(left "$D")" "release-notes.md release-title.txt "
+  done
+done
+unset GH_STUB_OLD_NAME
+# an owner that differs only in case is the same owner: the release goes on, under the name GitHub gives
+mcprel mcp-rel-case "https://github.com/O/r.git"
+release_texts; run50 bash "$W" "$T/relA.sh"
+has "method A: an owner that differs only in case → the release is created under the current name" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+hasnt "…and it is not called a transfer" "$OUT" "轉移"
+release_texts; run50 bash "$W" "$T/relB.sh"
+same "method B: an owner that differs only in case → gh release create under the current name" "$(cat "$T/rec/repo" 2>/dev/null)" "o/r"
+has "…and the release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+hasnt "…and it is not called a transfer" "$OUT" "轉移"
+mk cli-rel-old "https://github.com/o/name.git"; W="$T/cli-rel-old"; put "$W" README.md x; ci "$W"; push "$W"
 git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
 put "$W" .release/Bin x
 D=$(deploy_dir "$W"); mkdir -p "$D"
-NONAME="✗ Step 2: 讀不到 old/name 在 GitHub 上的正式名稱"
+NONAME="✗ Step 2: 讀不到 o/name 在 GitHub 上的正式名稱"
 for HOW in "GH_STUB_NO_NAME:the current name cannot be read" "-:a name GitHub does not know" "GH_STUB_MULTILINE:an answer of several lines"; do
   VAR=${HOW%%:*}; WHAT=${HOW#*:}
   [ "$VAR" = - ] || export "$VAR=1"
@@ -1175,18 +1225,43 @@ for HOW in "GH_STUB_NO_NAME:the current name cannot be read" "-:a name GitHub do
   hasnt "…and before the tag is looked up under a name that was not confirmed" "$(cat "$T/rec/calls" 2>/dev/null)" "git/ref/tags"
   [ "$VAR" = - ] || unset "$VAR"
 done
-export GH_STUB_OLD_NAME=old/name
+export GH_STUB_OLD_NAME=o/name
 for sh in $SHELLS; do
   release_texts; rm -f "$D/release-title.txt"
   run50 "$sh" "$W" "$T/relC.sh"
-  has "cli-deploy Step 2: the release is created under the current name ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
-  hasnt "…never under the old one ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "repos/old/name/"
+  has "cli-deploy Step 2: a rename under the same owner → the release is created under the current name ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+  hasnt "…never under the old one ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "repos/o/name/"
   has "…and the binary is uploaded to the current name ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "uploads.github.com/repos/o/r/releases/"
-  hasnt "…never to the old one ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "old/name"
+  hasnt "…never to the old one ($sh)" "$(cat "$T/rec/curl-args" 2>/dev/null)" "o/name"
   same "…and every gh release view is given the current name ($sh)" "$(sort -u "$T/rec/repos" 2>/dev/null)" "o/r"
-  has "…and the block says the URL has the old name ($sh)" "$OUT" "→ Step 2: remote 的網址用的是舊名稱 old/name"
+  has "…and the block says the URL has the old name ($sh)" "$OUT" "→ Step 2: remote 的網址用的是舊名稱 o/name"
 done
 unset GH_STUB_OLD_NAME
+# cli-deploy Step 2: a transfer stops before the release; an owner that differs only in case goes on
+for CASE in "cli-rel-moved|https://user:sekret@github.com/old/name.git|old/name" "cli-rel-case|https://github.com/O/r.git|-"; do
+  NM=${CASE%%|*}; REST=${CASE#*|}; URL=${REST%%|*}; OLD=${REST#*|}
+  mk "$NM" "$URL"; W="$T/$NM"; put "$W" README.md x; ci "$W"; push "$W"
+  git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+  put "$W" .release/Bin x
+  D=$(deploy_dir "$W"); mkdir -p "$D"
+  [ "$OLD" = - ] || export GH_STUB_OLD_NAME="$OLD"
+  for sh in $SHELLS; do
+    release_texts; rm -f "$D/release-title.txt"
+    run50 "$sh" "$W" "$T/relC.sh"
+    if [ "$OLD" = - ]; then
+      has "cli-deploy Step 2: an owner that differs only in case → the release is created under the current name ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+      hasnt "…and it is not called a transfer ($sh)" "$OUT" "轉移"
+    else
+      has "cli-deploy Step 2: the repository was transferred to another owner → stops ($sh)" "$OUT" "✗ Step 2: remote 的網址指的是 old/name，GitHub 上這個 repo 現在是 o/r：repo 已經轉移到別的 owner"
+      has "…says the release would be created under the new owner, and how to go on ($sh)" "$OUT" "release 會建在 o/r 底下 — 停止，不建 release，文字檔保留。確認這就是要發版的 repo 之後，用 git remote set-url <remote> <新的網址>"
+      hasnt "…before any release is created ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "releases"
+      hasnt "…and nothing is uploaded ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "curl"
+      hasnt "…without printing the URL ($sh)" "$OUT" "sekret"
+      same "…and the notes file is kept ($sh)" "$(left "$D")" "release-notes.md "
+    fi
+  done
+  unset GH_STUB_OLD_NAME
+done
 
 echo "the release commit is checked before it is pushed (#51)"
 rmain() { git --git-dir="$1" rev-parse -q --verify "refs/heads/${2:-main}" 2>/dev/null; }
@@ -1312,14 +1387,34 @@ print("\n".join(c.replace("<remote>", "origin") for c in cmds))')
   run bash "$W" "$T/pre141.sh"
   has "$S: a name GitHub does not know → stops" "$OUT" "✗ $STEP: 讀不到 gone/repo 在 GitHub 上的正式名稱"
   same "$S: …and the release commit stays local" "$(rmain "$B")" "$BASE"
-  mk "$S-preold" https://github.com/old/name.git; W="$T/$S-preold"; B="$T/$S-preold.git"
+  mk "$S-preold" https://github.com/o/name.git; W="$T/$S-preold"; B="$T/$S-preold.git"
   put "$W" mcpb/manifest.json '{ "version": "1.4.0" }'; ci "$W"; push "$W"
   put "$W" mcpb/manifest.json '{ "version": "1.4.1" }'; ci "$W" release
-  export GH_STUB_OLD_NAME=old/name
+  export GH_STUB_OLD_NAME=o/name
   run bash "$W" "$T/pre141.sh"
-  has "$S: a former name that redirects → the push goes on" "$OUT" "→ $STEP: release commit 已推到"
+  has "$S: a former name under the same owner that redirects (a rename) → the push goes on" "$OUT" "→ $STEP: release commit 已推到"
   same "$S: …and the remote branch is the release commit" "$(rmain "$B")" "$(git -C "$W" rev-parse HEAD)"
   unset GH_STUB_OLD_NAME
+  # #53, 2026-11-16: a transfer to another owner stops before the push; the URL carries a token that is never printed
+  mk "$S-premoved" https://user:sekret@github.com/old/name.git; W="$T/$S-premoved"; B="$T/$S-premoved.git"
+  put "$W" mcpb/manifest.json '{ "version": "1.4.0" }'; ci "$W"; push "$W"; BASE=$(git -C "$W" rev-parse HEAD)
+  put "$W" mcpb/manifest.json '{ "version": "1.4.1" }'; ci "$W" release
+  export GH_STUB_OLD_NAME=old/name
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/pre141.sh"
+    has "$S: the repository was transferred to another owner → stops before the push ($sh)" "$OUT" "✗ $STEP: remote 的網址指的是 old/name，GitHub 上這個 repo 現在是 o/r：repo 已經轉移到別的 owner"
+    has "$S: …says the release would be created under the new owner, and how to go on ($sh)" "$OUT" "release 會建在 o/r 底下 — 停止，不推送。確認這就是要發版的 repo 之後，用 git remote set-url origin <新的網址> 把網址的 owner/repo 改成 o/r ，再重跑這一步"
+    hasnt "$S: …without printing the URL ($sh)" "$OUT" "sekret"
+    same "$S: …and the release commit stays local ($sh)" "$(rmain "$B")" "$BASE"
+  done
+  unset GH_STUB_OLD_NAME
+  # an owner that differs only in case is the same owner: the push goes on
+  mk "$S-precase" https://github.com/O/r.git; W="$T/$S-precase"; B="$T/$S-precase.git"
+  put "$W" mcpb/manifest.json '{ "version": "1.4.0" }'; ci "$W"; push "$W"
+  put "$W" mcpb/manifest.json '{ "version": "1.4.1" }'; ci "$W" release
+  run bash "$W" "$T/pre141.sh"
+  has "$S: an owner that differs only in case → the push goes on" "$OUT" "→ $STEP: release commit 已推到"
+  same "$S: …and the remote branch is the release commit" "$(rmain "$B")" "$(git -C "$W" rev-parse HEAD)"
 
   # the checks that stand between the block and an irreversible push, one at a time (#51 verify R1):
   # each case leaves the remote's main where it was
