@@ -321,6 +321,15 @@ done
 for s in mcp-deploy cli-deploy; do
   hasnt "$s: no case pattern repeats '{version}'" "$(bash_blocks "$s")" "'{version}'|"
 done
+hasnt "cli-deploy: no case pattern repeats '{binary}'" "$(bash_blocks cli-deploy)" "'{binary}'|"
+hasnt "cli-deploy: no case pattern ends in '{binary}'" "$(bash_blocks cli-deploy)" "|'{binary}')"
+# #50: {binary} is substituted on its own assignment line and nowhere else in a shell block. Only fences
+# that open at the start of a line count: the release notes template holds an escaped \```bash of its own
+shell_fences() { python3 -I -c 'import re,sys; print("\n".join(re.findall(r"^```(?:bash|sh|zsh|shell)\n(.*?)^```", open(sys.argv[1], encoding="utf-8").read(), re.S | re.M)))' "$PLUGIN_ROOT/skills/$1/SKILL.md"; }
+same "cli-deploy: every {binary} in a bash block is on a BINARY_NAME='{binary}' line" \
+  "$(shell_fences cli-deploy | grep -F '{binary}' | grep -vc "^BINARY_NAME='{binary}'   #")" "0"
+same "cli-deploy: exactly one bash line assigns BINARY_NAME='{binary}' (the Step 2 release block)" \
+  "$(shell_fences cli-deploy | grep -c "^BINARY_NAME='{binary}'")" "1"
 hasnt "plugin-deploy: no case pattern repeats '{plugin-name}'" "$(bash_blocks plugin-deploy)" "'{plugin-name}'|"
 hasnt "plugin-deploy: no case pattern repeats '{marketplace-root}'" "$(bash_blocks plugin-deploy)" "|'{marketplace-root}')"
 # verify R3 / #39: skill loading may replace $0, $1, … with the invocation's arguments
@@ -630,6 +639,8 @@ case "$1 $2 $3 $4" in
   "api repos/"*/*/*" --jq .full_name") ;;
   "api repos/"*/*" --jq .full_name") exec "$GH50_BIN/gh-full-name" "${2#repos/}" ;;
 esac
+# gh release create: every argument, one per line (the assets are the ones that are not flags or their values)
+[ "$1 $2" != "release create" ] || for a in "$@"; do printf '%s\n' "$a"; done > "$REC/create-args"
 prev=""
 for a in "$@"; do
   case "$prev" in
@@ -655,13 +666,15 @@ exit 0
 SH
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" curl >> "$GH50_REC/calls"' 'printf "%s\n" "$*" >> "$GH50_REC/curl-args"' 'exit 0' > "$T/bin50/curl"
 chmod +x "$T/bin50/gh" "$T/bin50/curl"
-# run50 <shell> <dir> <script> — like run, with the recording gh and curl; $T/rec starts empty
+# run50 <shell> <dir> <script> — like run, with the recording gh and curl; $T/rec starts empty.
+# Nothing is handed over in the environment: each Bash call of the skill is a fresh shell, so a
+# block has to set every variable it uses itself (#50 cross-model review, 2026-11-16)
 run50() {
   local sh=$1 dir=$2 f=$3
   rm -rf "$T/rec"; mkdir -p "$T/rec"
   case "$sh" in
-    zsh) OUT=$(cd "$dir" && GH50_REC="$T/rec" GH50_BIN="$T/bin" BINARY_NAME="${B50-Bin}" PATH="$T/bin50:$PATH" zsh -f -c "$(cat "$f")" 2>&1); RC=$? ;;
-    *)   OUT=$(cd "$dir" && GH50_REC="$T/rec" GH50_BIN="$T/bin" BINARY_NAME="${B50-Bin}" PATH="$T/bin50:$PATH" "$sh" "$f" 2>&1); RC=$? ;;
+    zsh) OUT=$(cd "$dir" && GH50_REC="$T/rec" GH50_BIN="$T/bin" PATH="$T/bin50:$PATH" zsh -f -c "$(cat "$f")" 2>&1); RC=$? ;;
+    *)   OUT=$(cd "$dir" && GH50_REC="$T/rec" GH50_BIN="$T/bin" PATH="$T/bin50:$PATH" "$sh" "$f" 2>&1); RC=$? ;;
   esac
 }
 # hostile <word> — one line that runs commands and breaks out of quotes if a shell ever parses it
@@ -833,6 +846,9 @@ for sh in $SHELLS; do
   same "--title is v<version> - <title>, character for character ($sh)" "$(cat "$T/rec/title" 2>/dev/null)" "v1.4.0 - $(hostile title)"
   if cmp -s "$T/rec/notes-file" "$T/expected-notes"; then ok "--notes-file is the notes file ($sh)"; else bad "--notes-file is not the notes file ($sh)" "$OUT"; fi
   if [ -e "$T/rec/notes-inline" ]; then bad "the notes were put on the command line ($sh)"; else ok "the notes are not on the command line ($sh)"; fi
+  # #50: the block finds the binary and the .mcpb itself; nothing comes from an earlier block
+  has "the binary is uploaded, found by the block itself ($sh)" "$(cat "$T/rec/create-args" 2>/dev/null)" "mcpb/server/Bin"
+  has "…and the .mcpb ($sh)" "$(cat "$T/rec/create-args" 2>/dev/null)" "mcpb/proj.mcpb"
   pwned "method B ($sh)"
   same "both text files are removed once the release exists ($sh)" "$(left "$D")" ""
 done
@@ -864,8 +880,9 @@ done
 echo "cli-deploy Step 2: release (#50)"
 mk cli-rel; W="$T/cli-rel"; put "$W" README.md x; ci "$W"; push "$W"
 git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+put "$W" .release/Bin x   # the universal binary of Phase 2 Step 3 (untracked, as in a real run)
 D=$(deploy_dir "$W"); mkdir -p "$D"
-fence cli-deploy 'releases" --method POST' "$T/relC.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
+fence cli-deploy 'releases" --method POST' "$T/relC.sh" "VERSION='{version}' ==> VERSION='1.4.0'" "BINARY_NAME='{binary}' ==> BINARY_NAME='Bin'"
 run50 bash "$W" "$T/relC.sh"
 has "no notes file → stops" "$OUT" "找不到 release notes 檔"
 hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
@@ -884,10 +901,47 @@ same "the check after the upload fails → the notes file is kept for the retry"
 release_texts; rm -f "$D/release-title.txt"; export GH50_ASSETS=""; run50 bash "$W" "$T/relC.sh"; unset GH50_ASSETS
 has "the release does not hold the binary → stops" "$OUT" "release 上沒有 Bin"
 same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
-release_texts; rm -f "$D/release-title.txt"; B50="" run50 bash "$W" "$T/relC.sh"
-has "BINARY_NAME has no value → says so instead of passing" "$OUT" "BINARY_NAME 沒有值"
-hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
-same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
+# the block names the binary itself: {binary} left as it is stops it, even with a BINARY_NAME in the
+# environment (that is how the old guard passed in this suite while every real run stopped there)
+fence cli-deploy 'releases" --method POST' "$T/relC0.sh" "VERSION='{version}' ==> VERSION='1.4.0'"
+for sh in $SHELLS; do
+  release_texts; rm -f "$D/release-title.txt"
+  export BINARY_NAME=Bin; run50 "$sh" "$W" "$T/relC0.sh"; unset BINARY_NAME
+  has "{binary} left in the block → stops, whatever the environment holds ($sh)" "$OUT" "✗ Step 2: BINARY_NAME 未代入或不合法"
+  hasnt "…before any release is created ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+  same "…and the notes file is kept ($sh)" "$(left "$D")" "release-notes.md "
+done
+# an empty name, a space, a double quote, a semicolon: the file is there, so only the guard stands in the way
+for name in '' 'B in' 'B"x' 'B;x'; do
+  [ -z "$name" ] || put "$W" ".release/$name" x
+  fence cli-deploy 'releases" --method POST' "$T/relCn.sh" "VERSION='{version}' ==> VERSION='1.4.0'" "BINARY_NAME='{binary}' ==> BINARY_NAME='$name'"
+  release_texts; rm -f "$D/release-title.txt"
+  run50 bash "$W" "$T/relCn.sh"
+  has "binary name [$name] → stops" "$OUT" "✗ Step 2: BINARY_NAME 未代入或不合法"
+  hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+  same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
+done
+# a single quote ends the '…' of the assignment, so the case guard never sees the name (the skill says to check
+# the name before substituting it). What the shells do with this block: a syntax error before any command that
+# reaches gh. This pins that the block, as written, never gets as far as gh with such a name
+put "$W" ".release/B'x" x
+fence cli-deploy 'releases" --method POST' "$T/relCq.sh" "VERSION='{version}' ==> VERSION='1.4.0'" "BINARY_NAME='{binary}' ==> BINARY_NAME='B'x'"
+for sh in $SHELLS; do
+  release_texts; rm -f "$D/release-title.txt"
+  run50 "$sh" "$W" "$T/relCq.sh"
+  same "binary name with a single quote → nothing reaches gh ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" ""
+  same "…and the notes file is kept ($sh)" "$(left "$D")" "release-notes.md "
+done
+# a name that is not a file in .release: a binary that was never built, a directory
+mkdir -p "$W/.release/Dir"
+for name in Missing Dir; do
+  fence cli-deploy 'releases" --method POST' "$T/relCn.sh" "VERSION='{version}' ==> VERSION='1.4.0'" "BINARY_NAME='{binary}' ==> BINARY_NAME='$name'"
+  release_texts; rm -f "$D/release-title.txt"
+  run50 bash "$W" "$T/relCn.sh"
+  has "no regular file .release/$name → stops, and names it" "$OUT" "✗ Step 2: 找不到 .release/$name"
+  hasnt "…before any release is created" "$(cat "$T/rec/calls" 2>/dev/null)" "api repos/o/r/releases"
+  same "…and the notes file is kept" "$(left "$D")" "release-notes.md "
+done
 release_texts; rm -f "$D/release-title.txt"; export GH50_FAIL_POST=1; run50 bash "$W" "$T/relC.sh"; unset GH50_FAIL_POST
 has "no release id → stops before any upload" "$OUT" "release 沒建成"
 hasnt "…nothing was uploaded" "$(cat "$T/rec/calls" 2>/dev/null)" "curl"
@@ -964,6 +1018,11 @@ release_texts; export GH50_ASSETS=""; run50 bash "$W" "$T/relA.sh"; unset GH50_A
 has "no binary, nothing on the release → names the .mcpb" "$OUT" "release 上沒有 proj.mcpb"
 hasnt "…and does not name an empty file" "$OUT" "release 上沒有 ："
 same "…and the text files are kept" "$(left "$D")" "release-notes.md release-title.txt "
+# method B in the same project: only the .mcpb is given to gh release create, not the directory mcpb/server/ (#50)
+for sh in $SHELLS; do
+  release_texts; run50 "$sh" "$W" "$T/relB.sh"
+  same "method B, no binary: the assets are the .mcpb alone ($sh)" "$(sed -n '/^--notes-file$/,$p' "$T/rec/create-args" 2>/dev/null | sed '1,2d' | tr '\n' ' ')" "mcpb/proj.mcpb "
+done
 # nothing to upload at all: not even a .mcpb. An empty name must not pass as "found" (an empty asset list prints one empty line)
 mk mcp-none; W="$T/mcp-none"
 put "$W" mcpb/manifest.json '{
@@ -976,6 +1035,12 @@ D=$(deploy_dir "$W"); mkdir -p "$D"
 release_texts; export GH50_ASSETS=""; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
 has "no file name at all → stops, does not pass an empty name" "$OUT" "BINARY_NAME 與 MCPB_FILENAME 都是空的"
 same "…and the text files are kept" "$(left "$D")" "release-notes.md release-title.txt "
+for sh in $SHELLS; do
+  release_texts; run50 "$sh" "$W" "$T/relB.sh"
+  has "method B, nothing to upload → stops ($sh)" "$OUT" "沒有任何要上傳的檔案"
+  hasnt "…before gh release create ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+  same "…and the text files are kept ($sh)" "$(left "$D")" "release-notes.md release-title.txt "
+done
 # a release that only holds Bin.sha256 and proj.mcpb.sig does not hold Bin and proj.mcpb (whole-line match)
 W="$T/mcp-rel"; D=$(deploy_dir "$W"); mkdir -p "$D"
 release_texts; export GH50_ASSETS="Bin.sha256 proj.mcpb.sig"; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
@@ -1074,6 +1139,7 @@ done
 unset GH_STUB_OLD_NAME
 mk cli-rel-old "https://github.com/old/name.git"; W="$T/cli-rel-old"; put "$W" README.md x; ci "$W"; push "$W"
 git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+put "$W" .release/Bin x
 D=$(deploy_dir "$W"); mkdir -p "$D"
 NONAME="✗ Step 2: 讀不到 old/name 在 GitHub 上的正式名稱"
 for HOW in "GH_STUB_NO_NAME:the current name cannot be read" "-:a name GitHub does not know" "GH_STUB_MULTILINE:an answer of several lines"; do

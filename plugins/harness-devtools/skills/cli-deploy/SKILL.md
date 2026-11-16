@@ -441,9 +441,14 @@ echo "→ Step 1.5: $TAG 已在 ${OWNER_REPO}；Step 2 在同一個 repo 用這�
 
 重做 release 時，`release-notes.md` 是上一次失敗時留下的：先確認內容還是這一次要發的。
 
+區塊的 `{binary}` 代入 Phase 0 Step 2 印出的 binary 名稱（`Binary: …` 那一行），代入前核對它只含 `0-9 A-Z a-z . _ -`。每個 Bash 呼叫是新的 shell，Phase 0 設的 `BINARY_NAME` 在這個區塊裡沒有值（#50）。
+
 ```bash
 VERSION='{version}'   # 與 Step 1.5 同一個版本；代入前核對只含 0-9 A-Z a-z . + -
 case "$VERSION" in ''|*[!0-9A-Za-z.+-]*) echo "✗ VERSION 未代入或不合法"; exit 1 ;; esac
+BINARY_NAME='{binary}'   # Phase 0 Step 2 印出的 binary 名稱（Binary: 那一行）；代入前核對只含 0-9 A-Z a-z . _ -
+# 每個 Bash 呼叫是新的 shell：Phase 0 設的 BINARY_NAME 不在這裡，名稱由這個區塊自己代入（#50）
+case "$BINARY_NAME" in ''|*[!0-9A-Za-z._-]*) echo "✗ Step 2: BINARY_NAME 未代入或不合法 — 先不建 release，文字檔保留"; exit 1 ;; esac
 # 與 Step 1.5 同一個 repo：從推送的 remote 推導，不讓 gh 自己選（#42 verify：fork 工作流兩者可能不同）
 OWNER_REPO=$(git config --get "remote.$(git config "branch.$(git branch --show-current).remote").url" | sed -E 's#\.git$##; s#^(https?://([^/@]*@)?|ssh://([^/@]*@)?|[^/@:]+@)github\.com[:/]+##')
 printf '%s\n' "$OWNER_REPO" | grep -qxE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*' || { echo "✗ 推不出 owner/repo — 先跑完 Step 1.5"; exit 1; }
@@ -462,8 +467,8 @@ NOTES_FILE="$(git rev-parse --absolute-git-dir)/harness-deploy/release-notes.md"
 MATCH=$(grep -oF -e '{''release-notes''}' -e '{''CHANGELOG 內容''}' -e '{''binary''}' -e '{''owner''}' -e '{''repo''}' "$NOTES_FILE" | head -n 1)
 [ -z "$MATCH" ] || { echo "✗ release notes 裡還有沒代入的 placeholder：${MATCH}（模板的字樣；changelog 真的要寫這個字時，改寫成別的寫法）"; exit 1; }
 
-# BINARY_NAME 是 Phase 0 的變數，每個 Bash 呼叫是新的 shell：沒有值就不要建 release（建了也上傳不了）
-[ -n "$BINARY_NAME" ] || { echo "✗ BINARY_NAME 沒有值（Phase 0 的變數；要在這個區塊裡先設）：先不建 release，文字檔保留"; exit 1; }
+# 要上傳的 binary 是 Phase 2 Step 3 建的 .release/<名稱>：不在、或不是一般檔案，就不要建 release（建了也上傳不了）
+[ -f ".release/$BINARY_NAME" ] || { echo "✗ Step 2: 找不到 .release/${BINARY_NAME}（或它不是一般檔案）：名稱與 Phase 0 印出的不同，或 Phase 2 Step 3 沒有跑完 — 先不建 release，文字檔保留"; exit 1; }
 
 # 建立 Release：tag_name 用 Step 1.5 已推上去的 tag；tag 已存在時 GitHub 直接用它，不另外指定 commit（#42）
 RELEASE_ID=$(gh api "repos/$OWNER_REPO/releases" --method POST \

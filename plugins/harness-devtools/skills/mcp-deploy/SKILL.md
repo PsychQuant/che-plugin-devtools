@@ -780,11 +780,18 @@ case "$TITLE" in
   "v$VERSION"*) echo "✗ release 標題不要以 v$VERSION 開頭：名稱已經是「v$VERSION - 標題」，標題檔只寫 - 後面那一段"; exit 1 ;;
 esac
 NAME="v$VERSION"; [ -n "$TITLE" ] && NAME="v$VERSION - $TITLE"
+# 要上傳的檔案在這個區塊裡找，與方法 A 相同：每個 Bash 呼叫是新的 shell，前面區塊設的 BINARY_NAME、MCPB_FILE 不在（#50）
+# Python、TypeScript 專案的 mcpb/server 只有 run.sh，BINARY_NAME 是空的：只上傳 .mcpb
+BINARY_NAME=$(ls mcpb/server/ | grep -v '.sh' | grep -v '.gitkeep' | head -1)
+MCPB_FILE=$(ls mcpb/*.mcpb 2>/dev/null | head -1)
+ASSET_FILES=()
+[ -z "$BINARY_NAME" ] || ASSET_FILES+=("mcpb/server/$BINARY_NAME")
+[ -z "$MCPB_FILE" ] || ASSET_FILES+=("$MCPB_FILE")
+[ "${#ASSET_FILES[@]}" -gt 0 ] || { echo "✗ 沒有任何要上傳的檔案（mcpb/server 沒有 binary，mcpb/ 也沒有 .mcpb）：不建 release，文字檔保留"; exit 1; }
 gh release create "v$VERSION" --verify-tag --repo "$OWNER_REPO" \
   --title "$NAME" \
   --notes-file "$NOTES_FILE" \
-  mcpb/server/$BINARY_NAME \
-  $MCPB_FILE && rm -f "$TITLE_FILE" "$NOTES_FILE"
+  "${ASSET_FILES[@]}" && rm -f "$TITLE_FILE" "$NOTES_FILE"
 ```
 
 **注意**：如果遇到 `workflow scope may be required` 錯誤，必須改用方法 A。
