@@ -316,7 +316,7 @@ git commit --cleanup=whitespace -F "$MSG_FILE" && rm -f "$MSG_FILE"
 
 `git diff --cached --stat` 列出的應該只有 CHANGELOG.md、README.md 與版本來源檔。**列出別的檔案就不要跑下面的推送區塊**：用 `git reset --soft HEAD~1` 退回這個 commit，`git restore --staged <那個檔案>`，再重新 commit（commit 訊息檔已經刪了，要重寫）。Phase 1 Step 0 擋的是這份清單裡的檔案；清單以外的檔案若在跑 cli-deploy 之前就已經 `git add` 過，commit 區塊不會擋（stat 與 commit 在同一個區塊，commit 完才看得到），所以要看完 stat 才決定跑不跑推送。
 
-**推送前檢查，然後推送。** release commit 推出去就收不回。Step 1.5 會停下的情況裡，推送前就看得出來的先在這裡檢查（#51）：版本來源彼此不一致或讀不出、同名 tag 已在別的 commit、沒有 upstream、追蹤的不是預設 branch、remote 不在 github.com、`gh` 讀不到這個 repo 在 GitHub 上的名稱（沒登入、沒有權限、連不上；Step 1.5 一開始就要查它，#53）。版本與 tag 用 `release-tag.sh --dry-run` 查，它不建立任何東西。全部通過才推送，推到這個 branch 追蹤的 upstream（branch 名稱要與 upstream 的名稱相同；這次會推的 commit 會先印出來）。
+**推送前檢查，然後推送。** release commit 推出去就收不回。Step 1.5 會停下的情況裡，推送前就看得出來的先在這裡檢查（#51）：版本來源彼此不一致或讀不出、同名 tag 已在別的 commit、沒有 upstream、追蹤的不是預設 branch、remote 不在 github.com、`gh` 讀不到這個 repo 在 GitHub 上的名稱（沒登入、沒有權限、連不上；Step 1.5 一開始就要查它，#53）。版本與 tag 用 `release-tag.sh --dry-run` 查，它不建立任何東西。全部通過才推送，推到這個 branch 追蹤的 upstream（branch 名稱要與 upstream 的名稱相同；這次會推的 commit 會先印出來）。branch 沒有 upstream 時不要自己 `git push`（`-u` 也一樣）：release commit 會跳過這些檢查推出去，也不帶 `--no-follow-tags`。區塊的訊息寫了設定 upstream 的做法（#51）。
 
 ```bash
 VERSION='{version}'   # Phase 0 Step 4 決定的版本；代入前核對只含 0-9 A-Z a-z . + -
@@ -326,7 +326,7 @@ HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法
 [ -f "$HELPER" ] || { echo "✗ Step 1 推送: 找不到 ${HELPER}（plugin 路徑沒有代換，或 cache 不完整）— 停止，不推送"; exit 1; }
 BRANCH=$(git branch --show-current)
 REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
-case "$REMOTE" in ''|.) echo "✗ Step 1 推送: $BRANCH 沒有指向 remote 的 upstream — 停止，不推送。這個 branch 第一次推送時用 git push -u <remote> ${BRANCH}（那一次不經過這裡的檢查），再從 Step 1.5 繼續"; exit 1 ;; esac
+case "$REMOTE" in ''|.) echo "✗ Step 1 推送: $BRANCH 沒有指向 remote 的 upstream — 停止，不推送。不要直接 git push：那樣會跳過這裡的檢查。remote 上已經有這個 branch 時：git fetch <remote> ，再 git branch --set-upstream-to=<remote>/${BRANCH} ，然後重跑這一步。remote 上還沒有這個 branch 時（新的 repo）：先推 release commit 之前的那個 commit，git push --no-follow-tags <remote> HEAD~1:refs/heads/${BRANCH} ，再 git branch --set-upstream-to=<remote>/${BRANCH} ，然後重跑這一步"; exit 1 ;; esac
 git remote | grep -qxF -- "$REMOTE" || { echo "✗ Step 1 推送: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 停止，不推送"; exit 1; }
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
 DEFAULT=$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$(2)); print $(2)}')
@@ -350,7 +350,7 @@ if [ "$RC" != 0 ]; then
     case "$RC" in
       10) echo "✗ Step 1 推送: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止，也可能是本機留著一個沒推出去的同名 tag（git tag -l v$VERSION 看）。前者要先升版號、重新走 Phase 1；後者確認那個 tag 該不該留（刪 tag 由你決定）。停止，不推送" ;;
       20) echo "✗ Step 1 推送: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 1 Step 1 改成同一個版本，補一個 commit，再重跑這一步；改到會編進 binary 的檔案（例如 Version.swift）時，Phase 2 要重新 build。停止，不推送" ;;
-      21) echo "✗ Step 1 推送: 有版本檔讀不出值（見上方的原因；讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）— 修好環境後重跑這一步，不需要新的 commit。停止，不推送" ;;
+      21) echo "✗ Step 1 推送: 有版本檔讀不出值（見上方的原因）。原因是環境時（讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）：修好環境後重跑這一步，不需要新的 commit。原因是 commit 裡的某個版本來源讀不出值時：改那個檔案，補一個 commit，再重跑這一步；改到會編進 binary 的檔案（例如 Version.swift）時，Phase 2 要重新 build。停止，不推送" ;;
       30) echo "✗ Step 1 推送: 查不到 $REMOTE 上的 tag、建 tag 需要的 git 身分（user.name、user.email）沒設，或 push URL 指向別的 repo（見上方的原因）— 修好連線或設定後重跑這一步，不需要新的 commit。停止，不推送" ;;
       *)  echo "✗ Step 1 推送: release-tag --dry-run rc=${RC} — 停止，不推送" ;;
     esac
@@ -387,7 +387,7 @@ HELPER="${CLAUDE_PLUGIN_ROOT}/scripts/release-tag.sh"   # 用不帶 :? 的寫法
 [ -f "$HELPER" ] || { echo "✗ Step 1.5: 找不到 ${HELPER}（plugin 路徑沒有代換，或 cache 不完整）— 停止，不建 release"; exit 1; }
 BRANCH=$(git branch --show-current)
 REMOTE=$(git config "branch.$BRANCH.remote" 2>/dev/null)
-case "$REMOTE" in ''|.) echo "✗ Step 1.5: $BRANCH 沒有指向 remote 的 upstream — 先 git push -u <remote> $BRANCH 再重跑這一步"; exit 1 ;; esac
+case "$REMOTE" in ''|.) echo "✗ Step 1.5: $BRANCH 沒有指向 remote 的 upstream — 停止，不建 release。不要直接 git push：回 Step 1 推送（推送前檢查），設定 upstream 的做法與推送前的檢查都在那裡"; exit 1 ;; esac
 git remote | grep -qxF -- "$REMOTE" || { echo "✗ Step 1.5: $BRANCH 的 upstream 不是這個 repo 設定過的 remote 名稱 — 停止，不建 release"; exit 1; }
 [ "$(git rev-parse '@{u}')" = "$(git rev-parse HEAD)" ] || { echo "✗ Step 1.5: HEAD 與 upstream 不同（Step 1 沒推成功，或 fetch 之後 upstream 已經前進）— 停止，不建 release"; exit 1; }
 UPSTREAM_BRANCH=$(git config "branch.$BRANCH.merge" 2>/dev/null); UPSTREAM_BRANCH=${UPSTREAM_BRANCH#refs/heads/}
@@ -418,7 +418,7 @@ if [ "$RC" != 0 ] || [ "$TAG" != "v$VERSION" ]; then
     case "$RC" in
       10) echo "✗ Step 1.5: v$VERSION 已在別的 commit 上：這個版本發過，或上次發版推了 tag 之後中止。前者要先升版號；後者確認那個 tag 該不該留（刪 remote 上的 tag 由你決定）" ;;
       20) echo "✗ Step 1.5: 版本檔與 $VERSION 不一致（見上方各來源的值）— 回 Phase 1 Step 1 改成同一個版本" ;;
-      21) echo "✗ Step 1.5: 有版本檔讀不出值（見上方的原因；讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）— 修好後重跑這一步" ;;
+      21) echo "✗ Step 1.5: 有版本檔讀不出值（見上方的原因）。原因是環境時（讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）：修好環境後重跑這一步。原因是 commit 裡的某個版本來源讀不出值時：release commit 已經推出去了，要改那個檔案、補一個新的 commit，再回 Step 1 推送（推送前檢查）；改到會編進 binary 的檔案（例如 Version.swift）時，Phase 2 要重新 build" ;;
       30) echo "✗ Step 1.5: tag 沒推成（見上方的原因：push URL 指向別的 repo 時先改 remote 設定，其他情況照上方的重跑指令）" ;;
       *)  echo "✗ Step 1.5: release-tag rc=${RC}、tag=${TAG:-?}（預期 v${VERSION}）" ;;
     esac

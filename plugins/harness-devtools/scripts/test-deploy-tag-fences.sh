@@ -452,6 +452,29 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
   OUT=$(cd "$W" && CLAUDE_PLUGIN_ROOT=/nonexistent PATH="$T/bin:$PATH" bash "$T/f.sh" 2>&1); RC=$?
   has "helper not found → a ✗ line, not a shell error" "$OUT" "找不到"
   same "…exit 1" "$RC" 1
+
+  # #51 (cross-model review, 2026-11-16): the tag step sends a branch without an upstream back to the
+  # pre-push step, where the advice and the checks are; it does not suggest a push of its own
+  case "$S" in mcp-deploy) PRE="Step 3（推送前檢查）" ;; *) PRE="Step 1 推送（推送前檢查）" ;; esac
+  mk "$S-noup"; W="$T/$S-noup"
+  put "$W" mcpb/manifest.json '{ "version": "1.0.0" }'; ci "$W"
+  fence "$S" "Step $STEP: VERSION" "$T/fnu.sh" "VERSION='{version}' ==> VERSION='1.0.0'"
+  for sh in $SHELLS; do
+    run "$sh" "$W" "$T/fnu.sh"
+    has "no upstream → stops ($sh)" "$OUT" "沒有指向 remote 的 upstream"
+    has "…and sends the user back to the pre-push step ($sh)" "$OUT" "回 $PRE"
+    hasnt "…without suggesting git push -u ($sh)" "$OUT" "git push -u"
+  done
+  same "…and no tag on the remote" "$(rtag "$T/$S-noup.git" v1.0.0)" ""
+  # #51: 21 in the tag step. The release commit is already pushed, so a version source in the commit
+  # that cannot be read means a new commit and the pre-push step again
+  mk "$S-unread"; W="$T/$S-unread"
+  put "$W" Sources/App/Version.swift 'enum V { static let version = makeVersion() }'; ci "$W"; push "$W"
+  run bash "$W" "$T/fnu.sh"
+  has "a version source that cannot be read (21) → stops" "$OUT" "有版本檔讀不出值"
+  has "…an environment problem: fix it and run this step again" "$OUT" "原因是環境時（讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）：修好環境後重跑這一步"
+  has "…a version source in the commit: a new commit, then the pre-push step" "$OUT" "原因是 commit 裡的某個版本來源讀不出值時：release commit 已經推出去了，要改那個檔案、補一個新的 commit，再回 $PRE"
+  same "…and no tag on the remote" "$(rtag "$T/$S-unread.git" v1.0.0)" ""
 done
 
 echo "cli-deploy Phase 3 Step 1: every bumped version file is staged, nothing else"
@@ -1234,6 +1257,11 @@ for SM in "mcp-deploy:Step 3:3a" "cli-deploy:Step 1 推送:1.5"; do
   run bash "$W" "$T/pre142.sh"
   has "$S: a branch without an upstream → stops" "$OUT" "沒有指向 remote 的 upstream"
   same "$S: …and nothing reaches the remote" "$(rmain "$B" feature)" ""
+  # #51 (cross-model review, 2026-11-16): the advice must not be a push that skips these checks
+  hasnt "$S: …and does not suggest git push -u" "$OUT" "git push -u"
+  has "$S: …it says not to push directly" "$OUT" "不要直接 git push：那樣會跳過這裡的檢查"
+  has "$S: …a branch the remote has: set the upstream and run this step again" "$OUT" "git fetch <remote> ，再 git branch --set-upstream-to=<remote>/feature ，然後重跑這一步"
+  has "$S: …a branch the remote does not have: push the commit before the release commit, without tags" "$OUT" "git push --no-follow-tags <remote> HEAD~1:refs/heads/feature ，再 git branch --set-upstream-to=<remote>/feature ，然後重跑這一步"
   git -C "$W" push -q -u origin feature 2>/dev/null; FEAT=$(rmain "$B" feature)
   put "$W" mcpb/manifest.json '{ "version": "1.4.3" }'; ci "$W" next2
   fence "$S" "推送前檢查（#51）" "$T/pre143.sh" "VERSION='{version}' ==> VERSION='1.4.3'"
@@ -1248,6 +1276,33 @@ for SM in "mcp-deploy:Step 3:3a" "cli-deploy:Step 1 推送:1.5"; do
   run bash "$W" "$T/pre141.sh"
   has "$S: a remote outside github.com → stops" "$OUT" "推不出 github.com 的 owner/repo"
   same "$S: …and the release commit stays local" "$(rmain "$B")" "$BASE"
+
+  # #51: the advice for a new repository, followed as printed. An empty remote, a base commit and the
+  # release commit, no upstream: push HEAD~1, set the upstream, run the step again → it pushes, checked
+  git init -q --bare -b main "$T/$S-new.git"; git init -q -b main "$T/$S-new"; W="$T/$S-new"; B="$T/$S-new.git"
+  git -C "$W" config "url.$B.insteadOf" https://github.com/o/r.git; git -C "$W" remote add origin https://github.com/o/r.git
+  export GH_STUB_REMOTE="$B"
+  put "$W" mcpb/manifest.json '{ "version": "1.4.0" }'; ci "$W" base
+  put "$W" mcpb/manifest.json '{ "version": "1.4.1" }'; ci "$W" release
+  run bash "$W" "$T/pre141.sh"
+  has "$S: a new repository, no upstream → stops" "$OUT" "沒有指向 remote 的 upstream"
+  same "$S: …and the remote is still empty" "$(git --git-dir="$B" for-each-ref --format=x | wc -l | tr -d ' ')" 0
+  ADVICE=$(printf '%s' "$OUT" | python3 -I -c 'import re, sys
+t = sys.stdin.read().split("新的 repo", 1)[-1]
+cmds = re.findall(r"git push --no-follow-tags <remote> HEAD~1:refs/heads/[A-Za-z0-9._/-]+|git branch --set-upstream-to=<remote>/[A-Za-z0-9._/-]+", t)
+print("\n".join(c.replace("<remote>", "origin") for c in cmds))')
+  same "$S: …the advice for a new repository has two commands" "$(printf '%s\n' "$ADVICE" | grep -c .)" 2
+  STEPS_OK=yes
+  while IFS= read -r cmd; do
+    [ -n "$cmd" ] || continue
+    ( cd "$W" && eval "$cmd" ) >/dev/null 2>&1 || STEPS_OK="failed: $cmd"
+  done <<< "$ADVICE"
+  same "$S: …both run as printed (the push makes origin/main, so the upstream can be set)" "$STEPS_OK" yes
+  same "$S: …the remote now has the commit before the release commit" "$(rmain "$B")" "$(git -C "$W" rev-parse HEAD~1)"
+  run bash "$W" "$T/pre141.sh"
+  has "$S: …and the step, run again, checks and pushes the release commit" "$OUT" "→ $STEP: release commit 已推到"
+  same "$S: …the remote branch is the release commit" "$(rmain "$B")" "$(git -C "$W" rev-parse HEAD)"
+  same "$S: …and no tag went along" "$(git --git-dir="$B" tag -l)" ""
 
   # #53: the tag step asks GitHub for the repository's current name. A name GitHub does not
   # know shows before the push; a former name that still redirects does not stand in the way
@@ -1319,7 +1374,15 @@ for SM in "mcp-deploy:Step 3:3a" "cli-deploy:Step 1 推送:1.5"; do
   put "$W" Sources/App/Version.swift 'enum V { static let version = makeVersion() }'; ci "$W" unreadable
   run bash "$W" "$T/pre141.sh"
   has "$S: a version source that cannot be read (21) → stops" "$OUT" "有版本檔讀不出值"
-  has "$S: …and says no new commit is needed" "$OUT" "不需要新的 commit"; stays
+  # #51 (cross-model review, 2026-11-16): 21 is the environment or a file in the commit; the message covers both
+  has "$S: …an environment problem: fix it and run again, no new commit" "$OUT" "原因是環境時（讀 pyproject.toml 需要 python3 3.11 以上，或 tomli）：修好環境後重跑這一步，不需要新的 commit"
+  has "$S: …a version source in the commit: change it and make a new commit" "$OUT" "原因是 commit 裡的某個版本來源讀不出值時：改那個檔案，補一個 commit，再重跑這一步"
+  if [ "$S" = mcp-deploy ]; then
+    has "$S: …and build and pack again when the file is compiled in" "$OUT" "Swift 專案要先從 Phase 1 A2 重新編譯，再從 Phase 2 Step 5 重新打包 .mcpb"
+  else
+    has "$S: …and build again when the file is compiled in" "$OUT" "Phase 2 要重新 build"
+  fi
+  stays
   git -C "$W" reset -q --hard HEAD~1
   git -C "$W" config remote.origin.pushurl git@github.com:o/other.git
   run bash "$W" "$T/pre141.sh"
