@@ -1109,7 +1109,7 @@ mcpsrv() {
 # method B: the assets given to gh release create (what follows --notes-file and its value)
 assetsB() { sed -n '/^--notes-file$/,$p' "$T/rec/create-args" 2>/dev/null | sed '1,2d' | tr '\n' ' '; }
 # names the old grep -v '.sh' dropped ('.' is any character, nothing anchored); a binary that sorts after run.sh
-for BIN in flash publish-tool tool; do
+for BIN in flash publish-tool tool tool.shim; do
   mcpsrv "mcp-bin-$BIN" swift "$BIN" run.sh .gitkeep
   release_texts; export GH50_ASSETS="$BIN proj.mcpb"; run50 bash "$W" "$T/relA.sh"; unset GH50_ASSETS
   has "method A: a binary named $BIN is uploaded" "$(cat "$T/rec/curl-args" 2>/dev/null)" "assets?name=$BIN --data-binary @mcpb/server/$BIN"
@@ -1132,25 +1132,44 @@ for sh in $SHELLS; do
   hasnt "…before any release is created ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "/releases"
   same "…and the text files are kept ($sh)" "$(left "$D")" "release-notes.md release-title.txt "
 done
-# the mcp server in a subdirectory of the repository, Package.swift only at the repository root: still a Swift
-# project (the block looks in the current directory and at the repository root)
-mk mcp-swift-sub; W="$T/mcp-swift-sub"
-put "$W" Package.swift '// swift-tools-version:5.9'
-put "$W" srv/mcpb/manifest.json '{
+# the mcp server in a subdirectory of the repository. Swift or not is decided the way Phase 0 Step 2 decides the
+# language: Package.swift in the project directory (where mcpb/ is). A Package.swift only at the repository root
+# belongs to something else (a monorepo whose root is a Swift package, the server Python or TypeScript): the
+# release goes up with the .mcpb only (#50 verify R6: the repository root used to count, and stopped it)
+for where in root project; do
+  mk "mcp-sub-$where"; W="$T/mcp-sub-$where"
+  if [ "$where" = root ]; then put "$W" Package.swift '// swift-tools-version:5.9'; else put "$W" srv/Package.swift '// swift-tools-version:5.9'; fi
+  put "$W" srv/mcpb/manifest.json '{
   "name": "proj",
   "version": "1.4.0"
 }'
-put "$W" srv/mcpb/proj.mcpb x
-put "$W" srv/mcpb/server/run.sh x
-ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
-D=$(deploy_dir "$W"); mkdir -p "$D"
+  put "$W" srv/mcpb/proj.mcpb x
+  put "$W" srv/mcpb/server/run.sh x
+  ci "$W"; push "$W"; git -C "$W" tag -a v1.4.0 -m x; git -C "$W" push -q origin refs/tags/v1.4.0
+  D=$(deploy_dir "$W"); mkdir -p "$D"
+  for sh in $SHELLS; do
+    release_texts; run50 "$sh" "$W/srv" "$T/relB.sh"
+    if [ "$where" = root ]; then
+      same "method B: Package.swift only at the repository root, not Swift here → only the .mcpb ($sh)" "$(assetsB)" "mcpb/proj.mcpb "
+    else
+      has "method B: Package.swift in the project directory below the root, no binary → stops ($sh)" "$OUT" "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary"
+      hasnt "…before gh release create ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
+    fi
+    release_texts; run50 "$sh" "$W/srv" "$T/relA.sh"
+    if [ "$where" = root ]; then
+      hasnt "method A: Package.swift only at the repository root → no Swift stop ($sh)" "$OUT" "這是 Swift 專案"
+    else
+      has "method A: Package.swift in the project directory below the root, no binary → stops ($sh)" "$OUT" "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary"
+      hasnt "…before any release is created ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "/releases"
+    fi
+  done
+done
+# a Swift project whose mcpb/server holds the hash file make release-signed leaves, but no binary: not the binary
+mcpsrv mcp-swift-hashonly swift run.sh .gitkeep Bin.sha256
 for sh in $SHELLS; do
-  release_texts; run50 "$sh" "$W/srv" "$T/relB.sh"
-  has "method B: run from a subdirectory, Package.swift at the repository root, no binary → stops ($sh)" "$OUT" "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary"
+  release_texts; run50 "$sh" "$W" "$T/relB.sh"
+  has "method B: only Bin.sha256 in mcpb/server → stops, the hash file is not the binary ($sh)" "$OUT" "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary"
   hasnt "…before gh release create ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "release create"
-  release_texts; run50 "$sh" "$W/srv" "$T/relA.sh"
-  has "method A: run from a subdirectory, Package.swift at the repository root, no binary → stops ($sh)" "$OUT" "✗ Step 4: 這是 Swift 專案（有 Package.swift），mcpb/server 裡卻沒有 binary"
-  hasnt "…before any release is created ($sh)" "$(cat "$T/rec/calls" 2>/dev/null)" "/releases"
 done
 # a project that is not Swift, with run.sh and a directory in mcpb/server: the directory is not a binary, only the .mcpb goes up
 mcpsrv mcp-node-nobin other run.sh node_modules/
