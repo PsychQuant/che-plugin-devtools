@@ -164,7 +164,7 @@ bash "$HELPER" --dir <版本根目錄> --commit HEAD --name-style v|plugin [--pl
 # 0 已打或已存在 / 10 同名 tag 在別的 commit / 20 來源不一致 / 21 讀不出 / 30 推送失敗或 push URL 不同 / 2 引數錯誤
 ```
 
-- `--list-bumps`（#55）是給人手動補打舊版本用的唯讀模式，發版 skill 不呼叫它：不建立任何東西，只用 `git ls-remote` 讀 remote 的 tag。它與 `--at-bump` 共用 `version_history()` 這個走訪（first-parent、封閉列舉的路徑、hatch 舊路徑），讀法也是同一個 `read_sources()`；改走訪或讀法時兩個模式一起看。輸出每行以 `BUMP` 開頭、TAB 分隔、值經過 `safe()`；remote 狀態是封閉的四種（`same-commit`、`other-commit`、`no-tag`、`ambiguous`），`ambiguous` 的原因封閉列舉兩種，定義在 helper 檔頭。不要加一次推多個 tag 的指令：每個 tag 公開、收不回，由人逐一確認後用既有的 `--commit <sha>` 打（2026-11-10 維護者決定「唯讀列表模式＋文件」）。補打與手動發版之後的步驟寫在 README。
+- `--list-bumps`（#55）是給人手動補打舊版本用的唯讀模式，發版 skill 不呼叫它：不建立任何東西，只用 `git ls-remote` 讀 remote 的 tag。它與 `--at-bump` 共用 `version_history()` 這個走訪（first-parent、封閉列舉的路徑、hatch 舊路徑），讀法也是同一個 `read_sources()`；改走訪或讀法時兩個模式一起看。輸出每行以 `BUMP` 開頭、TAB 分隔、值經過 `safe()`；remote 狀態是封閉的四種（`same-commit`、`other-commit`、`no-tag`、`ambiguous`），`ambiguous` 的原因封閉列舉三種，定義在 helper 檔頭；第三種是 `--at-bump` 的「讀不出的 commit」規則（#42 verify R3），兩個模式對同一段歷史要給一樣的判斷，改其中一邊時另一邊一起改。remote 在列出任何東西之前就問，查不到就回 30、不印 BUMP 行。不要加一次推多個 tag 的指令：每個 tag 公開、收不回，由人逐一確認後用既有的 `--commit <sha>` 打（2026-11-10 維護者決定「唯讀列表模式＋文件」）。補打與手動發版之後的步驟寫在 README。
 
 - 版本來源是八種的封閉列舉，定義在 helper 檔頭；skill 的 bump 清單照抄那一份，改來源時兩邊一起改。
 - `plugin-update`、`plugin-deploy` 的自動推 tag 是 opt-in（git config `harness-devtools.releaseTag`，#42 使用者決定）；`mcp-deploy`、`cli-deploy` 建 release 需要 tag，不看開關。

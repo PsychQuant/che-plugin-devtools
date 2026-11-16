@@ -1851,9 +1851,43 @@ plugin_json "$W" "" 1.0.0; commit "$W" c1; U1=$(sha_of HEAD)
 put "$W" .claude-plugin/plugin.json '{ "name": "p", "version": '; commit "$W" broken; UB=$(sha_of HEAD)
 plugin_json "$W" "" 1.1.0; commit "$W" c3; U3=$(sha_of HEAD)
 list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
-check "unreadable between two versions → both listed, skipped 1" "$LIST" \
-  "$(bl version 1.1.0 "$U3" v1.1.0 no-tag; bl version 1.0.0 "$U1" v1.0.0 no-tag; bl skipped 1)"
-has "…the note names the skipped commit and why" "skipped $(git -C "$W" rev-parse --short=7 "$UB"): a version source cannot be read"
+check "nothing readable just before 1.1.0 → 1.1.0 is ambiguous (it may have been set there); 1.0.0 keeps its commit; skipped 1" "$LIST" \
+  "$(bl version 1.1.0 - v1.1.0 ambiguous; bl version 1.0.0 "$U1" v1.0.0 no-tag; bl skipped 1)"
+has "…the note names the skipped commit and why" "skipped ${UB:0:7}: a version source cannot be read"
+has "…and says why 1.1.0 has no commit" "the version sources at ${UB:0:7}, just before the commits of 1.1.0, cannot all be read"
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "…--at-bump refuses the same version for the same reason (exit 21)" "$RC" 21
+echo "== --list-bumps: an unreadable commit just before a run whose readable sources already say its version (#55 verify R1)"
+new_repo
+plugin_json "$W" "" 1.0.0; commit "$W" c0; A0=$(sha_of HEAD)
+plugin_json "$W" "" 1.1.0; put "$W" Sources/S/Version.swift 'enum V { static var version: String { "1.1.0" } }'; commit "$W" "c1 bump, Version.swift unreadable"; A1=$(sha_of HEAD)
+put "$W" Sources/S/Version.swift 'enum V { static let version = "1.1.0" }'; commit "$W" "c2 readable"
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "plugin.json was set to 1.1.0 at the unreadable commit → 1.1.0 is ambiguous, not on the next commit" "$LIST" \
+  "$(bl version 1.1.0 - v1.1.0 ambiguous; bl version 1.0.0 "$A0" v1.0.0 no-tag; bl skipped 1)"
+has "…the note names the unreadable commit" "the version sources at ${A1:0:7}, just before the commits of 1.1.0, cannot all be read"
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "…--at-bump agrees: it refuses to tag 1.1.0 (exit 21)" "$RC" 21
+has "…for the same reason" "cannot all be read"
+new_repo
+plugin_json "$W" "" 1.0.0; put "$W" Sources/S/Version.swift 'enum V { static var version: String { "1.0.0" } }'; commit "$W" "c0 Version.swift unreadable"
+plugin_json "$W" "" 1.1.0; put "$W" Sources/S/Version.swift 'enum V { static let version = "1.1.0" }'; commit "$W" "c1 bump, all readable"; B1=$(sha_of HEAD)
+put "$W" z.txt 1; commit "$W" later
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "the readable source at the unreadable commit says another version → the run keeps its commit" "$LIST" \
+  "$(bl version 1.1.0 "$B1" v1.1.0 no-tag; bl skipped 1)"
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "…--at-bump agrees: exit 0" "$RC" 0
+has "…on the same commit" "commit=$(git -C "$W" rev-parse --short "$B1")"
+new_repo
+put "$W" .claude-plugin/plugin.json '{ "name": "p" }'; commit "$W" "no version field yet"
+plugin_json "$W" "" 1.0.0; commit "$W" "the version is added"; N1=$(sha_of HEAD)
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "a commit before the run with no version source (nothing unreadable) → the run keeps its commit" "$LIST" \
+  "$(bl version 1.0.0 "$N1" v1.0.0 no-tag; bl skipped 1)"
+run "$W" --dir . --commit HEAD --name-style v --at-bump --dry-run
+check "…--at-bump agrees: exit 0" "$RC" 0
+has "…on the same commit" "commit=$(git -C "$W" rev-parse --short "$N1")"
 new_repo
 put "$W" .claude-plugin/plugin.json '{ "name": "p" }'; commit "$W" "no version yet"
 plugin_json "$W" "" 1.0.0; commit "$W" c1
@@ -1937,11 +1971,18 @@ has "…the note names the limit" "limit of 3 commits"
 RELEASE_TAG_MAX_WALK=5 list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
 check "limit 5 of 5 → the whole list, no incomplete line" "$LIST" \
   "$(bl version 1.3.0 "$K5" v1.3.0 no-tag; bl version 1.2.0 "$K4" v1.2.0 no-tag; bl version 1.1.0 "$K2" v1.1.0 no-tag; bl version 1.0.0 "$K1" v1.0.0 no-tag; bl skipped 0)"
-put "$W" .claude-plugin/plugin.json '{ "name": "p", "version": ' ; commit "$W" broken
-plugin_json "$W" "" 1.4.0; commit "$W" c7; K7=$(sha_of HEAD)
+put "$W" Sources/S/Version.swift 'enum V { static var version: String { "1.3.0" } }'; commit "$W" "unreadable, plugin.json still 1.3.0"
+plugin_json "$W" "" 1.4.0; put "$W" Sources/S/Version.swift 'enum V { static let version = "1.4.0" }'; commit "$W" c7; K7=$(sha_of HEAD)
 RELEASE_TAG_MAX_WALK=2 list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
 check "the walk ends on a skipped commit: the run before it keeps its commit; still incomplete" "$LIST" \
   "$(bl version 1.4.0 "$K7" v1.4.0 no-tag; bl skipped 1; bl incomplete walk-limit)"
+for bad_walk in abc 0 00 -3 1.5; do
+  RELEASE_TAG_MAX_WALK=$bad_walk list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+  has "RELEASE_TAG_MAX_WALK=$bad_walk → a note says it is not used" "RELEASE_TAG_MAX_WALK is not a positive whole number; using 500"
+  hasnt "…and the walk uses 500: the whole list" "incomplete"
+done
+RELEASE_TAG_MAX_WALK=007 list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+hasnt "RELEASE_TAG_MAX_WALK=007 is a positive whole number → no note" "not a positive whole number"
 
 echo "== --list-bumps in a shallow clone says the list is incomplete (#55)"
 new_repo
@@ -1957,24 +1998,42 @@ git clone -q --branch main "file://$T/r$N/remote.git" "$T/r$N/full"
 list_run "$T/r$N/full" --dir . --commit HEAD --name-style v --list-bumps
 check "a full clone → the whole list" "$LIST" "$(bl version 2.0.0 "$H2" v2.0.0 no-tag; bl version 1.0.0 "$H1" v1.0.0 no-tag; bl skipped 0)"
 
-echo "== --list-bumps: the remote cannot be queried → 30, no BUMP lines (#55)"
-new_repo; plugin_json "$W" "" 1.0.0; commit "$W"
-git -C "$W" remote set-url origin "$T/no-such-remote.git"
-LIST=$(cd "$W" && "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --list-bumps 2>"$T/list.err"); RC=$?
-OUT="$LIST
+echo "== --list-bumps: the remote cannot be queried → 30, no BUMP lines, whatever the history holds (#55, verify R1)"
+for history in plain all-ambiguous no-version; do
+  new_repo
+  case "$history" in
+    plain)         plugin_json "$W" "" 1.0.0; commit "$W" ;;
+    all-ambiguous) for v in 1.0.0 2.0.0 1.0.0 2.0.0; do plugin_json "$W" "" "$v"; commit "$W" "$v"; done ;;
+    no-version)    put "$W" .claude-plugin/plugin.json '{ "name": "p" }'; commit "$W" ;;
+  esac
+  git -C "$W" remote set-url origin "$T/no-such-remote.git"
+  LIST=$(cd "$W" && "${RT_BASH:-bash}" "$HELPER" --dir . --commit HEAD --name-style v --list-bumps 2>"$T/list.err"); RC=$?
+  OUT="$LIST
 $(cat "$T/list.err")"
-check "exit 30" "$RC" 30
-check "…nothing on stdout" "$LIST" ""
-has "…and says why" "cannot query remote"
-check "…no tag created" "$(git -C "$W" tag -l)" ""
+  check "$history: exit 30" "$RC" 30
+  check "$history: …nothing on stdout" "$LIST" ""
+  has "$history: …and says why" "cannot query remote"
+  check "$history: …no tag created" "$(git -C "$W" tag -l)" ""
+done
 
 echo "== --list-bumps: usage (#55)"
 new_repo; plugin_json "$W" "" 1.0.0; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --list-bumps --at-bump;        check "with --at-bump → 2" "$RC" 2
 run "$W" --dir . --commit HEAD --name-style v --list-bumps --expect 1.0.0;   check "with --expect → 2" "$RC" 2
 run "$W" --dir . --commit HEAD --name-style plugin --list-bumps;             check "plugin style without --plugin → 2" "$RC" 2
-list_run "$W" --dir . --commit HEAD --name-style v --list-bumps --dry-run
-check "with --dry-run (it creates nothing either) → still a list" "$LIST" "$(bl version 1.0.0 "$(sha_of HEAD)" v1.0.0 no-tag; bl skipped 0)"
+run "$W" --dir . --commit HEAD --name-style v --list-bumps --dry-run;          check "with --dry-run → 2 (refused, not ignored)" "$RC" 2
+has "…and says why" "cannot be combined with --dry-run"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --list-bumps;          check "in either order → 2" "$RC" 2
+
+echo "== --list-bumps follows a hatch version file, bumped on its own (#55 verify R1)"
+new_repo
+printf '[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "x/__init__.py"\n' > "$W/pyproject.toml"
+put "$W" x/__init__.py '__version__ = "1.0.0"'; commit "$W" c1; Y1=$(sha_of HEAD)
+put "$W" x/__init__.py '__version__ = "1.1.0"'; commit "$W" "only the hatch file"; Y2=$(sha_of HEAD)
+put "$W" z.txt 1; commit "$W" later
+list_run "$W" --dir . --commit HEAD --name-style v --list-bumps
+check "the commit that changed only the hatch file is where 1.1.0 was set" "$LIST" \
+  "$(bl version 1.1.0 "$Y2" v1.1.0 no-tag; bl version 1.0.0 "$Y1" v1.0.0 no-tag; bl skipped 0)"
 
 echo "== usage errors → 2"
 new_repo; plugin_json "$W" "" 1.2.3; commit "$W"

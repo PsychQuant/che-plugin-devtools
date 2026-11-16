@@ -32,8 +32,11 @@
 #                 version (plugin-update, plugin-deploy). Without it the tag goes
 #                 on --commit. When that commit cannot be determined — the newest
 #                 candidate already disagrees, or the walk reaches its limit
-#                 (500 commits; RELEASE_TAG_MAX_WALK overrides it for tests) —
-#                 the run is unreadable (21): a guessed commit is never tagged.
+#                 (500 commits; the environment variable RELEASE_TAG_MAX_WALK, a
+#                 positive whole number, overrides it - the tests use it, and so
+#                 does a --list-bumps of a long history; any other value falls back
+#                 to 500 with a note on stderr) — the run is unreadable (21): a
+#                 guessed commit is never tagged.
 #                 Later commits that change --dir are counted in a note, since
 #                 the tag will not include them.
 #   --dry-run     resolve the version, look the tag up on the remote and locally the
@@ -47,8 +50,8 @@
 #   --list-bumps  list every version in the history of --commit and the commit that
 #                 set it, for back-filling tags by hand (#55). Like --dry-run it
 #                 creates nothing: no tag, no push; the one thing it asks the remote
-#                 is its list of tags (git ls-remote). Not with --at-bump or
-#                 --expect. It walks the first-parent history of --commit over the
+#                 is its list of tags (git ls-remote), asked before anything is
+#                 listed. Not with --at-bump, --expect or --dry-run (2). It walks the first-parent history of --commit over the
 #                 commits that touch a version source - the walk of --at-bump - and
 #                 reads each with the rules below. Consecutive commits whose sources
 #                 can all be read and agree form a run; each run is one line, with
@@ -66,11 +69,17 @@
 #                 <state> is a CLOSED set of four: same-commit (the remote has the
 #                 tag, on this commit); other-commit (the remote has it on another
 #                 commit); no-tag; ambiguous (the commit is "-"). Ambiguous has a
-#                 closed list of two causes: the version appears in two runs that
-#                 are not next to each other (set, changed or unreadable, set again
-#                 - every one of its lines is ambiguous), or the run reaches the end
-#                 of an incomplete walk, so its oldest commit is only where the walk
-#                 stopped. The skipped line is always printed. The incomplete line
+#                 CLOSED list of three causes; do not add a fourth by resemblance:
+#                   1. the version appears in two runs that are not next to each
+#                      other (set, changed or unreadable, set again) - every one of
+#                      its lines is ambiguous;
+#                   2. the run reaches the end of an incomplete walk, so its oldest
+#                      commit is only where the walk stopped;
+#                   3. the commit just before the run was skipped because a source
+#                      there cannot be read, and every source that can be read there
+#                      already says the run's version (or none can): --at-bump's rule
+#                      (#42 verify R3), under which --at-bump refuses to tag the run.
+#                 The skipped line is always printed. The incomplete line
 #                 is the last line, printed only when the walk reached its limit
 #                 (RELEASE_TAG_MAX_WALK, default 500 commits; a larger value lists
 #                 more) or the edge of a shallow clone: older versions are then
@@ -330,6 +339,9 @@ if [ "$LIST" = 1 ]; then
   # --list-bumps lists every version; it picks no commit and compares with no release
   [ "$AT_BUMP" = 0 ] || die_usage "--list-bumps cannot be combined with --at-bump"
   [ -z "$EXPECT" ]   || die_usage "--list-bumps cannot be combined with --expect"
+  # it creates nothing anyway; refused rather than ignored, so no one reads the pair as a
+  # dry run of a back-fill (#55 verify R1)
+  [ "$DRY" = 0 ]     || die_usage "--list-bumps cannot be combined with --dry-run (it creates nothing already)"
 fi
 case "$STYLE" in
   v) ;;
@@ -356,7 +368,18 @@ SHA=$(git -C "$TOP" rev-parse -q --verify "${COMMIT}^{commit}" 2>/dev/null) || d
 # able to add a field or a line — that is how a TAB in a hatch path once became
 # the tag name (#42 verify R1).
 MAX_WALK=${RELEASE_TAG_MAX_WALK:-500}
-case "$MAX_WALK" in ''|*[!0-9]*|0) MAX_WALK=500 ;; esac
+# a positive whole number; anything else falls back to 500 and says so (#55 verify R1:
+# the fallback used to be silent, and a list could stop at 500 with the larger limit
+# the user asked for never applied). The value is not echoed: it is the caller's text.
+case "$MAX_WALK" in
+  *[!0-9]*) MAX_WALK=bad ;;
+  *[1-9]*)  ;;
+  *)        MAX_WALK=bad ;;
+esac
+if [ "$MAX_WALK" = bad ]; then
+  echo "$PROG: note: RELEASE_TAG_MAX_WALK is not a positive whole number; using 500" >&2
+  MAX_WALK=500
+fi
 # Read into a variable from a TOP-LEVEL heredoc, then run with -c: bash 3.2 cannot
 # parse a heredoc inside $( … ) when its text contains quotes (#42 verify R2).
 IFS= read -r -d '' PYSRC <<'PY' || true
@@ -1047,6 +1070,14 @@ def list_versions(remote):
     if not walked:
         print("PROBLEM\tcannot walk the history of the version sources")
         return 21
+    # Asked whatever the history holds, before any line is printed: without the
+    # remote's tags no state is known, so nothing is listed (#55 verify R1 - it was
+    # asked only when some line needed a state, and a list of ambiguous lines came
+    # out with exit 0 from a remote that could not be reached).
+    tags = remote_tags(remote)
+    if tags is None:
+        print(f"PROBLEM\tcannot query remote {safe(remote)!r} for its tags")
+        return 30
     # The walk stops at MAX_WALK commits, or at the edge of a shallow clone, which
     # looks like the start of history. Either way older versions may be missing, and
     # the oldest run seen may go on past the edge.
@@ -1079,6 +1110,12 @@ def list_versions(remote):
             if not valid[vals[0]]:
                 why = safe(tag_name(vals[0])) + " is not a valid git tag name"
         if why:
+            # --at-bump's rule (#42 verify R3), applied to every run (#55 verify R1): the
+            # commit just before the run cannot all be read, and every source that can
+            # be read there already says the run's version - none being read counts too.
+            # Whether the version was set there or in the run cannot be told.
+            if p and last is not None and not (set(vals) - {last}):
+                runs[-1]["unclear"] = c
             skipped.append((c, why))
             last = None
             continue
@@ -1093,12 +1130,6 @@ def list_versions(remote):
     seen = {}
     for run in runs:
         seen[run["version"]] = seen.get(run["version"], 0) + 1
-    tags = None
-    if any(seen[run["version"]] == 1 and run is not cut for run in runs):
-        tags = remote_tags(remote)
-        if tags is None:
-            print(f"PROBLEM\tcannot query remote {safe(remote)!r} for its tags")
-            return 30
     noted = set()
     for run in runs:
         v, name, oldest = run["version"], tag_name(run["version"]), run["commits"][-1]
@@ -1114,6 +1145,10 @@ def list_versions(remote):
         if run is cut:
             out.append(f"BUMP\tversion\t{safe(v)}\t-\t{safe(name)}\tambiguous")
             print(f"NOTE\tthe commits of {safe(v)} reach the end of the walk; the commit that set it is not in what was walked")
+            continue
+        if "unclear" in run:
+            out.append(f"BUMP\tversion\t{safe(v)}\t-\t{safe(name)}\tambiguous")
+            print(f"NOTE\tthe version sources at {safe(run['unclear'][:7])}, just before the commits of {safe(v)}, cannot all be read, and the ones that can already say {safe(v)} (or there are none): whether {safe(v)} was set there cannot be told")
             continue
         at = tags.get(name)
         if at is None:

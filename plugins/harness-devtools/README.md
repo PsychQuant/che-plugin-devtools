@@ -219,7 +219,7 @@ bash scripts/release-tag.sh --dir <版本根目錄> --commit HEAD --name-style v
 
 #### 補打舊版本的 tag
 
-`--list-bumps`（#55）只列出、不建立任何東西：不打 tag、不推送，唯一問 remote 的是它有哪些 tag（`git ls-remote`）。它沿 `--commit` 的 first-parent 歷史走過每個動到版本來源的 commit（與 `--at-bump` 同一個走訪、同一套讀法），把連續、所有來源都讀得出而且一致的 commit 分成一段，每段印一行：
+`--list-bumps`（#55）只列出、不建立任何東西：不打 tag、不推送，唯一問 remote 的是它有哪些 tag（`git ls-remote`，在列出任何東西之前就問）。它沿 `--commit` 的 first-parent 歷史走過每個動到版本來源的 commit（與 `--at-bump` 同一個走訪、同一套讀法），把連續、所有來源都讀得出而且一致的 commit 分成一段，每段印一行：
 
 ```text
 BUMP	version	1.2.0	<該段最舊的 commit>	v1.2.0	no-tag
@@ -230,30 +230,38 @@ BUMP	incomplete	walk-limit
 
 - 每行以 `BUMP` 開頭、TAB 分隔，值都經過 helper 的 `safe()`；新的版本在前。commit 是完整的 SHA，tag 名稱照上方「tag 名稱」的 `--name-style`。
 - 最後一欄是 remote 上的狀態，封閉的四種：`same-commit`（remote 已有這個 tag，在這個 commit 上）、`other-commit`（在別的 commit 上，stderr 會寫是哪一個）、`no-tag`、`ambiguous`。
-- `ambiguous` 的 commit 是 `-`，原因封閉列舉兩種，不依性質相似類推第三種：同一個版本出現在不相連的兩段（升了又退回再升；中間夾著被跳過的 commit 也算），這個版本的每一段都是 ambiguous；或這一段碰到不完整走訪的盡頭，它最舊的 commit 只是走訪停下的地方。這兩種情況下，哪一個 commit 設了這個版本，從看得到的歷史分不出來。
+- `ambiguous` 的 commit 是 `-`，原因封閉列舉三種，不依性質相似類推第四種。三種情況下，哪一個 commit 設了這個版本，都從看得到的歷史分不出來：
+  1. 同一個版本出現在不相連的兩段（升了又退回再升；中間夾著被跳過的 commit 也算）。這個版本的每一段都是 ambiguous。
+  2. 這一段碰到不完整走訪的盡頭，它最舊的 commit 只是走訪停下的地方。
+  3. 這一段之前緊鄰的 commit 有來源讀不出，而那裡讀得出的來源都已經是這個版本（或一個都讀不出）：版本可能就是在那個 commit 設的。這是 `--at-bump` 的規則（#42 verify R3），同樣的歷史 `--at-bump` 也拒絕打 tag（21）。stderr 會寫出是哪個 commit。
 - 來源讀不出、互相不一致、沒有任何版本來源，或版本做不成合法 tag 名稱的 commit，不屬於任何版本，是段的邊界。`BUMP skipped <數目>` 一定會印；每個被跳過的 commit 與原因印在 stderr。舊 commit 是用現在的讀法讀的，當年的寫法讀不出時，那個版本就不在清單上，只會算進這個數目。
-- 走訪上限是 `RELEASE_TAG_MAX_WALK`（預設 500 個動到版本來源的 commit）。碰到上限（`walk-limit`）或 shallow clone 的邊界（`shallow`）時，最後一行是 `BUMP incomplete …`：更舊的版本沒有列出，列出的版本也可能在邊界之外還出現過。**不要照不完整的清單補打**：先用較大的 `RELEASE_TAG_MAX_WALK=<數目>` 重跑，或先 `git fetch --unshallow`。
-- 結束碼：0 列出 / 21 走訪不了歷史 / 30 查不到 remote（不印任何 BUMP 行：狀態不知道）/ 2 引數錯誤（不能與 `--at-bump`、`--expect` 一起用）。
+- 走訪上限是 `RELEASE_TAG_MAX_WALK`（預設 500 個動到版本來源的 commit）。碰到上限（`walk-limit`）或 shallow clone 的邊界（`shallow`）時，最後一行是 `BUMP incomplete …`：更舊的版本沒有列出，列出的版本也可能在邊界之外還出現過。**不要照不完整的清單補打**：先用較大的 `RELEASE_TAG_MAX_WALK=<數目>` 重跑，或先 `git fetch --unshallow`。`RELEASE_TAG_MAX_WALK` 要是正整數；不是的話 helper 在 stderr 印一則說明，照 500 走。
+- 結束碼：0 列出 / 21 走訪不了歷史 / 30 查不到 remote（不印任何 BUMP 行：狀態不知道）/ 2 引數錯誤（不能與 `--at-bump`、`--expect`、`--dry-run` 一起用；`--list-bumps` 本來就不建立任何東西，帶 `--dry-run` 會被拒絕，不是被忽略）。
 
 補打的步驟：
 
-1. 先列：`bash scripts/release-tag.sh --dir <版本根目錄> --commit <預設 branch> --name-style v|plugin [--plugin <name>] --list-bumps`。最後一行是 `BUMP incomplete` 時照上面重跑，不要往下做。
+1. 先 `git fetch`，再從 remote 的預設 branch 列：`bash scripts/release-tag.sh --dir <版本根目錄> --commit origin/<預設 branch> --name-style v|plugin [--plugin <name>] --list-bumps`。不要從本機 branch 列：本機 branch 可能落後，或有還沒推的 commit；helper 不檢查 `--commit` 在不在 remote 上，推 tag 時會把那個 commit 一起公開。最後一行是 `BUMP incomplete` 時照上面重跑，不要往下做。
 2. 逐行核對。只有 `no-tag` 的行要補。`same-commit` 已經有了。`other-commit` 不必補：`mcp-deploy`、`cli-deploy` 把 tag 打在 HEAD，tag 不在升版號的那個 commit 上是正常的；那個 tag 若真的打錯了，要不要刪由人決定，helper 不移動也不刪除 tag。`ambiguous` 由人看歷史決定，清單不給 commit。`no-tag` 那一段最舊的 commit 是不是當時真正發出去的那一個，歷史也分不出來，要和 CHANGELOG、release notes 對過。
-3. 每個要補的 commit 各跑一次既有的指令：先 `--dry-run`，再真的跑。不帶 `--at-bump`，版本照 `--commit` 那個 commit 讀，tag 也打在那裡：
+3. 每個要補的 commit 各跑一次既有的指令，不帶 `--at-bump`：版本照 `--commit` 那個 commit 讀，tag 也打在那裡。先 dry run，什麼都不建立：
 
    ```bash
    bash scripts/release-tag.sh --dir <版本根目錄> --commit <清單上的 commit> --name-style v|plugin [--plugin <name>] --dry-run
+   ```
+
+4. **停下來，由人確認。** 每個 tag 推出去就是公開的、收不回（helper 不移動、不刪除 tag），推舊版本的 tag 也會觸發 `on: push: tags` 的 workflow。dry run 印的是 `RELEASE_TAG: dry-run`、版本與 commit 都對，而且人確認要推這一個之後，才跑真的那一次：
+
+   ```bash
    bash scripts/release-tag.sh --dir <版本根目錄> --commit <清單上的 commit> --name-style v|plugin [--plugin <name>]
    ```
 
-4. **每個 tag 推出去就是公開的、收不回**（helper 不移動、不刪除 tag），推舊版本的 tag 也會觸發 `on: push: tags` 的 workflow。所以一次一個，每一個都由人確認之後才跑第二行。helper 沒有一次推多個 tag 的指令（#55 的決定）。
+   一次一個，下一個 commit 從第 3 步重來。helper 沒有一次推多個 tag 的指令（#55 的決定）。
 
 #### 手動發版之後
 
 不經四個發版 skill 發的版本（自己改版號、推送、建 release），沒有任何步驟會替它打 tag 或檢查 tag；四個 skill 之後也只替**目前**的版本打 tag，手動發的版本一旦又升了版號，就不會再被補到。所以手動發版之後：
 
-1. 跑一次 `--list-bumps`，看剛發的版本是不是 `no-tag`。
-2. 是的話，照上一段第 2 至 4 步補打那一個：核對 commit，`--dry-run`，由人確認後再推。
+1. 照上一段第 1 步跑一次 `--list-bumps`（先 `git fetch`，從 `origin/<預設 branch>` 列），看剛發的版本是不是 `no-tag`。
+2. 是的話，照上一段第 2 至 4 步補打那一個：核對 commit，dry run，停下來由人確認，再推。
 
 binary repo 的手動發版，照 `rules/mcp-binary-distribution.md` 的範例在建 release 之前就用 helper 打 tag，再 `gh release create --verify-tag`（#49），不讓 GitHub 自己建 tag；照那個範例做的版本不需要補。
 
