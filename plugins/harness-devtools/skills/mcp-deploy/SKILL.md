@@ -564,7 +564,7 @@ echo "→ Step 3: release commit 已推到 $REMOTE 的 ${UPSTREAM_BRANCH}；Step
 - 樹裡沒有版本、版本是 build 時才算出來的 repo，就直接用 `{version}`。
 - 打完確認 tag 在 **release 要建的那個 GitHub repo** 上，並且名稱就是 `v{version}`。
 - **只在 remote 的預設 branch 上發版**：看的是目前 branch 追蹤的 upstream branch，不是本機 branch 名。feature branch 上打的 `v{version}` 會指向還沒合併的 commit，而且 tag 不會移動（#42 verify 第 2 輪）。
-- **HEAD 要在 remote 上預設 branch 的歷史裡**（#54，2026-11-10 決定「HEAD 在 remote 歷史裡就照打」）：區塊先以 `ls-remote` 問那個 branch 指向哪個 commit，再把那一個 ref 抓進暫存的 `refs/harness-deploy/live`（不抓 tag、不寫 FETCH_HEAD、不動 remote-tracking ref，用完就刪），確認 HEAD 就是抓到的 commit、或是它的祖先。抓到的與 `ls-remote` 讀到的不同時（remote 在檢查途中動了）停下，重跑這一步即可。release commit 之後有人推了 commit 時照打在 HEAD，並印一行說明之後還有幾個 commit；HEAD 不在那個歷史裡（release commit 沒推上去，或 remote 被改寫）時停下。這時不要 pull 之後重跑：這一步打在 HEAD，pull 之後 HEAD 是別人的 commit。
+- **HEAD 要在 remote 上預設 branch 的歷史裡**（#54，2026-11-10 決定「HEAD 在 remote 歷史裡就照打」）：區塊先以 `ls-remote` 問那個 branch 指向哪個 commit，再把那一個 ref 抓進暫存的 `refs/harness-deploy/live`（不抓 tag、不寫 FETCH_HEAD、不動 remote-tracking ref，用完就刪；用到的 fetch 選項要 git 2.29 以上，更舊的 git 停在這一步），確認 HEAD 就是抓到的 commit、或是它的祖先。抓到的與 `ls-remote` 讀到的不同時（remote 在檢查途中動了）停下，重跑這一步即可。release commit 之後有人推了 commit 時照打在 HEAD，並印一行說明之後還有幾個 commit；HEAD 不在那個歷史裡（release commit 沒推上去，或 remote 被改寫）時停下。這時不要 pull 之後重跑：這一步打在 HEAD，pull 之後 HEAD 是別人的 commit。
 - owner/repo 從 upstream remote 的網址推出，只認 `github.com` 的網址；ssh host alias、GitHub Enterprise 會停下（不印網址，網址可能帶憑證）。
 - 區塊會向 GitHub 問這個 repo 現在的正式名稱（`gh api repos/<owner>/<repo> --jq .full_name`），讀不到就停下，這一步不打 tag（#53）。repo 在同一個 owner 底下改過名、remote 的網址還是舊名稱時，後面的 API 與上傳都用正式名稱，並提醒用 `git remote set-url` 更新網址。正式名稱的 owner 與網址推出的不同時（repo 轉移到別的 owner；不分大小寫比較），區塊停下：照這樣做 release 會建在新的 owner 底下。訊息列出兩個名稱（不印網址），請使用者確認那就是要發版的 repo，用 `git remote set-url` 改網址後再重跑（2026-11-16 決定）。只差大小寫不算改名，也不算轉移。這兩項檢查在 Step 3 推送之前先做一次，所以 `gh` 沒登入、連不上或 repo 已經轉移時，release commit 不會先推出去；Step 4 的兩個方法也各自再查一次。這個查詢只處理 GitHub 還在轉址的舊名稱：舊名稱已經被另一個 repo 取用時，GitHub 不再轉址，查到的是那個 repo 自己的名稱，區塊分不出來（`git push` 也一樣會推到那個 repo）。
 
@@ -599,7 +599,7 @@ case "${#LIVE}" in 40|64) ;; *) LIVE= ;; esac
 FETCHED=$(git rev-parse -q --verify "$TMPREF^0" 2>/dev/null)
 git update-ref -d "$TMPREF" 2>/dev/null
 [ -n "$LIVE" ] && [ -n "$FETCHED" ] \
-  || { echo "✗ Step 3a: 讀不到 $REMOTE 上的 ${UPSTREAM_BRANCH}（連線或權限的問題，或 remote 回的不是 commit 編號）— 停止，這一步沒有打 tag，不建 release；連得上之後重跑這一步"; exit 1; }
+  || { echo "✗ Step 3a: 讀不到 $REMOTE 上的 ${UPSTREAM_BRANCH}（連線或權限的問題、remote 回的不是 commit 編號，或 git 比 2.29 舊：這一步的 fetch 選項要 git 2.29 以上，git --version 看版本）— 停止，這一步沒有打 tag，不建 release；修好之後重跑這一步"; exit 1; }
 [ "$FETCHED" = "$LIVE" ] \
   || { echo "✗ Step 3a: $REMOTE 上的 ${UPSTREAM_BRANCH} 在檢查途中動了（先讀到 ${LIVE}，抓到的是 ${FETCHED}）— 停止，這一步沒有打 tag，不建 release；重跑這一步"; exit 1; }
 if ! git merge-base --is-ancestor HEAD "$FETCHED" 2>/dev/null; then

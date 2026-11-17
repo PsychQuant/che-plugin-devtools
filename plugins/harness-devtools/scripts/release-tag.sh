@@ -127,17 +127,23 @@
 #                                                        a named constant or move it out of
 #                                                        Server.swift. White space before the
 #                                                        colon is allowed (`version : "1.0.0"`,
-#                                                        #54). Not read, so not a source: a value
-#                                                        written as a multi-line string, and the
-#                                                        label in backticks (`version`)
+#                                                        #54). Unreadable (21), not skipped: a
+#                                                        value written as a multi-line string,
+#                                                        whatever its text, and the label in
+#                                                        backticks (`version`) before a string
+#                                                        that starts like a version
 #   A JSON source (1, 5, 7) without a "version" field is not a source. The Swift
 #   sources are read with comments removed (block comments nest) and with strings
 #   recognised the way Swift reads them, raw strings and escapes included: text
 #   inside a string is never a declaration, the code of an interpolation \( … ) is
 #   code, and the text of a regex literal (#/…/#) is not. A multi-line string, raw
 #   string, regex literal or interpolation that is never closed makes the file
-#   unreadable. A bare /…/ can be a regex literal or division; when the file reads
-#   differently the two ways, it is unreadable too (#54).
+#   unreadable. A bare /…/ can be a regex literal or division, and the helper does not
+#   decide which from what stands before it: every / with the shape of one is read both
+#   ways, in every combination, and when the readings do not all find the same
+#   declarations the file is unreadable too - as is a file that would take more than 256
+#   readings. Ordinary division (a/b/c, f(a/2) + g(b/2)) reads the same both ways and
+#   costs one reading (#54).
 #
 #   pyproject.toml (2, 3, 4) needs a TOML parser (#48). The helper runs under
 #   python3 when it has tomllib (python 3.11+; /usr/bin/python3 on macOS is 3.9),
@@ -451,7 +457,9 @@ SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?")   # used with f
 # string literal — no interpolation or escapes inside, nothing after it but the end of
 # the line, `;` or `}`, and no continuation (`+`, `.method`, `?`, …) on the next line
 # (#42 verify R3: `"1.0.0" + "-beta"` once read as 1.0.0). Comments are removed first.
-SWIFT_DECL = re.compile(r'\bstatic\s+(?:let|var)\s+(?:version|current)\b')
+# A declaration with the name in backticks (static let `version`) counts and is never read,
+# so it stops the run instead of being skipped (#54 verify R2).
+SWIFT_DECL = re.compile(r'\bstatic\s+(?:let|var)\s+(?:(?:version|current)\b|`(?:version|current)`)')
 SWIFT_VALUE = re.compile(r'\bstatic\s+(?:let|var)\s+(?:version|current)\s*(?::\s*String\s*)?=\s*"([^"\\\n]*)"'
                          r'(?=[ \t]*(?:;|\}|\n|$))(?![ \t]*\n\s*[-+.?\[(&|*%<>=!/])')
 
@@ -471,30 +479,48 @@ class SwiftUnreadable(Exception):
     pass
 
 def swift_bare_regex_end(text, i):
-    # A `/` that can open a bare regex literal (/…/: Swift 6, or Swift 5 with bare-slash
-    # regex literals): not // or /*; at the start of the file or right after white space
-    # or one of ( [ { , ; : - after anything else (a/b, `a`/b, a!/b, x)/2, "q"/"r") Swift
-    # reads it as division, and after an operator character it is part of that operator
-    # (r=/x/ does not parse; checked with swiftc 6.4 -swift-version 6); no white space
-    # right after it; and an unescaped `/` later on the same line. Returns the index of
-    # that `/`, or -1. Whether such a `/` does open one is not decided here: swift_read
-    # reads the file both ways (#54).
+    # Where a bare regex literal (/…/: Swift 6, or Swift 5 with bare-slash regex literals)
+    # opening with the `/` at i would end - the index of its closing / - or -1 when Swift
+    # never reads one there. Only the shape decides, never what stands before the `/`: after
+    # a keyword (return/"/), a prefix operator (!/"/) or white space Swift reads a regex
+    # literal, after a name it reads division, and a list of such places was wrong three
+    # times (#54 verify R1-R3). -1 is given for these four, and nothing else (each checked
+    # with swiftc 6.4 -swift-version 6 -parse, after a keyword too):
+    #   - // and /* (comments), and white space or the end of the line right after the `/`
+    #   - no unescaped / later on the same line. The literal ends at the FIRST one, inside
+    #     a [ ] class too (/[/]/ does not parse)
+    #   - white space right before that closing / (unless escaped: /a\ /)
+    #   - a / or * right after that closing / (a comment starts there: /b//x and /b/*c*/
+    #     are the operator / before b and a comment, or do not parse)
+    # An unescaped ) without its ( does not rule a literal out: Swift reads return/")(/ as
+    # one. (Inside a string interpolation it does - see swift_lex.)
     n = len(text)
     if i + 1 >= n or text[i + 1] in "/* \t\r\n":
         return -1
-    if i > 0 and text[i - 1] not in " \t\r\n([{,;:":
-        return -1
-    j = i + 1
+    j, escaped_to = i + 1, -1
     while j < n and text[j] not in "\r\n":
         if text[j] == "\\" and j + 1 < n and text[j + 1] not in "\r\n":
-            j += 2
+            j += 2; escaped_to = j
         elif text[j] == "/":
+            if (text[j - 1] in " \t" and escaped_to != j) or text[j + 1:j + 2] in ("/", "*"):
+                return -1
             return j
         else:
             j += 1
     return -1
 
-def swift_lex(text, slash_regex, seen):
+SWIFT_DECL_WORD = re.compile(r"version|current")
+
+def swift_bare_regex_inert(text, i, end):
+    # Whether reading the /…/ from i to end as division or as a regex literal comes to the
+    # same for this lexer, so that it needs no second reading: between the two / there is
+    # nothing the lexer acts on (no quote, #, backslash or /; parentheses count the same
+    # either way, see swift_lex) and it does not hold the name of a declaration. Such a
+    # `/` is read as division, which leaves the closing / free to open a literal itself.
+    span = text[i + 1:end]
+    return not (any(c in span for c in '"#\\/') or SWIFT_DECL_WORD.search(span))
+
+def swift_lex(text, choose):
     # Returns (code, mask) for Swift source, or raises SwiftUnreadable.
     # code: the source with // and /* */ comments removed (block comments nest, #42
     #   verify R6). One-line strings, raw ones included, are kept as written, so a
@@ -512,8 +538,11 @@ def swift_lex(text, slash_regex, seen):
     # In both, the code of an interpolation \( … ) (\#( … ) in a #"…"# string) is code:
     #   it is read up to the ) that closes it, strings inside it included (#54: a quote
     #   inside one once ended the string early and hid the declaration after it), and the
-    #   text of a regex literal is blanked: #/…/# always, a bare /…/ when slash_regex is
-    #   true (seen["slash"] records that the file has a `/` that can open one).
+    #   text of a regex literal is blanked: #/…/# always; a bare /…/ when choose(i, end)
+    #   says so for the `/` at i that could open one ending at end (swift_bare_regex_end) -
+    #   swift_read asks for every combination. In an interpolation Swift finds the ) that
+    #   closes it before it reads the code inside (by counting parentheses; swiftc 6.4), so
+    #   there a literal cannot run past that ), and the parentheses in a literal count.
     # SwiftUnreadable: a multi-line string, raw string, regex literal or interpolation that
     #   is never closed - the rest of the file cannot be told apart from text, so the file
     #   is unreadable rather than guessed at. A plain one-line string that is not closed
@@ -525,6 +554,17 @@ def swift_lex(text, slash_regex, seen):
 
     def blank(s):
         return re.sub(r"[^\n]", " ", s)
+
+    def regex_end(i, depth):
+        # swift_bare_regex_end, and -1 too when the literal would run past the ) that closes
+        # the interpolation it is in (depth: the parentheses open in it; None outside one)
+        end = swift_bare_regex_end(text, i)
+        if end >= 0 and depth is not None:
+            for c in text[i + 1:end]:
+                depth += (c == "(") - (c == ")")
+                if depth < 0:
+                    return -1
+        return end
 
     def lex_code(i, interpolation, one_line):
         # code from i; in an interpolation, up to the ) that closes it (its index is
@@ -555,10 +595,11 @@ def swift_lex(text, slash_regex, seen):
                     else:
                         j += 1
                 emit(" "); i = j
-            elif c == "/" and swift_bare_regex_end(text, i) >= 0:
-                seen["slash"] = True
-                if slash_regex:
-                    end = swift_bare_regex_end(text, i)
+            elif c == "/" and regex_end(i, depth if interpolation else None) >= 0:
+                end = swift_bare_regex_end(text, i)
+                if choose(i, end):
+                    if interpolation:
+                        depth += text.count("(", i, end) - text.count(")", i, end)
                     emit("/" + blank(text[i + 1:end]) + "/"); i = end + 1
                 else:
                     emit("/"); i += 1
@@ -636,27 +677,53 @@ def swift_lex(text, slash_regex, seen):
     lex_code(0, False, False)
     return "".join(code), "".join(mask)
 
+SWIFT_MAX_READINGS = 256
+
 def swift_read(text, find):
     # ("ok", find(code, mask)) for a Swift file, or ("unreadable", why). A `/` that can open
-    # a bare regex literal may also be division, and this lexer does not decide which: the
-    # file is then read both ways, and when the two readings find different declarations it
-    # is unreadable - never read one way at a guess (#54: in `let r = /"/; let s =
+    # a bare regex literal (swift_bare_regex_end) may also be division, and this lexer does
+    # not decide which: each such `/` is read both ways, in every combination with the
+    # others, and when the readings do not all find the same declarations the file is
+    # unreadable - never read one way at a guess (#54: in `let r = /"/; let s =
     # Server(name: "s", version: "1.0.0")` the quote in the regex once hid the version).
-    readings = []
-    for slash_regex in (False, True):
-        seen = {"slash": False}
+    # Whole-file readings (all as division, all as literals, by what stands before the `/`)
+    # are not enough: in `a/b; … return/"/` the first / is division and the second opens the
+    # literal, and no single rule for the whole file reads it so (#54 verify R1-R3). A `/`
+    # for which the two readings come to the same (swift_bare_regex_inert: a/b/c, w/2 + h/2)
+    # is not counted, so ordinary division costs one reading. More than SWIFT_MAX_READINGS
+    # readings: unreadable as well.
+    def reading(decided):
+        # one reading: the first len(decided) counted `/` as decided says (True: a regex
+        # literal), the later ones as division; also returns how many it counted
+        met = [0]
+        def choose(i, end):
+            if swift_bare_regex_inert(text, i, end):
+                return False
+            k = met[0]
+            met[0] += 1
+            return decided[k] if k < len(decided) else False
         try:
-            code, mask = swift_lex(text, slash_regex, seen)
-            readings.append(("ok", find(code, mask)))
+            code, mask = swift_lex(text, choose)
+            got = ("ok", find(code, mask))
         except SwiftUnreadable as e:
-            readings.append(("unreadable", str(e)))
+            got = ("unreadable", str(e))
         except RecursionError:
-            readings.append(("unreadable", "its strings and interpolations nest too deeply"))
-        if not slash_regex and not seen["slash"]:
-            return readings[0]
-    if readings[0] == readings[1]:
-        return readings[0]
-    return ("unreadable", "a / in it can be division or open a regex literal, and the two readings find different versions")
+            got = ("unreadable", "its strings and interpolations nest too deeply")
+        return got, met[0]
+
+    first, met = reading(())
+    todo = [(False,) * k + (True,) for k in range(met)]
+    count = 1
+    while todo:
+        decided = todo.pop()
+        count += 1
+        if count > SWIFT_MAX_READINGS:
+            return ("unreadable", "it has too many / that can be division or open a regex literal to read every combination")
+        got, met = reading(decided)
+        if got != first:
+            return ("unreadable", "a / in it can be division or open a regex literal, and the readings find different versions")
+        todo.extend(decided + (False,) * k + (True,) for k in range(met - len(decided)))
+    return first
 
 def swift_version_decls(code, mask):
     # Version.swift: (number of declarations, the plain string values among them); a
@@ -816,15 +883,21 @@ def cannot_declare_version(pp_text):
 # patterns are applied at one position: SERVER_START finds a `version:` argument in the
 # mask (so never inside a string), the other two read the code at that same position.
 # `#*` lets a raw-string argument count as a version that is not a plain literal,
-# rather than not count at all.
-SERVER_START = re.compile(r'\bversion\s*:\s*#*"')
-SERVER_ANY = re.compile(r'\bversion\s*:\s*#*"(?=[0-9]+\.[0-9]+)')
+# rather than not count at all. Two more forms count that way, so they stop the run
+# instead of being silently skipped (#54 verify R2): the label in backticks
+# (`version`: "1.0.0"), which SERVER_VALUE does not read, and a multi-line string value
+# (version: """…"""), whose text the code does not keep - whatever that text is.
+SERVER_LABEL = r'(?:\bversion|`version`)\s*:\s*'
+SERVER_START = re.compile(SERVER_LABEL + r'#*"')
+SERVER_ANY = re.compile(SERVER_LABEL + r'#*"(?=[0-9]+\.[0-9]+)')
+SERVER_MULTI = re.compile(SERVER_LABEL + r'#*"""')
 SERVER_VALUE = re.compile(r'\bversion\s*:\s*"([^"\\\n]*)"(?=\s*[,)\]}])')
 
 def server_version_args(code, mask):
-    # Server.swift: (number of `version:` arguments whose string starts like a version, the
-    # plain whole values among them)
-    starts = [m.start() for m in SERVER_START.finditer(mask) if SERVER_ANY.match(code, m.start())]
+    # Server.swift: (number of `version:` arguments whose string starts like a version or is
+    # a multi-line string, the plain whole values among them)
+    starts = [m.start() for m in SERVER_START.finditer(mask)
+              if SERVER_ANY.match(code, m.start()) or SERVER_MULTI.match(mask, m.start())]
     return len(starts), tuple(m.group(1) for m in (SERVER_VALUE.match(code, at) for at in starts) if m)
 
 def oneline(s):

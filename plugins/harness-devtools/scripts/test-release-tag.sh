@@ -768,6 +768,23 @@ run "$W" --dir . --commit HEAD --name-style v --dry-run
 check "version: \\\"9.9.9\\\" with escaped quotes inside a string is not a version → exit 0" "$RC" 0
 has "…version 1.0.0" "version=1.0.0"
 
+echo "== Server.swift: forms the helper cannot read stop the run (#54 verify R2)"
+new_repo; put "$W" Sources/S/Server.swift 'let s = Server(name: "s", version: """
+1.0.0
+""")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "version: with a multi-line string value → exit 21, not skipped" "$RC" 21
+has "…not a plain string literal" "version: is not a plain string literal"
+new_repo; put "$W" Sources/S/Server.swift 'let s = Server(name: "s", `version`: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "the label in backticks, \`version\`: \"1.0.0\" → exit 21, not skipped" "$RC" 21
+new_repo; put "$W" Sources/S/Server.swift 'let s = Server(name: "s", `version`: "dev")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "\`version\`: \"dev\" is not a version, as with the plain label → not a source, exit 0" "$RC" 0
+new_repo; put "$W" Sources/S/Version.swift 'enum V { static let `version` = "1.0.0" }'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "Version.swift: static let \`version\` (the name in backticks) → exit 21, not skipped" "$RC" 21
+
 echo "== a string that is never closed makes the file unreadable (#54)"
 for OPEN in 'let doc = """
 static let version = "0.9.0"' 'let doc = #"""
@@ -840,6 +857,92 @@ new_repo; put "$W" Sources/S/Server.swift 'let m = "\(used/1024)/\(total/1024)"
 let s = Server(name: "s", version: "1.0.0")'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
 check "division inside interpolations is not a regex literal → the version is read, exit 20" "$RC" 20
+# Swift finds the ) that closes an interpolation before it reads the code inside, so a / in one cannot
+# open a literal that runs past it (here: up to the / in "x/y", across the version)
+new_repo; put "$W" Sources/S/Server.swift 'let m = "\(a/2)"; let s = Server(name: "s", version: "1.0.0"); let u = "x/y"'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "a / in an interpolation and a / in a later string, the version between them → read, exit 20" "$RC" 20
+# #54 verify R2: right after a keyword that an expression follows (return, try, in, await, catch, …)
+# Swift 6 reads / as the start of a regex literal (swiftc -swift-version 6 -parse accepts each line).
+# Each once hid the version after it, and --expect stood in
+for PRE in 'func f() -> Regex<Substring> { return/"/ }' 'let r = try/"/' 'let r = try?/"/' \
+           'let c = { (x: Int) in/"/ }' 'func g() async -> Regex<Substring> { return await/"/ }' \
+           'func f() -> Regex<Substring> { return/a"b/ }' 'do { } catch/"/ { }' \
+           'let x = a/b; func f() -> Regex<Substring> { return/"/ }'; do
+  new_repo; put "$W" Sources/S/Server.swift "$PRE; let s = Server(name: \"s\", version: \"1.0.0\")"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+  check "$PRE before the version → the readings differ, exit 21" "$RC" 21
+  hasnt "…--expect does not stand in ($PRE)" "using --expect"
+done
+# no list of the places where a regex literal can start: any / that has the shape of one is read both
+# ways. Each of these once passed with --expect in place of the version (swiftc 6.4 -swift-version 6
+# -parse accepts every line): a keyword the helper once did not list, with a division before it on the
+# line (repeat); a prefix operator before the literal; a [ before the closing / (the literal ends at the
+# first /, inside [ ] too); an unpaired ) in a literal right after a keyword
+for PRE in 'let q = a/b; let v = repeat/"/' 'let r = !/"/' 'let r = -/"/' 'let r = ^^/"/' 'let r = f(!/"/)' \
+           'let r = x ?? !/"/' 'let r = try !/"/' 'let r = /(?#[)"/' 'let r = /\Q["\E/' 'let r = /[)"]/' \
+           'func f() -> Regex<Substring> { return/")(/ }' 'let r = try/")(/' 'do { } catch/")(/ { }'; do
+  new_repo; put "$W" Sources/S/Server.swift "$PRE; let s = Server(name: \"s\", version: \"1.0.0\")"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+  check "$PRE before the version → exit 21" "$RC" 21
+  hasnt "…--expect does not stand in ($PRE)" "using --expect"
+done
+# the / that names an operator (func /(…), prefix operator /) pairs with the literal's opening / when it
+# is read as one; read as division it leaves the literal to be read both ways
+for PRE in 'func /(a: Int, b: String) -> Regex<Substring> {/"/}' 'prefix operator /;let r = f(/"/)'; do
+  new_repo; put "$W" Sources/S/Server.swift "$PRE; let s = Server(name: \"s\", version: \"1.0.0\")"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+  check "$PRE before the version → exit 21, not --expect" "$RC" 21
+done
+# not a literal, so read once (swiftc 6.4): white space before the closing /, and a comment that starts
+# right after it
+new_repo; put "$W" Sources/S/Server.swift 'let q = n/"x / y".count; let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "n/\"x / y\".count: the / in the string has a space before it, no literal → read, exit 20" "$RC" 20
+new_repo; put "$W" Sources/S/Server.swift 'let q = a/b// before 1.0 this said Server(name: "s", version: "0.9.0")
+let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a/b//comment: a comment starts after the second /, no literal → the version is read, exit 0" "$RC" 0
+has "…version 1.0.0 from Server.swift" "sources=Sources/S/Server.swift"
+new_repo; put "$W" Sources/S/Server.swift 'let q = a/"b".count// before 1.0 this said Server(name: "s", version: "0.9.0")
+let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
+check "a/\"b\".count//comment: the comment is not read as code after a literal → exit 0" "$RC" 0
+# the price: a declaration between two unspaced divisions on one line is not read (as one literal, the
+# two / would hide it)
+new_repo; put "$W" Sources/S/Server.swift 'let x = a/b; let s = Server(name: "s", version: "1.0.0"); let y = c/d'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "a version: between a/b and c/d on one line → exit 21" "$RC" 21
+has "…and the message says why" "can be division or open a regex literal"
+# ordinary division does not multiply the readings: forty lines of it are read once
+new_repo
+{ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do
+    echo "let v$i = f(a/2) + g(b/2); let w$i = (p - q)/2 + r/s/t"; done
+  echo 'let m = "\(f(a/2, g(b/2))) \(used/1024)/\(total/1024)"'
+  echo 'let s = Server(name: "s", version: "1.0.0")'; } > "$T/many.swift"
+put "$W" Sources/S/Server.swift "$(cat "$T/many.swift")"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "forty lines of unspaced division, in interpolations too → the version is read, exit 20" "$RC" 20
+# a / whose two readings differ for the lexer doubles the readings; past 256 the file is not read
+for LINES in 8 9; do
+  new_repo
+  { i=0; while [ "$i" -lt "$LINES" ]; do i=$((i+1)); echo "let u$i = base/\"v$i\"/name"; done
+    echo 'let s = Server(name: "s", version: "1.0.0")'; } > "$T/paths.swift"
+  put "$W" Sources/S/Server.swift "$(cat "$T/paths.swift")"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+  if [ "$LINES" = 8 ]; then check "8 lines of base/\"v\"/name: 256 readings, all the same → read, exit 20" "$RC" 20
+  else check "9 such lines: more than 256 readings → exit 21" "$RC" 21; has "…and the message says why" "too many /"; fi
+done
+# …and division reads normally: every reading finds the same version
+for DIV in 'let pct = used/total' 'let q = a/b/c' 'let pct = used/total;'; do
+  new_repo; put "$W" Sources/S/Server.swift "$DIV
+let s = Server(name: \"s\", version: \"1.0.0\")"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+  check "$DIV and the version → read, exit 20" "$RC" 20
+done
+new_repo; put "$W" Sources/S/Server.swift 'let pct = used/total; let s = Server(name: "s", version: "1.0.0")'; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "used/total on the version's own line → read, exit 20" "$RC" 20
 # no false stops: a bare regex literal without quotes, and division, read the same both ways
 new_repo; put "$W" Sources/S/Version.swift 'let r = /\d+\.\d+/
 let x = a/b/c

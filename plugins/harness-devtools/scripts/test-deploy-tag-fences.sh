@@ -95,13 +95,17 @@ chmod +x "$T/bin/gh" "$T/bin/gh-full-name"
 # git stand-in for the race tests of #54 (put first on PATH only there): just before a `git fetch`, move the
 # bare remote RACE_REMOTE's main to RACE_TO (someone force-pushed); right after it, write RACE_FETCH_HEAD
 # into FETCH_HEAD (a background fetch); with RACE_LSREMOTE set, `git ls-remote` of a refs/heads/ ref
-# answers with that text. Everything else goes to the real git
+# answers with that text; with RACE_OLDGIT set, a fetch with --no-write-fetch-head fails the way git
+# older than 2.29 does. Everything else goes to the real git
 REAL_GIT=$(command -v git)
 mkdir -p "$T/race"
 cat > "$T/race/git" <<'SH'
 #!/bin/sh
 case "$1" in
-  fetch) [ -z "${RACE_TO:-}" ] || "$REAL_GIT" --git-dir="$RACE_REMOTE" update-ref refs/heads/main "$RACE_TO"
+  fetch) if [ -n "${RACE_OLDGIT:-}" ]; then
+           case " $* " in *" --no-write-fetch-head "*) echo "error: unknown option \`no-write-fetch-head'" >&2; exit 129 ;; esac
+         fi
+         [ -z "${RACE_TO:-}" ] || "$REAL_GIT" --git-dir="$RACE_REMOTE" update-ref refs/heads/main "$RACE_TO"
          if [ -n "${RACE_FETCH_HEAD:-}" ]; then
            "$REAL_GIT" "$@"; rc=$?
            printf '%s\t\tbranch '"'"'other'"'"' of elsewhere\n' "$RACE_FETCH_HEAD" > "$("$REAL_GIT" rev-parse --git-dir)/FETCH_HEAD"
@@ -412,12 +416,14 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
   git -C "$W" checkout -q -b side; put "$W" side.txt s; ci "$W"; git -C "$W" push -q origin side 2>/dev/null; git -C "$W" checkout -q main
   git --git-dir="$T/$S-stale.git" update-ref refs/heads/main "$(git -C "$W" rev-parse side)"
   fence "$S" "Step $STEP: VERSION" "$T/f7.sh" "VERSION='{version}' ==> VERSION='1.0.0'"
+  printf 'sentinel\tnot-for-merge\n' > "$(git -C "$W" rev-parse --absolute-git-dir)/FETCH_HEAD"
   for sh in $SHELLS; do
     run "$sh" "$W" "$T/f7.sh"
     has "the remote's main is ahead of HEAD, the local @{u} still says HEAD → says one commit follows ($sh)" "$OUT" "在 release commit 之後還有 1 個 commit"
     has "…and hands over to the release step ($sh)" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
   done
   same "…v1.0.0 is on HEAD, not on the remote's tip" "$(rtag "$T/$S-stale.git" v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
+  same "…and a FETCH_HEAD that was there is left as it was (#54 verify R2)" "$(cat "$(git -C "$W" rev-parse --absolute-git-dir)/FETCH_HEAD")" "$(printf 'sentinel\tnot-for-merge')"
   # #54: the commits after the release commit come from another clone, so their objects are not here
   # until the block fetches them; and after a fetch the local @{u} is ahead of HEAD (verify R8 of #42)
   mk "$S-ahead"; W="$T/$S-ahead"
@@ -433,6 +439,7 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
   same "…v1.0.0 is on HEAD, the release commit" "$(rtag "$T/$S-ahead.git" v1.0.0)" "$(git -C "$W" rev-parse HEAD)"
   same "…the block's fetch does not move the remote-tracking ref (#54 verify R1)" "$(git -C "$W" rev-parse refs/remotes/origin/main)" "$(git -C "$W" rev-parse HEAD)"
   same "…and leaves no temporary ref behind" "$(git -C "$W" for-each-ref refs/harness-deploy)" ""
+  same "…and writes no FETCH_HEAD (#54 verify R2)" "$(test -e "$(git -C "$W" rev-parse --absolute-git-dir)/FETCH_HEAD" && echo written)" ""
   git -C "$W" fetch -q origin
   run bash "$W" "$T/f7.sh"
   has "after a fetch (the local @{u} ahead of HEAD) → still hands over to the release step" "$OUT" "→ Step $STEP: v1.0.0 已在 o/r"
@@ -504,7 +511,13 @@ for SK in mcp-deploy:3a cli-deploy:1.5; do
     has "ls-remote answers ${RACE_LSREMOTE} (not a commit id) → stops" "$OUT" "remote 回的不是 commit 編號"
   done
   same "…and no tag pushed" "$(rtag "$T/$S-race.git" v1.0.0)" ""
-  unset RACE_LSREMOTE RACE_REMOTE
+  unset RACE_LSREMOTE
+  # …and a git older than 2.29, which does not know --no-write-fetch-head, stops it with a message that says so
+  export RACE_OLDGIT=1
+  OLDPATH=$PATH; PATH="$T/race:$PATH"; run bash "$W" "$T/f7.sh"; PATH=$OLDPATH
+  has "a git older than 2.29 → stops, and the message names the minimum version (#54 verify R2)" "$OUT" "git 比 2.29 舊"
+  same "…and no tag pushed" "$(rtag "$T/$S-race.git" v1.0.0)" ""
+  unset RACE_OLDGIT RACE_REMOTE
 
   mk "$S-swift"; W="$T/$S-swift"
   put "$W" Sources/S/Version.swift 'public enum V { public static let version: String = "1.0.0" }'; ci "$W"; push "$W"
