@@ -908,6 +908,22 @@ new_repo; put "$W" Sources/S/Server.swift 'let q = a/"b".count// before 1.0 this
 let s = Server(name: "s", version: "1.0.0")'; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 1.0.0
 check "a/\"b\".count//comment: the comment is not read as code after a literal → exit 0" "$RC" 0
+# a space before the closing / does not rule a literal out when a backslash stands before the space: Swift
+# looks only at that one character (swiftc 6.4: /a\ /, /a\\ /, /a\\\ / are all literals)
+for PRE in 'let r = /"\ /' 'let r = /"\\ /' 'let r = /"\\\ /'; do
+  new_repo; put "$W" Sources/S/Server.swift "$PRE; let s = Server(name: \"s\", version: \"1.0.0\")"; commit "$W"
+  run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+  check "$PRE before the version → exit 21" "$RC" 21
+  hasnt "…--expect does not stand in ($PRE)" "using --expect"
+done
+# a quote between two unspaced divisions that closes there reads the same both ways: ten such lines are
+# read once each, not 2^10 times
+new_repo
+{ for k in 1 2 3 4 5 6 7 8 9 10; do echo "let p$k = x/2 > 0 ? \"a\" : y/3; let q$k = String(format: \"%d\", n/2) + \"k\" + String(m/4)"; done
+  echo 'let s = Server(name: "s", version: "1.0.0")'; } > "$T/quotes.swift"
+put "$W" Sources/S/Server.swift "$(cat "$T/quotes.swift")"; commit "$W"
+run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
+check "ten lines of x/2 > 0 ? \"a\" : y/3 → the version is read, exit 20" "$RC" 20
 # the price: a declaration between two unspaced divisions on one line is not read (as one literal, the
 # two / would hide it)
 new_repo; put "$W" Sources/S/Server.swift 'let x = a/b; let s = Server(name: "s", version: "1.0.0"); let y = c/d'; commit "$W"
@@ -923,14 +939,15 @@ new_repo
 put "$W" Sources/S/Server.swift "$(cat "$T/many.swift")"; commit "$W"
 run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
 check "forty lines of unspaced division, in interpolations too → the version is read, exit 20" "$RC" 20
-# a / whose two readings differ for the lexer doubles the readings; past 256 the file is not read
+# a / whose two readings differ for the lexer (an escape in the string) doubles the readings; past 256 the
+# file is not read
 for LINES in 8 9; do
   new_repo
-  { i=0; while [ "$i" -lt "$LINES" ]; do i=$((i+1)); echo "let u$i = base/\"v$i\"/name"; done
+  { i=0; while [ "$i" -lt "$LINES" ]; do i=$((i+1)); echo "let u$i = base/\"v$i\\t\"/name"; done
     echo 'let s = Server(name: "s", version: "1.0.0")'; } > "$T/paths.swift"
   put "$W" Sources/S/Server.swift "$(cat "$T/paths.swift")"; commit "$W"
   run "$W" --dir . --commit HEAD --name-style v --dry-run --expect 2.0.0
-  if [ "$LINES" = 8 ]; then check "8 lines of base/\"v\"/name: 256 readings, all the same → read, exit 20" "$RC" 20
+  if [ "$LINES" = 8 ]; then check "8 lines of base/\"v\\t\"/name: 256 readings, all the same → read, exit 20" "$RC" 20
   else check "9 such lines: more than 256 readings → exit 21" "$RC" 21; has "…and the message says why" "too many /"; fi
 done
 # …and division reads normally: every reading finds the same version

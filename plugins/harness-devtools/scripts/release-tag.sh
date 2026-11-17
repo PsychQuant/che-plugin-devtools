@@ -489,7 +489,9 @@ def swift_bare_regex_end(text, i):
     #   - // and /* (comments), and white space or the end of the line right after the `/`
     #   - no unescaped / later on the same line. The literal ends at the FIRST one, inside
     #     a [ ] class too (/[/]/ does not parse)
-    #   - white space right before that closing / (unless escaped: /a\ /)
+    #   - a space right before that closing /, unless the character before the space is a
+    #     backslash - Swift looks only at that one character, it does not pair them: /a\ /
+    #     and /a\\ / are literals (#54 verify R3: pairing them once hid the version)
     #   - a / or * right after that closing / (a comment starts there: /b//x and /b/*c*/
     #     are the operator / before b and a comment, or do not parse)
     # An unescaped ) without its ( does not rule a literal out: Swift reads return/")(/ as
@@ -497,12 +499,12 @@ def swift_bare_regex_end(text, i):
     n = len(text)
     if i + 1 >= n or text[i + 1] in "/* \t\r\n":
         return -1
-    j, escaped_to = i + 1, -1
+    j = i + 1
     while j < n and text[j] not in "\r\n":
         if text[j] == "\\" and j + 1 < n and text[j + 1] not in "\r\n":
-            j += 2; escaped_to = j
+            j += 2
         elif text[j] == "/":
-            if (text[j - 1] in " \t" and escaped_to != j) or text[j + 1:j + 2] in ("/", "*"):
+            if (text[j - 1] in " \t" and text[j - 2] != "\\") or text[j + 1:j + 2] in ("/", "*"):
                 return -1
             return j
         else:
@@ -514,11 +516,16 @@ SWIFT_DECL_WORD = re.compile(r"version|current")
 def swift_bare_regex_inert(text, i, end):
     # Whether reading the /…/ from i to end as division or as a regex literal comes to the
     # same for this lexer, so that it needs no second reading: between the two / there is
-    # nothing the lexer acts on (no quote, #, backslash or /; parentheses count the same
-    # either way, see swift_lex) and it does not hold the name of a declaration. Such a
-    # `/` is read as division, which leaves the closing / free to open a literal itself.
+    # no #, backslash or /, its quotes pair up into plain one-line strings that close inside
+    # it (an even number, no """; with no backslash there is no escape or interpolation),
+    # parentheses count the same either way (see swift_lex), and it does not hold the name
+    # of a declaration. Such a `/` is read as division, which leaves the closing / free to
+    # open a literal itself (#54 verify R3: x/2 > 0 ? "a" : y/3 on nine lines once made the
+    # file unreadable through the cap on readings).
     span = text[i + 1:end]
-    return not (any(c in span for c in '"#\\/') or SWIFT_DECL_WORD.search(span))
+    if any(c in span for c in "#\\/") or SWIFT_DECL_WORD.search(span):
+        return False
+    return span.count('"') % 2 == 0 and '"""' not in span
 
 def swift_lex(text, choose):
     # Returns (code, mask) for Swift source, or raises SwiftUnreadable.
@@ -712,6 +719,8 @@ def swift_read(text, find):
         return got, met[0]
 
     first, met = reading(())
+    if met >= SWIFT_MAX_READINGS:
+        return ("unreadable", "it has too many / that can be division or open a regex literal to read every combination")
     todo = [(False,) * k + (True,) for k in range(met)]
     count = 1
     while todo:
