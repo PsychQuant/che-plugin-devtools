@@ -78,7 +78,7 @@ printf '%s' "$(printf 'a%.0s' $(seq 1 101))" > "$T/m"; reject "101 字元" model
 
 # 白名單那一次 tr 失敗（沒有輸出）時要拒絕，不能當成「什麼都不剩」（verify R7：拿掉 || printf FAIL 這條會失敗）
 # 真正的 tr 從環境變數傳給替身，不寫死路徑；並確認拒絕來自白名單那一支，不是 NUL 計數那一次先失敗
-REAL_TR=$(command -v tr); export REAL_TR
+REAL_TR=$(type -P tr); export REAL_TR   # type -P 只回可執行檔的路徑，不會回同名函式
 mkdir -p "$T/fakebin"; printf '%s\n' '#!/bin/bash' 'for a in "$@"; do [ "$a" = "A-Za-z0-9._:[]-" ] && exit 1; done' 'exec "$REAL_TR" "$@"' > "$T/fakebin/tr"; chmod +x "$T/fakebin/tr"
 printf '%s' 'gpt-6.2-sol' > "$T/m"; rc=0; ERR=$(PATH="$T/fakebin:$PATH" bash "$V" model "$T/m" 2>&1 >/dev/null) || rc=$?
 case "$ERR" in *"model ID 含不合法字元"*) [ "$rc" -eq 1 ] && ok "白名單的 tr 失敗時拒絕（不放行合法字元以外的東西）" || bad "白名單的 tr 失敗時結束碼不是 1" "rc=$rc";; *) bad "白名單的 tr 失敗時沒有在白名單那一支拒絕" "rc=$rc err=[$ERR]";; esac
