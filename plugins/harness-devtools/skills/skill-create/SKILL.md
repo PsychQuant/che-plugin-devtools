@@ -32,7 +32,7 @@ allowed-tools:
 **兩條紀律，都來自實際踩到的缺陷：**
 
 1. **每次 Bash 呼叫都是新的 shell，變數不會留到後面的步驟。** 每個步驟需要的值，都在該步驟自己的 Bash 呼叫裡重新取得。
-2. **不可信的文字（名字、路徑、使用者的描述）永遠不貼進 shell 原始碼。** 單引號會被名字裡的單引號提早結束，heredoc 會被內容裡的結束標記提早結束，兩者都在驗證之前就執行了。做法是：用 **Write 工具**把值寫進工作目錄的檔案（Write 的內容不會被 shell 解析），shell 只用 `cat` 讀檔再驗證。工作目錄的路徑由 `mktemp` 產生，並以 `printf %q` 輸出成已跳脫的 `WORK=...` 一行，後面每個步驟**逐字貼回那一行**，是唯一會被貼回指令的值。驗證名字與路徑的邏輯放在 `scripts/validate-skill-input.sh`（有測試），Step 2 驗名字、Step 3 驗目標；Step 5、6 以 `target-used` 模式再驗一次（建好之後目標已存在是預期的），所以後面步驟用到的值每次都是剛驗過的那一次讀取，不是信任前一步。
+2. **不可信的文字（名字、路徑、eval 集、model ID、使用者的描述）永遠不貼進 shell 原始碼。** 單引號會被名字裡的單引號提早結束，heredoc 會被內容裡的結束標記提早結束，兩者都在驗證之前就執行了。做法是：要進 shell 的值（名字、路徑、eval 集、model ID）用 **Write 工具**寫進工作目錄的檔案（Write 的內容不會被 shell 解析），shell 只讀檔再驗證；使用者的描述不進任何 shell 指令，只進 Step 4 的 `Skill()` args，見 Step 4。工作目錄的路徑由 `mktemp` 產生，並以 `printf %q` 輸出成已跳脫的 `WORK=...` 一行，後面每個步驟**逐字貼回那一行**，是唯一會被貼回指令的值。驗證名字與路徑的邏輯放在 `scripts/validate-skill-input.sh`（有測試），Step 2 驗名字、Step 3 驗目標、Step 5 驗 model ID（`model` 模式）；Step 5、6 以 `target-used` 模式再驗一次（建好之後目標已存在是預期的），所以後面步驟用到的值每次都是剛驗過的那一次讀取，不是信任前一步。
 
 ## Execution Steps
 

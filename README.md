@@ -40,9 +40,9 @@ claude plugin install doc-guardian@che-plugin-devtools
 bash    plugins/harness-devtools/scripts/test-resolve-marketplace.sh     # 139
 bash    plugins/harness-devtools/scripts/test-check-skill-references.sh  # 15
 bash    plugins/harness-devtools/scripts/test-check-skill-creator.sh     # 37（逾時與訊號的測試需要 perl）
-bash    plugins/harness-devtools/scripts/test-validate-skill-input.sh    # 61
-bash    plugins/harness-devtools/scripts/test-skill-create-snippets.sh   # 25（bash 下跑 SKILL.md 的區塊）
-bash    plugins/harness-devtools/scripts/test-skill-create-snippets.sh zsh  # 25（zsh 下跑同一批區塊）
+bash    plugins/harness-devtools/scripts/test-validate-skill-input.sh    # 64
+bash    plugins/harness-devtools/scripts/test-skill-create-snippets.sh   # 26（bash 下跑 SKILL.md 的區塊）
+bash    plugins/harness-devtools/scripts/test-skill-create-snippets.sh zsh  # 26（zsh 下跑同一批區塊）
 bash    plugins/harness-devtools/scripts/test-resolve-mcp-project.sh     # 31
 bash    plugins/harness-devtools/scripts/test-plugin-binary-meta.sh      # 214
 bash    plugins/harness-devtools/scripts/test-plugin-update-fences.sh    # 431（約 2 分鐘）

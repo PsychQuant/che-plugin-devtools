@@ -53,10 +53,10 @@ printf '%s' $'/tmp/x\nTARGET_EOF\ntouch '"$T"$'/CANARY2\n/plaud-to-srt' > "$WORK
 
 # Step 6：四種結果分開報。每一種都要有各自的 fixture 與各自的斷言，所以把分支對調會讓測試失敗（verify R5 變異測試）。
 # 而且每次只能印出一種結果：只比對預期字串的話，同時印出兩種互相矛盾的結果也會通過（verify R6）。
-one_result() { # $1 = 輸出；印出命中的結果種類數
-  local n=0 p
+one_result() { # $1 = 輸出；印出結果句出現的總次數（同一句印兩次算兩次）
+  local n=0 p c
   # 比對 Step 6 自己印的整句，不比對單字：check-skill-references.sh 的輸出本身就有「不存在」等字
-  for p in "不存在（Step 4 沒有建出 skill）" "目標不在 git repo 內" "引用檢查通過" "引用檢查跑完了，但發現失效引用" "引用檢查沒有跑成"; do case "$1" in *"$p"*) n=$((n+1));; esac; done
+  for p in "不存在（Step 4 沒有建出 skill）" "目標不在 git repo 內" "引用檢查通過" "引用檢查跑完了，但發現失效引用" "引用檢查沒有跑成"; do c=$(printf '%s\n' "$1" | grep -oF -- "$p" | wc -l | tr -d ' '); n=$((n+c)); done
   echo "$n"; }
 printf '%s' 'plaud-to-srt' > "$WORK/name"
 printf '%s' "$T/nonexistent/plaud-to-srt" > "$WORK/target"; fill "$B_STEP6"
@@ -72,8 +72,16 @@ OUT=$("$SH" "$T/filled.sh" 2>&1); case "$OUT" in *"引用檢查通過"*) ok "乾
 # 目標存在、在 repo 裡，但名字檔與目錄名不符：只有 Step 6 自己的 target-used 重驗擋得下，引用檢查不得被呼叫。
 # 變異測試：把那一行改回直接讀檔，這條就會失敗（verify R6：先前五個 fixture 的名字與路徑都合法，看不出差別）
 mkdir -p "$T/clean/plugins/p/skills/other-name"; printf '%s' "$T/clean/plugins/p/skills/other-name" > "$WORK/target"
-OUT=$("$SH" "$T/filled.sh" 2>&1); RC=$?
-case "$OUT" in *"目錄名必須等於"*) [ "$RC" -ne 0 ] && [ "$(one_result "$OUT")" = 0 ] && ok "名字與目錄名不符 → Step 6 重驗擋下，沒有跑引用檢查" || bad "重驗擋下了但仍跑了引用檢查或結束碼為 0" "rc=$RC $OUT";; *) bad "名字與目錄名不符卻沒被 Step 6 重驗擋下" "$OUT";; esac
+# 引用檢查換成替身：被呼叫就留下記號，用來直接證明它沒有被呼叫（verify R7）
+STUB="$T/stubroot"; mkdir -p "$STUB/scripts"; cp "$CLAUDE_PLUGIN_ROOT/scripts/validate-skill-input.sh" "$STUB/scripts/"
+# 替身的原始碼是固定字串，記號路徑從環境變數傳入，不把 $T 寫進原始碼
+printf '%s\n' '#!/bin/bash' 'touch "$CHECKER_MARK"' 'exit 0' > "$STUB/scripts/check-skill-references.sh"
+export CHECKER_MARK="$T/CHECKER_CALLED"
+OUT=$(CLAUDE_PLUGIN_ROOT="$STUB" "$SH" "$T/filled.sh" 2>&1); RC=$?
+case "$OUT" in *"目錄名必須等於"*) [ "$RC" -ne 0 ] && [ ! -e "$T/CHECKER_CALLED" ] && ok "名字與目錄名不符 → Step 6 重驗擋下，引用檢查沒有被呼叫" || bad "重驗擋下了但引用檢查仍被呼叫，或結束碼為 0" "rc=$RC $OUT";; *) bad "名字與目錄名不符卻沒被 Step 6 重驗擋下" "$OUT";; esac
+# 替身本身要能被呼叫到，否則上一條的「沒有被呼叫」不證明任何事
+printf '%s' "$T/clean/plugins/p/skills/plaud-to-srt" > "$WORK/target"; CLAUDE_PLUGIN_ROOT="$STUB" "$SH" "$T/filled.sh" > /dev/null 2>&1
+[ -e "$T/CHECKER_CALLED" ] && ok "替身在正常路徑上會被呼叫（上一條的檢查有效）" || bad "替身在正常路徑上沒有被呼叫，上一條的檢查無效"; rm -f "$T/CHECKER_CALLED"
 # 有失效引用的 repo：指向不存在的 skill → 必須報「發現失效引用」，不可報通過，也不可報「沒跑成」
 mkdir -p "$T/dangling/plugins/p/skills/plaud-to-srt"; git -C "$T/dangling" init -q 2>/dev/null
 printf -- '---\nname: plaud-to-srt\n---\nrun /p:nonexistent-skill now\n' > "$T/dangling/plugins/p/skills/plaud-to-srt/SKILL.md"

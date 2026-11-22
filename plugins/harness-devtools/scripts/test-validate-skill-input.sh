@@ -73,6 +73,13 @@ printf '%s' '-x' > "$T/m"; reject "以 - 開頭" model "$T/m"
 printf '%s' 'a b' > "$T/m"; reject "含空白" model "$T/m"
 printf '%s' 'a$(id)' > "$T/m"; reject "含 \$(...)" model "$T/m"
 printf '' > "$T/m"; reject "空檔案" model "$T/m"
+printf '%s' "$(printf 'a%.0s' $(seq 1 100))" > "$T/m"; accept "恰好 100 字元" model "$T/m" "" "$(printf 'a%.0s' $(seq 1 100))"
+printf '%s' "$(printf 'a%.0s' $(seq 1 101))" > "$T/m"; reject "101 字元" model "$T/m"
+
+# 白名單那一次 tr 失敗（沒有輸出）時要拒絕，不能當成「什麼都不剩」（verify R7：拿掉 || printf FAIL 這條會失敗）
+mkdir -p "$T/fakebin"; printf '%s\n' '#!/bin/bash' 'for a in "$@"; do [ "$a" = "A-Za-z0-9._:[]-" ] && exit 1; done' 'exec /usr/bin/tr "$@"' > "$T/fakebin/tr"; chmod +x "$T/fakebin/tr"
+printf '%s' 'gpt-6.2-sol' > "$T/m"; rc=0; PATH="$T/fakebin:$PATH" bash "$V" model "$T/m" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && ok "白名單的 tr 失敗時拒絕（不放行合法字元以外的東西）" || bad "白名單的 tr 失敗時沒有拒絕" "rc=$rc"
 
 echo "mode:"
 reject "未知模式" bogus "$T/n"

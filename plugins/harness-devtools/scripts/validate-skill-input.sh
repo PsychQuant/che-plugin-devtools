@@ -63,7 +63,7 @@ case "$MODE" in
   model)
     MODEL=$(read_value "$FILE")
     case "$MODEL" in ''|-*) die "model ID 不得為空或以 - 開頭" ;; esac
-    [ "${#MODEL}" -le 100 ] || die "model ID 超過 100 字元"
+    [ "${#MODEL}" -le 100 ] || die "model ID 超過 100 字元"   # 防呆上限：現行的 model ID 都在 40 字元以內
     # 刪掉合法字元之後必須什麼都不剩。結尾補一個 x 再比：$(...) 會吃掉結尾換行，
     # 內嵌換行在刪掉其他字元後變成結尾換行而消失，舊寫法因此放行（verify R6 實跑重現）。
     # tr 失敗時印 FAIL，不當成「什麼都不剩」。
