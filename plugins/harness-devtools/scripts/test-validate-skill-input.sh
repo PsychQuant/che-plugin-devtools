@@ -63,6 +63,17 @@ mkdir -p "$T/made/plaud-to-srt"; printf '%s' "$T/made/plaud-to-srt" > "$T/t"; ac
 printf '%s' "$T/made/a;b/plaud-to-srt" > "$T/t"; reject "target-used 仍擋 shell 元字元" target-used "$T/t" "$T/name"
 printf '%s' "$T/made/../plaud-to-srt" > "$T/t"; reject "target-used 仍擋 .." target-used "$T/t" "$T/name"
 
+echo "model（Step 5）:"
+printf '%s' 'claude-fable-5-2' > "$T/m"; accept "合法 model ID" model "$T/m" "" "claude-fable-5-2"
+printf '%s' 'claude-opus-5-5[1m]' > "$T/m"; accept "含 [1m] 的 model ID" model "$T/m" "" "claude-opus-5-5[1m]"
+printf '%s\n' 'gpt-6.2-sol' > "$T/m"; accept "結尾換行被容許並去掉" model "$T/m" "" "gpt-6.2-sol"
+printf 'gpt\nx' > "$T/m"; reject "內嵌換行（舊寫法刪掉合法字元後只剩換行，被 \$(...) 吃掉而放行）" model "$T/m"
+printf 'gpt\0x' > "$T/m"; reject "含 NUL" model "$T/m"
+printf '%s' '-x' > "$T/m"; reject "以 - 開頭" model "$T/m"
+printf '%s' 'a b' > "$T/m"; reject "含空白" model "$T/m"
+printf '%s' 'a$(id)' > "$T/m"; reject "含 \$(...)" model "$T/m"
+printf '' > "$T/m"; reject "空檔案" model "$T/m"
+
 echo "mode:"
 reject "未知模式" bogus "$T/n"
 

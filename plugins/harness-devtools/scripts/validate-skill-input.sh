@@ -5,11 +5,12 @@
 #   validate-skill-input.sh name   <file>
 #   validate-skill-input.sh target <file> <name-file>       目標必須「還不存在」（Step 3，建立之前）
 #   validate-skill-input.sh target-used <file> <name-file> 同上，但目標已存在是預期的（Step 5、6，建立之後）
+#   validate-skill-input.sh model  <file>                    Step 5 的 model ID
 #
 # 通過：把驗證後的值印在 stdout，exit 0。不通過：原因印在 stderr，exit 1。
 #
 # WHY THIS EXISTS
-#   skill-create 的輸入（名字、路徑）來自使用者，不可信。前三輪 verify 證明：把值貼進
+#   skill-create 的輸入（名字、路徑、model ID）來自使用者或 agent，不可信。前三輪 verify 證明：把值貼進
 #   shell 原始碼（單引號、heredoc）再驗證，每一種都在驗證之前就被內容裡的字元或結束標記
 #   提早結束而執行。所以值一律用 Write 工具寫進檔案（Write 的內容不經 shell），本腳本只
 #   讀檔、驗證、把值印回去 —— 驗證用的值與之後使用的值是同一次讀取的結果，不是兩份。
@@ -25,7 +26,7 @@ export LC_ALL=C
 die() { echo "✗ $*" >&2; exit 1; }
 
 MODE="${1:-}"; FILE="${2:-}"
-[ -n "$MODE" ] && [ -n "$FILE" ] || die "用法：validate-skill-input.sh name|target <file> [name-file]"
+[ -n "$MODE" ] && [ -n "$FILE" ] || die "用法：validate-skill-input.sh name|target|target-used|model <file> [name-file]"
 
 # NUL 在 $(...) 裡會被各 shell 以不同方式處理（bash 丟掉、zsh 保留），所以在讀取之前就拒絕。
 # 每個要讀的檔案都走這個函式，包含 target 模式裡的名字檔（verify R5：先前只檢查第一個檔案）。
@@ -59,5 +60,15 @@ case "$MODE" in
     [ "${TARGET##*/}" = "$NAME" ] || die "目錄名必須等於已驗證的名字 $NAME"
     if [ "$MODE" = target ] && { [ -e "$TARGET" ] || [ -L "$TARGET" ]; }; then die "$TARGET 已存在（含懸空 symlink），不覆蓋"; fi
     printf '%s\n' "$TARGET" ;;
+  model)
+    MODEL=$(read_value "$FILE")
+    case "$MODEL" in ''|-*) die "model ID 不得為空或以 - 開頭" ;; esac
+    [ "${#MODEL}" -le 100 ] || die "model ID 超過 100 字元"
+    # 刪掉合法字元之後必須什麼都不剩。結尾補一個 x 再比：$(...) 會吃掉結尾換行，
+    # 內嵌換行在刪掉其他字元後變成結尾換行而消失，舊寫法因此放行（verify R6 實跑重現）。
+    # tr 失敗時印 FAIL，不當成「什麼都不剩」。
+    REST=$( { printf '%s' "$MODEL" | tr -d 'A-Za-z0-9._:[]-' || printf FAIL; }; printf x )
+    [ "$REST" = x ] || die "model ID 含不合法字元（只接受英數與 . _ : [ ] -）"
+    printf '%s\n' "$MODEL" ;;
   *) die "未知模式：$MODE" ;;
 esac
