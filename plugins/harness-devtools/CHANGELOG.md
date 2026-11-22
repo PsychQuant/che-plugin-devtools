@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-22
+
+**發版摘要**：新增 `skill-create`（第 25 個 skill），並讓 `plugin-create` 取名時先過命名準則（#28）。
+
+### Changed
+- `plugin-create`：Step 1 取 plugin 名、Step 5 New Mode 取 skill 名時，先過命名準則（把名字說成一句「我要＿＿」，能還原成主要動作與對象才算過）；準則全文只放 `docs/design-principles.md` 的「命名慣例」，這裡與 `CLAUDE.md` 只引用；skill 以 `${CLAUDE_PLUGIN_ROOT}` 讀它，因為這兩個 skill 的 cwd 通常是別的 repo（#28）。
+- `CLAUDE.md`：「三個領域的 skill 命名」改為「skill 的命名」，前綴表加入 `skill-*`；skill 數量 24→25。`skill-*` 不屬於發布管道的三個領域，目前只有 `skill-create`（#28）。
+
+### Added
+- **`skill-create`**（第 25 個 skill）：先過命名準則並說出改名的成本，再呼叫官方 `skill-creator` 撰寫，最後跑它內建的 Description Optimization 並如實回報（跑不了就寫未執行與原因，不設通過門檻）。缺 `skill-creator` 時直接擋下並說明怎麼裝，不退回內建流程。不可信的文字（名字、目標路徑、eval 集、model ID）一律用 Write 工具寫進工作目錄的檔案，不貼進 shell 原始碼：名字、目標路徑、model ID 由 shell 讀檔驗證，eval 集只確認檔案非空、以檔名交給觸發測試，內容不經 shell（heredoc 與單引號貼法都會被內容裡的結束標記或引號提早結束，發布前的 verify 在 bash 與 zsh 實跑證實）。驗證邏輯抽成 `scripts/validate-skill-input.sh`（64 條測試，惡意樣本含結束標記、單引號、換行、NUL、`..`、懸空 symlink、19 種 shell 元字元），Step 2 驗名字、Step 3 驗目標，Step 5 與 Step 6 以 `target-used` 模式再驗一次（建好之後目標已存在是預期的），Step 5 的 model ID 以 `model` 模式驗；對驗證腳本做了變異測試（刪掉重驗名字、刪掉元字元檢查、`target-used` 套用已存在檢查、移除 NUL 檢查、model 檢查改回會被結尾換行騙過的寫法、白名單的 `tr` 失敗時當成通過），六個變異都會讓測試失敗；名字只接受小寫英數與連字號；目標目錄必須是絕對路徑、無控制字元、無 `..` 與 shell 元字元（因為路徑會原樣交給 Step 4 的 skill-creator，它會自己組指令；空白與中文是合法的）、目錄名等於已驗證的名字、已存在（含懸空 symlink）就停下不覆蓋；Step 5 的 model ID 只接受英數與 `. _ : [ ]` 與 `-`，且不得以 `-` 開頭、不得含內嵌換行與 NUL（檔尾的換行去掉）、不超過 100 字元；`WORK` 以 `printf %q` 輸出；清理工作目錄前驗證形狀（最後一段必須恰為 `skill-create.` 加六個英數字，不用 `??????`，因為 `?` 在 case 裡也會比對 `/` 與 `.`）與位置（以 `cd -P` 解析的父目錄實體路徑等於 `TMPDIR` 的實體路徑；預設的 `cd` 會把「symlink/..」按字面消去而算錯），且不再於 `allowed-tools` 預先放行 `rm`；Step 6 除了通過，另分開報「目標不存在」「不在 git repo」「檢查跑完但有失效引用（exit 1）」「檢查沒有跑成（exit 2，例如個人 `.claude/skills/` 所在的 repo 沒有 `plugins/`）」四種結果，每次只印一種；引用檢查的結束碼在 `if` 裡取得，呼叫端開了 errexit 也能分流；新增 `scripts/test-skill-create-snippets.sh`（27 條）把 SKILL.md 裡的 bash 區塊原樣抽出並在 bash 與 zsh 下執行：涵蓋 Step 2、3、6 與清理，**不涵蓋 Step 1、4、5**（需要真的 skill-creator 與 `claude -p`；Step 5 的 model ID 檢查由驗證腳本的測試守）；對 SKILL.md 做了變異測試（Step 6 分支對調、拿掉清理的位置檢查、形狀改回 `??????`、Step 3 不呼叫驗證腳本、Step 6 不重驗、Step 6 裸跑取結束碼、清理守衛不用 `cd -P`、Step 6 同時印兩種結果、同一個結果印兩次、重驗之前先呼叫引用檢查、重驗失敗之前先印出結果），皆會讓測試失敗；引用檢查對目標所在的 repo 而不是目前的工作目錄；每個步驟需要的值都在該步驟自己的 Bash 呼叫裡重新給定，不依賴跨 Bash 呼叫的 shell 變數。這是本 plugin 第一個對外部 plugin 的硬依賴（#28）。
+- `scripts/check-skill-creator.sh` 與 `scripts/test-check-skill-creator.sh`（37 條斷言；逾時與訊號相關的測試需要 perl）：以 `claude plugin list --json` 的 `installPath` 判斷官方 `skill-creator` 是否已安裝且啟用；CLI 不可用、逾時（預設 20 秒，需要 perl；`CLAUDE_TIMEOUT` 必須是 1–3600 的整數，否則改回預設；`00`、`000` 與超大值曾讓 alarm 失效，此項只有手動探測、沒有自動測試）、暫存檔建不起來、或回傳缺 `enabled` 欄位時退到本機安裝紀錄並說明 enabled 無法確認，不會退回沒有逾時的 CLI 呼叫；收到 INT／TERM 會立刻結束（130／143）並清掉暫存檔，而不是被吞掉後繼續跑；沒有 python3 時 exit 2，不誤報成「找不到 skill-creator」。不取「最高版本目錄」，因為官方版本是 12 位十六進位 hash，沒有順序可比（#28）。
+
 ## [2.6.0] - 2026-11-10
 
 **發版摘要**：四個發版 skill 現在都會打版號 tag（#42）；`plugin-update`、`plugin-deploy` 的自動推 tag 是 opt-in，要 `git config harness-devtools.releaseTag true` 才打。之前 `plugin-update`、`plugin-deploy` 不打 tag；`mcp-deploy`、`cli-deploy` 讓 GitHub 在建 release 時，於當下的 remote main 上自動建 tag，不保證落在 release commit 上，也沒有比對版號。四個 skill 都只在預設 branch 上打。`plugin-update`、`plugin-deploy` 的 tag 打在升版號的那個 commit；`mcp-deploy`、`cli-deploy` 的 tag 打在 release commit，版本必須等於要發的版本。helper 在 macOS 內建的 bash 3.2 下也能跑。

@@ -171,15 +171,20 @@ bash "$HELPER" --dir <版本根目錄> --commit HEAD --name-style v|plugin [--pl
 
 **為什麼**：2026-11-09 用 plugin-update 發 iss-compute-mcp 0.7.0，整條流程沒有一步建立版號 tag；mcp-deploy／cli-deploy 則讓 GitHub 在當下的 remote main 上建 tag，不保證落在 release commit、也不比對版號。#42 的交叉驗證抓到的缺陷多半在「怎麼讀版本」（hatch 的讀法、Swift 字串常值、merge 歷史）與「HEAD 是否真的在 remote 上」，這些只寫在 helper 與 fence 裡，各 skill 自己重寫會再犯一次。
 
-## 三個領域的 skill 命名
+## skill 的命名
 
 | 前綴 | 產物 | 典型鏈路 |
 |---|---|---|
 | `plugin-*` | Claude Code plugin | create → upgrade → deploy → update → health/debug |
 | `mcp-*` | MCP server | new-app → sign-pipeline → deploy → publish → test/diagnose |
 | `cli-*` | Swift CLI | new-app → deploy → install → upgrade |
+| `skill-*` | 單一 skill | create |
 
-前綴天然不衝突（已驗證 24 個 skill 零重名），合併後可直接並置。
+前三列是發布管道的三個領域；`skill-*` 不屬於發布管道，目前只有 `skill-create` 一個。
+
+前綴天然不衝突（已驗證 25 個 skill 零重名），合併後可直接並置。
+
+前綴之後的部分怎麼取，判準寫在 `docs/design-principles.md` 的「命名慣例」：名字要貼近使用者會打的動作加對象。完整準則只在那一處，這裡不複述。新建 plugin 與 skill 時，`/harness-devtools:plugin-create` 與 `/harness-devtools:skill-create` 都會在取名時指向它。
 
 ## 跨 skill 呼叫
 
