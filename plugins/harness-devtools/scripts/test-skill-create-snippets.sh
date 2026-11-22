@@ -78,7 +78,7 @@ STUB="$T/stubroot"; mkdir -p "$STUB/scripts"; cp "$CLAUDE_PLUGIN_ROOT/scripts/va
 printf '%s\n' '#!/bin/bash' 'touch "$CHECKER_MARK"' 'exit 0' > "$STUB/scripts/check-skill-references.sh"
 export CHECKER_MARK="$T/CHECKER_CALLED"
 OUT=$(CLAUDE_PLUGIN_ROOT="$STUB" "$SH" "$T/filled.sh" 2>&1); RC=$?
-case "$OUT" in *"目錄名必須等於"*) [ "$RC" -ne 0 ] && [ ! -e "$T/CHECKER_CALLED" ] && ok "名字與目錄名不符 → Step 6 重驗擋下，引用檢查沒有被呼叫" || bad "重驗擋下了但引用檢查仍被呼叫，或結束碼為 0" "rc=$RC $OUT";; *) bad "名字與目錄名不符卻沒被 Step 6 重驗擋下" "$OUT";; esac
+case "$OUT" in *"目錄名必須等於"*) [ "$RC" -ne 0 ] && [ ! -e "$T/CHECKER_CALLED" ] && [ "$(one_result "$OUT")" = 0 ] && ok "名字與目錄名不符 → Step 6 重驗擋下，引用檢查沒有被呼叫、也沒有印結果" || bad "重驗擋下了但引用檢查仍被呼叫、印了結果，或結束碼為 0" "rc=$RC $OUT";; *) bad "名字與目錄名不符卻沒被 Step 6 重驗擋下" "$OUT";; esac
 # 替身本身要能被呼叫到，否則上一條的「沒有被呼叫」不證明任何事
 printf '%s' "$T/clean/plugins/p/skills/plaud-to-srt" > "$WORK/target"; CLAUDE_PLUGIN_ROOT="$STUB" "$SH" "$T/filled.sh" > /dev/null 2>&1
 [ -e "$T/CHECKER_CALLED" ] && ok "替身在正常路徑上會被呼叫（上一條的檢查有效）" || bad "替身在正常路徑上沒有被呼叫，上一條的檢查無效"; rm -f "$T/CHECKER_CALLED"
@@ -93,7 +93,9 @@ printf '%s' "$T/noplugins/.claude/skills/plaud-to-srt" > "$WORK/target"
 OUT=$("$SH" "$T/filled.sh" 2>&1); case "$OUT" in *"沒有跑成"*) ok "檢查沒跑成（exit 2）→ 如實報沒跑成";; *"發現失效引用"*) bad "把 exit 2 誤報成發現失效引用" "$OUT";; *) bad "exit 2 的訊息不對" "$OUT";; esac; [ "$(one_result "$OUT")" = 1 ] || bad "exit 2 時印出不只一種結果" "$OUT"
 # errexit：呼叫端開了 set -e 時，引用檢查回非零也要能分流報告，不能在讀到結束碼之前就離開（verify R6）
 printf '%s' "$T/dangling/plugins/p/skills/plaud-to-srt" > "$WORK/target"; { echo 'set -e'; cat "$T/filled.sh"; } > "$T/filled_e.sh"
-OUT=$("$SH" "$T/filled_e.sh" 2>&1); case "$OUT" in *"發現失效引用"*) ok "set -e 下有失效引用仍如實報告";; *) bad "set -e 下沒報出失效引用（裸跑在讀到結束碼前離開）" "$OUT";; esac
+OUT=$("$SH" "$T/filled_e.sh" 2>&1); case "$OUT" in *"發現失效引用"*) ok "set -e 下有失效引用仍如實報告";; *) bad "set -e 下沒報出失效引用（裸跑在讀到結束碼前離開）" "$OUT";; esac; [ "$(one_result "$OUT")" = 1 ] || bad "set -e 下有失效引用時印出不只一種結果" "$OUT"
+printf '%s' "$T/noplugins/.claude/skills/plaud-to-srt" > "$WORK/target"; { echo 'set -e'; cat "$T/filled.sh"; } > "$T/filled_e.sh"
+OUT=$("$SH" "$T/filled_e.sh" 2>&1); case "$OUT" in *"沒有跑成"*) ok "set -e 下檢查沒跑成（exit 2）仍如實報告";; *) bad "set -e 下沒報出沒跑成" "$OUT";; esac; [ "$(one_result "$OUT")" = 1 ] || bad "set -e 下 exit 2 時印出不只一種結果" "$OUT"
 
 # 清理：守衛。錯的形狀、錯的位置、巢狀、.. 都不刪；對的才刪
 fill "$B_CLEAN"
